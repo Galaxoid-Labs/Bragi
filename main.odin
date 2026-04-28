@@ -35,23 +35,10 @@ GUTTER_MIN_DIGITS :: 3
 STATUS_PAD_X :: 8.0
 STATUS_PAD_Y :: 5.0
 
-BG_COLOR             :: sdl.Color{30, 30, 38, 255}
-TEXT_COLOR           :: sdl.Color{220, 220, 220, 255}
-CURSOR_COLOR         :: sdl.Color{240, 200, 80, 255}
-SELECTION_COLOR      :: sdl.Color{70, 95, 150, 120}
-SEARCH_MATCH_COLOR   :: sdl.Color{190, 80, 180, 120}
-SB_TRACK_COLOR       :: sdl.Color{40, 40, 48, 255}
-SB_THUMB_COLOR       :: sdl.Color{90, 90, 100, 255}
-SB_THUMB_HOVER_COLOR :: sdl.Color{130, 130, 140, 255}
-GUTTER_BG_COLOR      :: sdl.Color{24, 24, 30, 255}
-GUTTER_TEXT_COLOR    :: sdl.Color{90, 95, 110, 255}
-GUTTER_ACTIVE_COLOR  :: sdl.Color{200, 200, 210, 255}
-STATUS_BG_COLOR      :: sdl.Color{20, 20, 26, 255}
-STATUS_TEXT_COLOR    :: sdl.Color{200, 200, 210, 255}
-STATUS_DIM_COLOR     :: sdl.Color{120, 125, 140, 255}
-
-// Syntax theme. Eventually loaded from config; default values today.
+// Syntax + chrome theme. All visible colours live here so they can be
+// overridden from the [theme] section of the user's config.ini.
 Theme :: struct {
+	// Syntax tokens.
 	default_color:  sdl.Color,
 	keyword_color:  sdl.Color,
 	type_color:     sdl.Color,
@@ -60,10 +47,25 @@ Theme :: struct {
 	string_color:   sdl.Color,
 	comment_color:  sdl.Color,
 	function_color: sdl.Color,
+	// Chrome.
+	bg_color:              sdl.Color,
+	cursor_color:          sdl.Color,
+	selection_color:       sdl.Color,
+	search_match_color:    sdl.Color,
+	sb_track_color:        sdl.Color,
+	sb_thumb_color:        sdl.Color,
+	sb_thumb_hover_color:  sdl.Color,
+	gutter_bg_color:       sdl.Color,
+	gutter_text_color:     sdl.Color,
+	gutter_active_color:   sdl.Color,
+	status_bg_color:       sdl.Color,
+	status_path_bg_color:  sdl.Color,
+	status_text_color:     sdl.Color,
+	status_dim_color:      sdl.Color,
 }
 
 DEFAULT_THEME :: Theme{
-	default_color  = TEXT_COLOR,
+	default_color  = sdl.Color{220, 220, 220, 255},
 	keyword_color  = sdl.Color{198, 120, 221, 255}, // purple
 	type_color     = sdl.Color{ 95, 200, 218, 255}, // cyan
 	constant_color = sdl.Color{229, 192, 123, 255}, // gold (true/false/nil)
@@ -71,6 +73,21 @@ DEFAULT_THEME :: Theme{
 	string_color   = sdl.Color{152, 195, 121, 255}, // green
 	comment_color  = sdl.Color{ 95, 110, 130, 255}, // muted blue-gray
 	function_color = sdl.Color{ 97, 175, 239, 255}, // blue
+
+	bg_color             = sdl.Color{ 30,  30,  38, 255},
+	cursor_color         = sdl.Color{240, 200,  80, 255},
+	selection_color      = sdl.Color{ 70,  95, 150, 120},
+	search_match_color   = sdl.Color{190,  80, 180, 120},
+	sb_track_color       = sdl.Color{ 40,  40,  48, 255},
+	sb_thumb_color       = sdl.Color{ 90,  90, 100, 255},
+	sb_thumb_hover_color = sdl.Color{130, 130, 140, 255},
+	gutter_bg_color      = sdl.Color{ 24,  24,  30, 255},
+	gutter_text_color    = sdl.Color{ 90,  95, 110, 255},
+	gutter_active_color  = sdl.Color{200, 200, 210, 255},
+	status_bg_color      = sdl.Color{ 20,  20,  26, 255},
+	status_path_bg_color = sdl.Color{ 28,  28,  36, 255},
+	status_text_color    = sdl.Color{200, 200, 210, 255},
+	status_dim_color     = sdl.Color{120, 125, 140, 255},
 }
 
 theme_color :: proc(theme: ^Theme, kind: Token_Kind) -> sdl.Color {
@@ -127,36 +144,183 @@ text_cache_clear :: proc() {
 	clear(&g_text_cache)
 }
 
-Layout :: struct {
-	screen_w, screen_h: f32,
-	gutter_w:           f32,
-	text_x, text_y:     f32,
-	text_w, text_h:     f32,
-	v_track:            sdl.FRect,
-	h_track:            sdl.FRect,
-	status_y, status_h: f32,
+// Per-column layout. With multiple files open the screen is divided into
+// equal vertical strips; each strip has its own gutter, scrollbars, and
+// text region, and is owned by a single Editor.
+Pane_Layout :: struct {
+	pane_x, pane_w:  f32, // full column bounds (gutter + text + v_track)
+	gutter_w:        f32,
+	text_x, text_y:  f32,
+	text_w, text_h:  f32,
+	v_track, h_track: sdl.FRect,
 }
 
-compute_layout :: proc(ed: ^Editor) -> Layout {
+Layout :: struct {
+	screen_w, screen_h: f32,
+	status_y, status_h: f32,
+	panes:              []Pane_Layout,
+}
+
+// Multi-pane editor list. Panes are rendered as columns left-to-right
+// in the same order as g_editors. g_active_idx indexes the focused one;
+// keyboard input always goes to it, and mouse events that hit a different
+// pane move focus there before being handled. g_drag_idx tracks which
+// pane the current mouse drag (if any) started in so motion / button-up
+// events route back there even if the cursor wandered into a neighbour.
+//
+// g_pane_ratios stores each pane's width as a fraction of the window
+// (sums to 1.0). Ratios scale naturally on window resize and are
+// adjusted when the user drags a divider. g_resize_divider is the
+// index of the right-side pane whose left edge is being dragged
+// (-1 when no drag is in progress).
+g_editors:        [dynamic]Editor
+g_pane_ratios:    [dynamic]f32
+g_active_idx:     int
+g_drag_idx:       int = -1
+g_resize_divider: int = -1
+g_cursor_default: ^sdl.Cursor
+g_cursor_resize:  ^sdl.Cursor
+
+// Vim's Ctrl+W "window" prefix. When set, the next key is interpreted as
+// a window command (h / l for focus, c / q for close) instead of going to
+// the editor. g_swallow_text_input rides along so the rune that arrived
+// for the same physical keypress doesn't get inserted into the buffer.
+g_pending_ctrl_w:     bool
+g_swallow_text_input: bool
+
+DIVIDER_GRAB_PX :: 6.0  // total grab width centred on the divider line
+MIN_PANE_PX     :: 80.0 // minimum width a pane can be shrunk to
+
+// Returns the index of the divider near `x` (= the index of the pane to
+// the *right* of the divider, in 1..N-1), or -1 if x isn't over a divider.
+divider_at_x :: proc(x: f32, l: Layout) -> int {
+	half: f32 = DIVIDER_GRAB_PX * 0.5
+	for i in 1 ..< len(l.panes) {
+		dx := x - l.panes[i].pane_x
+		if dx >= -half && dx <= half do return i
+	}
+	return -1
+}
+
+// Drag the divider before pane `right_idx` to logical-pixel x position
+// `x`. Adjusts only the two adjacent panes' ratios; clamps so neither
+// shrinks below MIN_PANE_PX.
+move_divider :: proc(right_idx: int, x: f32, screen_w: f32) {
+	if right_idx <= 0 || right_idx >= len(g_pane_ratios) do return
+	left_idx := right_idx - 1
+
+	pre_sum: f32 = 0
+	for i in 0 ..< left_idx do pre_sum += g_pane_ratios[i]
+	post_sum: f32 = 0
+	for i in right_idx + 1 ..< len(g_pane_ratios) do post_sum += g_pane_ratios[i]
+	available := 1.0 - pre_sum - post_sum
+
+	min_ratio := f32(MIN_PANE_PX) / screen_w
+	if min_ratio * 2 > available do min_ratio = available * 0.25
+
+	pos_ratio := clamp(x / screen_w, 0, 1)
+	left_ratio := clamp(pos_ratio - pre_sum, min_ratio, available - min_ratio)
+	g_pane_ratios[left_idx]  = left_ratio
+	g_pane_ratios[right_idx] = available - left_ratio
+}
+
+// Append a fresh ratio entry, preserving the existing distribution
+// proportionally. After call, ratios sum to 1.0 across `len(g_editors)`.
+add_pane_ratio :: proc() {
+	n := len(g_editors)
+	if n == 1 {
+		clear(&g_pane_ratios)
+		append(&g_pane_ratios, f32(1))
+		return
+	}
+	new_share := f32(1) / f32(n)
+	scale := f32(n - 1) / f32(n)
+	for &r in g_pane_ratios do r *= scale
+	append(&g_pane_ratios, new_share)
+}
+
+// Drop the ratio entry at `idx` and scale the remaining entries up so
+// they sum to 1.0 again.
+remove_pane_ratio :: proc(idx: int) {
+	if idx < 0 || idx >= len(g_pane_ratios) do return
+	if len(g_pane_ratios) == 1 {
+		g_pane_ratios[0] = 1
+		return
+	}
+	removed := g_pane_ratios[idx]
+	ordered_remove(&g_pane_ratios, idx)
+	remaining := 1.0 - removed
+	if remaining > 0.0001 {
+		factor := f32(1) / remaining
+		for &r in g_pane_ratios do r *= factor
+	} else {
+		n := f32(len(g_pane_ratios))
+		for &r in g_pane_ratios do r = 1 / n
+	}
+}
+
+active_editor :: proc() -> ^Editor {
+	return &g_editors[g_active_idx]
+}
+
+active_pane :: proc(l: Layout) -> Pane_Layout {
+	return l.panes[g_active_idx]
+}
+
+pane_at_x :: proc(x: f32, l: Layout) -> int {
+	for p, i in l.panes {
+		if x < p.pane_x + p.pane_w do return i
+	}
+	return max(0, len(l.panes) - 1)
+}
+
+compute_layout :: proc() -> Layout {
 	l: Layout
 	w, h: c.int
 	sdl.GetWindowSize(g_window, &w, &h)
 	l.screen_w = f32(w)
 	l.screen_h = f32(h)
 
-	digits := max(GUTTER_MIN_DIGITS, digit_count(editor_total_lines(ed)))
-	l.gutter_w = f32(digits) * g_char_width + GUTTER_PADDING * 2
-
-	l.status_h = g_config.font.size + STATUS_PAD_Y * 2
+	// Status bar is two rows tall: top = per-pane file paths, bottom =
+	// active-pane mode/position/etc. Three vertical pads (top, between
+	// rows, bottom) + two rows of font-size-tall text.
+	l.status_h = 2 * g_config.font.size + 3 * STATUS_PAD_Y
 	l.status_y = l.screen_h - l.status_h
 
-	l.text_x = l.gutter_w
-	l.text_y = 0
-	l.text_w = l.screen_w - l.text_x - SB_THICKNESS
-	l.text_h = l.status_y - SB_THICKNESS - l.text_y
+	n := max(1, len(g_editors))
+	panes := make([]Pane_Layout, n, context.temp_allocator)
+	x_acc: f32 = 0
+	for i in 0 ..< n {
+		ratio := i < len(g_pane_ratios) ? g_pane_ratios[i] : 1.0 / f32(n)
+		pane_w := ratio * l.screen_w
+		pane_x := x_acc
+		x_acc += pane_w
+		// Last pane absorbs any rounding remainder so the rightmost
+		// edge always lines up with the window.
+		if i == n - 1 do pane_w = l.screen_w - pane_x
 
-	l.v_track = {l.screen_w - SB_THICKNESS, l.text_y, SB_THICKNESS, l.text_h}
-	l.h_track = {l.text_x, l.status_y - SB_THICKNESS, l.text_w, SB_THICKNESS}
+		ed := &g_editors[i]
+		digits := max(GUTTER_MIN_DIGITS, digit_count(editor_total_lines(ed)))
+		gutter_w := f32(digits) * g_char_width + GUTTER_PADDING * 2
+
+		text_x := pane_x + gutter_w
+		text_y := f32(0)
+		text_w := pane_w - gutter_w - SB_THICKNESS
+		text_h := l.status_y - SB_THICKNESS - text_y
+
+		panes[i] = Pane_Layout{
+			pane_x   = pane_x,
+			pane_w   = pane_w,
+			gutter_w = gutter_w,
+			text_x   = text_x,
+			text_y   = text_y,
+			text_w   = text_w,
+			text_h   = text_h,
+			v_track  = sdl.FRect{pane_x + pane_w - SB_THICKNESS, text_y,                  SB_THICKNESS, text_h},
+			h_track  = sdl.FRect{text_x,                          l.status_y - SB_THICKNESS, text_w,       SB_THICKNESS},
+		}
+	}
+	l.panes = panes
 	return l
 }
 
@@ -208,13 +372,13 @@ fill_rect :: proc(rect: sdl.FRect, color: sdl.Color) {
 }
 
 // Convert a screen-space mouse position (logical px) to a buffer byte offset.
-mouse_to_buffer_pos :: proc(ed: ^Editor, mx, my: f32, l: Layout) -> int {
-	doc_y := my - l.text_y + ed.scroll_y
+mouse_to_buffer_pos :: proc(ed: ^Editor, mx, my: f32, p: Pane_Layout) -> int {
+	doc_y := my - p.text_y + ed.scroll_y
 	line := max(0, int(doc_y / g_line_height))
 	max_line := editor_total_lines(ed) - 1
 	line = min(line, max_line)
 
-	doc_x := mx - l.text_x + ed.scroll_x
+	doc_x := mx - p.text_x + ed.scroll_x
 	col := max(0, int((doc_x + g_char_width * 0.5) / g_char_width))
 
 	return editor_pos_at_line_col(ed, line, col)
@@ -263,20 +427,20 @@ draw_tokenized_line :: proc(bytes: []u8, tokens: []Token, x_origin, y: f32) {
 		if tok.start > prev_end {
 			seg := bytes[prev_end:tok.start]
 			x := x_origin + f32(cur_col) * g_char_width
-			draw_segment(seg, x, y, default_fg, BG_COLOR)
+			draw_segment(seg, x, y, default_fg, g_theme.bg_color)
 			cur_col += count_display_cols(seg)
 			prev_end = tok.start
 		}
 		seg := bytes[tok.start:tok.end]
 		x := x_origin + f32(cur_col) * g_char_width
-		draw_segment(seg, x, y, theme_color(&g_theme, tok.kind), BG_COLOR)
+		draw_segment(seg, x, y, theme_color(&g_theme, tok.kind), g_theme.bg_color)
 		cur_col += count_display_cols(seg)
 		prev_end = tok.end
 	}
 	if prev_end < len(bytes) {
 		seg := bytes[prev_end:]
 		x := x_origin + f32(cur_col) * g_char_width
-		draw_segment(seg, x, y, default_fg, BG_COLOR)
+		draw_segment(seg, x, y, default_fg, g_theme.bg_color)
 	}
 }
 
@@ -309,8 +473,38 @@ shift_held    :: proc(mods: sdl.Keymod) -> bool { return mods & sdl.KMOD_SHIFT !
 cmd_or_ctrl   :: proc(mods: sdl.Keymod) -> bool { return mods & (sdl.KMOD_GUI | sdl.KMOD_CTRL) != {} }
 
 handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
+	// Help modal eats every key. Esc dismisses; arrows / page keys / j /
+	// k / g / G scroll its contents.
+	if g_help_visible {
+		line_h := g_config.font.size + HELP_LINE_GAP
+		switch ev.key {
+		case sdl.K_ESCAPE:                   help_hide()
+		case sdl.K_UP, sdl.K_K:              help_scroll_by(-line_h)
+		case sdl.K_DOWN, sdl.K_J:            help_scroll_by( line_h)
+		case sdl.K_PAGEUP:                   help_scroll_by(-line_h * 8)
+		case sdl.K_PAGEDOWN, sdl.K_SPACE:    help_scroll_by( line_h * 8)
+		case sdl.K_HOME, sdl.K_G:            g_help_scroll = 0
+		case sdl.K_END:                      help_scroll_to_end()
+		}
+		return
+	}
 	if g_menu.visible && ev.key == sdl.K_ESCAPE {
 		menu_hide()
+		return
+	}
+
+	// Ctrl+W vim window-prefix follow-up: this key is the direction /
+	// action, not editor input. Swallow the corresponding TEXT_INPUT so
+	// the letter doesn't get typed into the buffer.
+	if g_pending_ctrl_w {
+		g_pending_ctrl_w     = false
+		g_swallow_text_input = true
+		switch ev.key {
+		case sdl.K_H, sdl.K_LEFT:  if g_active_idx > 0                   do g_active_idx -= 1
+		case sdl.K_L, sdl.K_RIGHT: if g_active_idx < len(g_editors) - 1  do g_active_idx += 1
+		case sdl.K_C, sdl.K_Q:     try_close_active_pane()
+		case sdl.K_ESCAPE:         g_swallow_text_input = false // cancel, no rune queued
+		}
 		return
 	}
 
@@ -325,6 +519,17 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 		case sdl.K_C: clipboard_copy(ed)
 		case sdl.K_X: clipboard_cut(ed)
 		case sdl.K_V: clipboard_paste(ed)
+		case sdl.K_W:
+			// Ctrl+W is vim's window-prefix — wait for the follow-up
+			// key (h / l for focus, c / q for close). Cmd+W is left
+			// alone so macOS's standard close-window behaviour fires.
+			if mods & sdl.KMOD_CTRL != {} do g_pending_ctrl_w = true
+		case sdl.K_LEFTBRACKET:
+			// Cmd+[ → focus left pane (single-chord alternative to Ctrl+W h).
+			if g_active_idx > 0 do g_active_idx -= 1
+		case sdl.K_RIGHTBRACKET:
+			// Cmd+] → focus right pane.
+			if g_active_idx < len(g_editors) - 1 do g_active_idx += 1
 		case sdl.K_O:
 			open_file_dialog(ed)
 		case sdl.K_S:
@@ -400,6 +605,11 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 }
 
 handle_text_input :: proc(ed: ^Editor, text: cstring) {
+	if g_help_visible do return
+	if g_swallow_text_input {
+		g_swallow_text_input = false
+		return
+	}
 	if text == nil do return
 	s := string(text)
 
@@ -422,7 +632,7 @@ scrollbar_thumb_metrics :: proc(scroll, content, viewport, track: f32) -> (start
 	return
 }
 
-handle_mouse_button :: proc(ed: ^Editor, ev: sdl.MouseButtonEvent, l: Layout) {
+handle_mouse_button :: proc(ed: ^Editor, ev: sdl.MouseButtonEvent, p: Pane_Layout) {
 	mx, my := ev.x, ev.y
 	mouse := sdl.FPoint{mx, my}
 
@@ -438,9 +648,9 @@ handle_mouse_button :: proc(ed: ^Editor, ev: sdl.MouseButtonEvent, l: Layout) {
 		}
 	}
 
-	// Right-click in the text or gutter area opens the context menu.
+	// Right-click in this pane's text or gutter area opens the context menu.
 	if ev.down && ev.button == sdl.BUTTON_RIGHT {
-		clickable := sdl.FRect{0, l.text_y, l.text_x + l.text_w, l.text_h}
+		clickable := sdl.FRect{p.pane_x, p.text_y, p.gutter_w + p.text_w, p.text_h}
 		if point_in_rect(mouse, clickable) do menu_show({mx, my})
 		return
 	}
@@ -455,18 +665,18 @@ handle_mouse_button :: proc(ed: ^Editor, ev: sdl.MouseButtonEvent, l: Layout) {
 
 	content_h := f32(editor_total_lines(ed)) * g_line_height
 	content_w := f32(editor_max_line_cols(ed)) * g_char_width
-	v_thumb_start, v_thumb_size := scrollbar_thumb_metrics(ed.scroll_y, content_h, l.text_h, l.v_track.h)
-	h_thumb_start, h_thumb_size := scrollbar_thumb_metrics(ed.scroll_x, content_w, l.text_w, l.h_track.w)
+	v_thumb_start, v_thumb_size := scrollbar_thumb_metrics(ed.scroll_y, content_h, p.text_h, p.v_track.h)
+	h_thumb_start, h_thumb_size := scrollbar_thumb_metrics(ed.scroll_x, content_w, p.text_w, p.h_track.w)
 
-	v_thumb_rect := sdl.FRect{l.v_track.x, l.v_track.y + v_thumb_start, l.v_track.w, v_thumb_size}
-	h_thumb_rect := sdl.FRect{l.h_track.x + h_thumb_start, l.h_track.y, h_thumb_size, l.h_track.h}
+	v_thumb_rect := sdl.FRect{p.v_track.x, p.v_track.y + v_thumb_start, p.v_track.w, v_thumb_size}
+	h_thumb_rect := sdl.FRect{p.h_track.x + h_thumb_start, p.h_track.y, h_thumb_size, p.h_track.h}
 
-	if content_h > l.text_h && point_in_rect(mouse, v_thumb_rect) {
+	if content_h > p.text_h && point_in_rect(mouse, v_thumb_rect) {
 		ed.sb_drag = .Vertical
 		ed.sb_drag_offset = my - v_thumb_rect.y
 		return
 	}
-	if content_w > l.text_w && point_in_rect(mouse, h_thumb_rect) {
+	if content_w > p.text_w && point_in_rect(mouse, h_thumb_rect) {
 		ed.sb_drag = .Horizontal
 		ed.sb_drag_offset = mx - h_thumb_rect.x
 		return
@@ -474,20 +684,20 @@ handle_mouse_button :: proc(ed: ^Editor, ev: sdl.MouseButtonEvent, l: Layout) {
 
 	// Click on the V track (but not on the thumb): jump the thumb centre to
 	// the click position and continue as a drag. Same for H.
-	if content_h > l.text_h && point_in_rect(mouse, l.v_track) {
-		target_thumb_y := my - l.v_track.y - v_thumb_size / 2
-		track_room := l.v_track.h - v_thumb_size
+	if content_h > p.text_h && point_in_rect(mouse, p.v_track) {
+		target_thumb_y := my - p.v_track.y - v_thumb_size / 2
+		track_room := p.v_track.h - v_thumb_size
 		t := track_room > 0 ? clamp(target_thumb_y / track_room, 0, 1) : 0
-		ed.scroll_y = t * (content_h - l.text_h)
+		ed.scroll_y = t * (content_h - p.text_h)
 		ed.sb_drag = .Vertical
 		ed.sb_drag_offset = v_thumb_size / 2
 		return
 	}
-	if content_w > l.text_w && point_in_rect(mouse, l.h_track) {
-		target_thumb_x := mx - l.h_track.x - h_thumb_size / 2
-		track_room := l.h_track.w - h_thumb_size
+	if content_w > p.text_w && point_in_rect(mouse, p.h_track) {
+		target_thumb_x := mx - p.h_track.x - h_thumb_size / 2
+		track_room := p.h_track.w - h_thumb_size
 		t := track_room > 0 ? clamp(target_thumb_x / track_room, 0, 1) : 0
-		ed.scroll_x = t * (content_w - l.text_w)
+		ed.scroll_x = t * (content_w - p.text_w)
 		ed.sb_drag = .Horizontal
 		ed.sb_drag_offset = h_thumb_size / 2
 		return
@@ -497,10 +707,10 @@ handle_mouse_button :: proc(ed: ^Editor, ev: sdl.MouseButtonEvent, l: Layout) {
 	// math in mouse_to_buffer_pos clamps to 0 when mx < text_x, so dragging
 	// in the gutter (or starting in the gutter and dragging into text) just
 	// works.
-	clickable := sdl.FRect{0, l.text_y, l.text_x + l.text_w, l.text_h}
+	clickable := sdl.FRect{p.pane_x, p.text_y, p.gutter_w + p.text_w, p.text_h}
 	if point_in_rect(mouse, clickable) {
 		commit_pending(ed)
-		pos := mouse_to_buffer_pos(ed, mx, my, l)
+		pos := mouse_to_buffer_pos(ed, mx, my, p)
 		ed.cursor = pos
 		mods := sdl.GetModState()
 		if !shift_held(mods) do ed.anchor = pos
@@ -510,7 +720,7 @@ handle_mouse_button :: proc(ed: ^Editor, ev: sdl.MouseButtonEvent, l: Layout) {
 	}
 }
 
-handle_mouse_motion :: proc(ed: ^Editor, ev: sdl.MouseMotionEvent, l: Layout) {
+handle_mouse_motion :: proc(ed: ^Editor, ev: sdl.MouseMotionEvent, p: Pane_Layout) {
 	mx, my := ev.x, ev.y
 	if g_menu.visible {
 		menu_handle_motion(mx, my)
@@ -519,21 +729,21 @@ handle_mouse_motion :: proc(ed: ^Editor, ev: sdl.MouseMotionEvent, l: Layout) {
 	switch ed.sb_drag {
 	case .Vertical:
 		content_h := f32(editor_total_lines(ed)) * g_line_height
-		_, thumb_h := scrollbar_thumb_metrics(ed.scroll_y, content_h, l.text_h, l.v_track.h)
-		new_thumb_y := my - ed.sb_drag_offset - l.v_track.y
-		track_room := l.v_track.h - thumb_h
+		_, thumb_h := scrollbar_thumb_metrics(ed.scroll_y, content_h, p.text_h, p.v_track.h)
+		new_thumb_y := my - ed.sb_drag_offset - p.v_track.y
+		track_room := p.v_track.h - thumb_h
 		t := track_room > 0 ? clamp(new_thumb_y / track_room, 0, 1) : 0
-		ed.scroll_y = t * (content_h - l.text_h)
+		ed.scroll_y = t * (content_h - p.text_h)
 	case .Horizontal:
 		content_w := f32(editor_max_line_cols(ed)) * g_char_width
-		_, thumb_w := scrollbar_thumb_metrics(ed.scroll_x, content_w, l.text_w, l.h_track.w)
-		new_thumb_x := mx - ed.sb_drag_offset - l.h_track.x
-		track_room := l.h_track.w - thumb_w
+		_, thumb_w := scrollbar_thumb_metrics(ed.scroll_x, content_w, p.text_w, p.h_track.w)
+		new_thumb_x := mx - ed.sb_drag_offset - p.h_track.x
+		track_room := p.h_track.w - thumb_w
 		t := track_room > 0 ? clamp(new_thumb_x / track_room, 0, 1) : 0
-		ed.scroll_x = t * (content_w - l.text_w)
+		ed.scroll_x = t * (content_w - p.text_w)
 	case .None:
 		if ed.mouse_drag {
-			pos := mouse_to_buffer_pos(ed, mx, my, l)
+			pos := mouse_to_buffer_pos(ed, mx, my, p)
 			ed.cursor = pos
 			_, ed.desired_col = editor_pos_to_line_col(ed, ed.cursor)
 			ed.blink_timer = 0
@@ -546,23 +756,23 @@ handle_mouse_wheel :: proc(ed: ^Editor, ev: sdl.MouseWheelEvent) {
 	if ev.x != 0 do ed.scroll_x -= ev.x * g_char_width  * SCROLL_LINES_PER_NOTCH
 }
 
-clamp_scroll :: proc(ed: ^Editor, l: Layout) {
+clamp_scroll :: proc(ed: ^Editor, p: Pane_Layout) {
 	content_h := f32(editor_total_lines(ed)) * g_line_height
 	content_w := f32(editor_max_line_cols(ed)) * g_char_width
-	max_y := max(0, content_h - l.text_h)
-	max_x := max(0, content_w - l.text_w)
+	max_y := max(0, content_h - p.text_h)
+	max_x := max(0, content_w - p.text_w)
 	ed.scroll_y = clamp(ed.scroll_y, 0, max_y)
 	ed.scroll_x = clamp(ed.scroll_x, 0, max_x)
 }
 
-auto_scroll_to_caret :: proc(ed: ^Editor, l: Layout) {
+auto_scroll_to_caret :: proc(ed: ^Editor, p: Pane_Layout) {
 	cline, ccol := editor_pos_to_line_col(ed, ed.cursor)
 	caret_y := f32(cline) * g_line_height
 	caret_x := f32(ccol) * g_char_width
 	if caret_y < ed.scroll_y                       do ed.scroll_y = caret_y
-	else if caret_y + g_line_height > ed.scroll_y + l.text_h do ed.scroll_y = caret_y + g_line_height - l.text_h
+	else if caret_y + g_line_height > ed.scroll_y + p.text_h do ed.scroll_y = caret_y + g_line_height - p.text_h
 	if caret_x < ed.scroll_x                       do ed.scroll_x = caret_x
-	else if caret_x + g_char_width  > ed.scroll_x + l.text_w do ed.scroll_x = caret_x + g_char_width  - l.text_w
+	else if caret_x + g_char_width  > ed.scroll_x + p.text_w do ed.scroll_x = caret_x + g_char_width  - p.text_w
 }
 
 point_in_rect :: proc(p: sdl.FPoint, r: sdl.FRect) -> bool {
@@ -619,9 +829,9 @@ draw_selection_for_line :: proc(
 	fill_rect({x, y, w, g_line_height}, color)
 }
 
-draw_editor :: proc(ed: ^Editor, l: Layout) {
+draw_editor :: proc(ed: ^Editor, p: Pane_Layout, is_active: bool) {
 	first_visible := max(0, int(ed.scroll_y / g_line_height))
-	last_visible  := first_visible + int(l.text_h / g_line_height) + 1
+	last_visible  := first_visible + int(p.text_h / g_line_height) + 1
 	total_lines   := editor_total_lines(ed)
 	last_visible = min(last_visible, total_lines - 1)
 
@@ -631,14 +841,14 @@ draw_editor :: proc(ed: ^Editor, l: Layout) {
 	// Recolor the selection rect when it exactly covers the active search
 	// match — same trigger as the [n/m] readout, so the highlight only
 	// appears while the user is paging through results.
-	sel_color := SELECTION_COLOR
+	sel_color := g_theme.selection_color
 	if has_sel && len(ed.search_pattern) > 0 &&
 	   sel_hi - sel_lo == len(ed.search_pattern) {
 		cur, _ := editor_search_stats(ed, ed.search_pattern)
-		if cur > 0 do sel_color = SEARCH_MATCH_COLOR
+		if cur > 0 do sel_color = g_theme.search_match_color
 	}
 
-	clip := sdl.Rect{i32(l.text_x * g_density), i32(l.text_y * g_density), i32(l.text_w * g_density), i32(l.text_h * g_density)}
+	clip := sdl.Rect{i32(p.text_x * g_density), i32(p.text_y * g_density), i32(p.text_w * g_density), i32(p.text_h * g_density)}
 	sdl.SetRenderClipRect(g_renderer, &clip)
 	defer sdl.SetRenderClipRect(g_renderer, nil)
 
@@ -647,12 +857,12 @@ draw_editor :: proc(ed: ^Editor, l: Layout) {
 	// color but at low alpha so the thin line blends into the BG instead of
 	// reading as a saturated stripe.
 	if g_config.editor.column_guide > 0 {
-		gx := snap_px(l.text_x + f32(g_config.editor.column_guide) * g_char_width - ed.scroll_x)
-		if gx >= l.text_x && gx < l.text_x + l.text_w {
+		gx := snap_px(p.text_x + f32(g_config.editor.column_guide) * g_char_width - ed.scroll_x)
+		if gx >= p.text_x && gx < p.text_x + p.text_w {
 			gw := 1.0 / g_density // 1 physical pixel
 			c := g_theme.comment_color
 			c.a = 60
-			fill_rect({gx, l.text_y, gw, l.text_h}, c)
+			fill_rect({gx, p.text_y, gw, p.text_h}, c)
 		}
 	}
 
@@ -669,8 +879,8 @@ draw_editor :: proc(ed: ^Editor, l: Layout) {
 			line_end += 1
 		}
 
-		y := l.text_y + f32(line_idx) * g_line_height - ed.scroll_y
-		x_origin := l.text_x - ed.scroll_x
+		y := p.text_y + f32(line_idx) * g_line_height - ed.scroll_y
+		x_origin := p.text_x - ed.scroll_x
 
 		// Render text first (LCD against BG), then selection overlay on top.
 		if line_end > line_start {
@@ -699,14 +909,23 @@ draw_editor :: proc(ed: ^Editor, l: Layout) {
 		line_idx += 1
 	}
 
-	// Caret.
+	// Caret. Inactive panes show a hollow outline of the active position
+	// (where the cursor *would* go if focus moved here); the active pane
+	// blinks normally.
 	cline, ccol := editor_pos_to_line_col(ed, ed.cursor)
-	caret_x := l.text_x + f32(ccol) * g_char_width  - ed.scroll_x
-	caret_y := l.text_y + f32(cline) * g_line_height - ed.scroll_y
+	caret_x := p.text_x + f32(ccol) * g_char_width  - ed.scroll_x
+	caret_y := p.text_y + f32(cline) * g_line_height - ed.scroll_y
+
+	if !is_active {
+		c := g_theme.cursor_color
+		c.a = 60
+		fill_rect({caret_x, caret_y, g_char_width, g_line_height}, c)
+		return
+	}
 
 	visible := int(ed.blink_timer * 2) % 2 == 0
 	caret_w: f32 = 2
-	caret_color := CURSOR_COLOR
+	caret_color := g_theme.cursor_color
 
 	switch ed.mode {
 	case .Insert:
@@ -722,9 +941,9 @@ draw_editor :: proc(ed: ^Editor, l: Layout) {
 	if visible do fill_rect({caret_x, caret_y, caret_w, g_line_height}, caret_color)
 }
 
-draw_scrollbars :: proc(ed: ^Editor, l: Layout) {
-	fill_rect(l.v_track, SB_TRACK_COLOR)
-	fill_rect(l.h_track, SB_TRACK_COLOR)
+draw_scrollbars :: proc(ed: ^Editor, p: Pane_Layout) {
+	fill_rect(p.v_track, g_theme.sb_track_color)
+	fill_rect(p.h_track, g_theme.sb_track_color)
 
 	content_h := f32(editor_total_lines(ed)) * g_line_height
 	content_w := f32(editor_max_line_cols(ed)) * g_char_width
@@ -733,70 +952,99 @@ draw_scrollbars :: proc(ed: ^Editor, l: Layout) {
 	_ = sdl.GetMouseState(&mx, &my)
 	mouse := sdl.FPoint{mx, my}
 
-	if content_h > l.text_h {
-		v_start, v_size := scrollbar_thumb_metrics(ed.scroll_y, content_h, l.text_h, l.v_track.h)
-		thumb := sdl.FRect{l.v_track.x + 2, l.v_track.y + v_start, l.v_track.w - 4, v_size}
-		color := SB_THUMB_COLOR
-		if ed.sb_drag == .Vertical || point_in_rect(mouse, thumb) do color = SB_THUMB_HOVER_COLOR
+	if content_h > p.text_h {
+		v_start, v_size := scrollbar_thumb_metrics(ed.scroll_y, content_h, p.text_h, p.v_track.h)
+		thumb := sdl.FRect{p.v_track.x + 2, p.v_track.y + v_start, p.v_track.w - 4, v_size}
+		color := g_theme.sb_thumb_color
+		if ed.sb_drag == .Vertical || point_in_rect(mouse, thumb) do color = g_theme.sb_thumb_hover_color
 		fill_rect(thumb, color)
 	}
-	if content_w > l.text_w {
-		h_start, h_size := scrollbar_thumb_metrics(ed.scroll_x, content_w, l.text_w, l.h_track.w)
-		thumb := sdl.FRect{l.h_track.x + h_start, l.h_track.y + 2, h_size, l.h_track.h - 4}
-		color := SB_THUMB_COLOR
-		if ed.sb_drag == .Horizontal || point_in_rect(mouse, thumb) do color = SB_THUMB_HOVER_COLOR
+	if content_w > p.text_w {
+		h_start, h_size := scrollbar_thumb_metrics(ed.scroll_x, content_w, p.text_w, p.h_track.w)
+		thumb := sdl.FRect{p.h_track.x + h_start, p.h_track.y + 2, h_size, p.h_track.h - 4}
+		color := g_theme.sb_thumb_color
+		if ed.sb_drag == .Horizontal || point_in_rect(mouse, thumb) do color = g_theme.sb_thumb_hover_color
 		fill_rect(thumb, color)
 	}
 }
 
-draw_gutter :: proc(ed: ^Editor, l: Layout) {
-	fill_rect({0, l.text_y, l.gutter_w, l.text_h}, GUTTER_BG_COLOR)
+draw_gutter :: proc(ed: ^Editor, p: Pane_Layout) {
+	fill_rect({p.pane_x, p.text_y, p.gutter_w, p.text_h}, g_theme.gutter_bg_color)
 
 	first_visible := max(0, int(ed.scroll_y / g_line_height))
-	last_visible  := first_visible + int(l.text_h / g_line_height) + 1
+	last_visible  := first_visible + int(p.text_h / g_line_height) + 1
 	total_lines   := editor_total_lines(ed)
 	last_visible = min(last_visible, total_lines - 1)
 
 	cur_line, _ := editor_pos_to_line_col(ed, ed.cursor)
 
 	for line in first_visible ..= last_visible {
-		y := l.text_y + f32(line) * g_line_height - ed.scroll_y
+		y := p.text_y + f32(line) * g_line_height - ed.scroll_y
 		num := fmt.tprintf("%d", line + 1)
 		cstr := strings.clone_to_cstring(num, context.temp_allocator)
 		w: c.int
 		ttf.GetStringSize(g_font, cstr, 0, &w, nil)
 		w_logical := f32(w) / g_density
-		x := l.gutter_w - GUTTER_PADDING - w_logical
-		color := GUTTER_TEXT_COLOR
-		if line == cur_line do color = GUTTER_ACTIVE_COLOR
-		draw_text(cstr, x, y, color, GUTTER_BG_COLOR)
+		x := p.pane_x + p.gutter_w - GUTTER_PADDING - w_logical
+		color := g_theme.gutter_text_color
+		if line == cur_line do color = g_theme.gutter_active_color
+		draw_text(cstr, x, y, color, g_theme.gutter_bg_color)
 	}
 }
 
 draw_status_bar :: proc(ed: ^Editor, l: Layout) {
-	fill_rect({0, l.status_y, l.screen_w, l.status_h}, STATUS_BG_COLOR)
-	text_y := l.status_y + STATUS_PAD_Y
+	row_h := g_config.font.size + STATUS_PAD_Y * 1.5
+	// Top row (paths) gets a subtly lighter background so the eye can
+	// separate "which file is in which pane" from the global status.
+	fill_rect({0, l.status_y,         l.screen_w, row_h},               g_theme.status_path_bg_color)
+	fill_rect({0, l.status_y + row_h, l.screen_w, l.status_h - row_h},  g_theme.status_bg_color)
+	top_y := l.status_y + STATUS_PAD_Y
+	bot_y := l.status_y + 2 * STATUS_PAD_Y + g_config.font.size
 
+	// Top row: per-pane file path strips. Each pane's full path sits
+	// inside its own column, clipped so a long path doesn't bleed into
+	// the neighbour. Active pane gets the bright text colour.
+	for p, i in l.panes {
+		e := &g_editors[i]
+		path := len(e.file_path) > 0 ? e.file_path : "[untitled]"
+		dirty := e.dirty ? " *" : ""
+		text  := fmt.tprintf("%s%s", path, dirty)
+		cstr  := strings.clone_to_cstring(text, context.temp_allocator)
+		color := i == g_active_idx ? g_theme.status_text_color : g_theme.status_dim_color
+
+		clip := sdl.Rect{
+			i32(p.pane_x * g_density),
+			i32(top_y * g_density),
+			i32(p.pane_w * g_density),
+			i32(g_config.font.size * g_density),
+		}
+		sdl.SetRenderClipRect(g_renderer, &clip)
+		draw_text(cstr, p.pane_x + STATUS_PAD_X, top_y, color, g_theme.status_path_bg_color)
+	}
+	// Thin separators between path segments to mirror the editor-area
+	// dividers above.
+	sdl.SetRenderClipRect(g_renderer, nil)
+	for i in 1 ..< len(l.panes) {
+		x := l.panes[i].pane_x
+		fill_rect({x, top_y - STATUS_PAD_Y * 0.5, 1.0 / g_density, g_config.font.size + STATUS_PAD_Y}, g_theme.gutter_bg_color)
+	}
+
+	// Bottom row: mode + position + search counter, all for the active pane.
+	// In Command / Search modes, the bottom row hosts the input prompt instead.
 	if ed.mode == .Command || ed.mode == .Search {
 		prefix := ":"
-		if ed.mode == .Search {
-			prefix = ed.search_forward ? "/" : "?"
-		}
+		if ed.mode == .Search do prefix = ed.search_forward ? "/" : "?"
 		cmd_str := fmt.tprintf("%s%s", prefix, string(ed.cmd_buffer[:]))
 		cstr := strings.clone_to_cstring(cmd_str, context.temp_allocator)
-		w := draw_text(cstr, STATUS_PAD_X, text_y, STATUS_TEXT_COLOR, STATUS_BG_COLOR)
+		w := draw_text(cstr, STATUS_PAD_X, bot_y, g_theme.status_text_color, g_theme.status_bg_color)
 		if int(ed.blink_timer * 2) % 2 == 0 {
-			fill_rect({STATUS_PAD_X + w, text_y, 2, g_config.font.size}, CURSOR_COLOR)
+			fill_rect({STATUS_PAD_X + w, bot_y, 2, g_config.font.size}, g_theme.cursor_color)
 		}
 		return
 	}
 
 	mode_label := ed.mode == .Insert ? " INSERT " : " NORMAL "
-	path := len(ed.file_path) > 0 ? path_basename(ed.file_path) : "[untitled]"
-	dirty := ed.dirty ? " *" : ""
 	line, col := editor_pos_to_line_col(ed, ed.cursor)
-
-	left := fmt.tprintf("%s  %s%s", mode_label, path, dirty)
 	eol_str := ed.eol_mixed ? fmt.tprintf("MIXED→%s", eol_label(ed.eol)) : eol_label(ed.eol)
 
 	search_part := ""
@@ -806,15 +1054,15 @@ draw_status_bar :: proc(ed: ^Editor, l: Layout) {
 	}
 	right := fmt.tprintf("%s%s   %d:%d", search_part, eol_str, line + 1, col + 1)
 
-	left_cstr  := strings.clone_to_cstring(left,  context.temp_allocator)
+	left_cstr  := strings.clone_to_cstring(mode_label, context.temp_allocator)
 	right_cstr := strings.clone_to_cstring(right, context.temp_allocator)
 
 	right_w_px: c.int
 	ttf.GetStringSize(g_font, right_cstr, 0, &right_w_px, nil)
 	right_w := f32(right_w_px) / g_density
 
-	draw_text(left_cstr,  STATUS_PAD_X,                       text_y, STATUS_TEXT_COLOR, STATUS_BG_COLOR)
-	draw_text(right_cstr, l.screen_w - STATUS_PAD_X - right_w, text_y, STATUS_DIM_COLOR,  STATUS_BG_COLOR)
+	draw_text(left_cstr,  STATUS_PAD_X,                        bot_y, g_theme.status_text_color, g_theme.status_bg_color)
+	draw_text(right_cstr, l.screen_w - STATUS_PAD_X - right_w, bot_y, g_theme.status_dim_color,  g_theme.status_bg_color)
 }
 
 update_window_title :: proc(ed: ^Editor) {
@@ -893,18 +1141,12 @@ flush_pending_dialogs :: proc(ed: ^Editor) {
 open_file_callback :: proc "c" (userdata: rawptr, filelist: [^]cstring, filter: c.int) {
 	context = runtime.default_context()
 	defer free_all(context.temp_allocator)
-	defer { g_pending_raise = true } // restore focus on next main-loop iter // restore focus to editor whether picked or cancelled
+	defer { g_pending_raise = true } // restore focus on next main-loop iter
 
 	if filelist == nil || filelist[0] == nil do return // cancelled or error
 
-	ed := cast(^Editor)userdata
 	path := string(filelist[0])
-	if ed.dirty do fmt.eprintln("warning: discarding unsaved changes to load", path)
-	if editor_load_file(ed, path) {
-		warn_if_mixed_eol(ed)
-	} else {
-		fmt.eprintfln("could not open %s", path)
-	}
+	open_file_smart(path)
 }
 
 save_as_callback :: proc "c" (userdata: rawptr, filelist: [^]cstring, filter: c.int) {
@@ -1025,6 +1267,128 @@ try_quit :: proc(ed: ^Editor) -> bool {
 	return false
 }
 
+// Window-close path with multiple panes: prompt for each dirty pane in turn.
+// If any prompt is cancelled (or save fails), abort the quit and leave
+// every pane intact.
+try_quit_all :: proc() -> bool {
+	for &e in g_editors {
+		if !try_quit(&e) do return false
+	}
+	return true
+}
+
+// Pane lifecycle. Splits stay equal-column; opening a file appends a new
+// pane to the right and focuses it, closing one removes the column.
+
+// Append a fresh empty pane and make it active.
+open_new_pane :: proc() {
+	append(&g_editors, editor_make())
+	add_pane_ratio()
+	g_active_idx = len(g_editors) - 1
+	active_editor().mode = .Normal
+}
+
+// Open `path` in a brand-new pane (focused). Returns false if the load
+// fails — in that case we drop the empty pane we just added so we don't
+// leave a stray column behind.
+open_file_in_new_pane :: proc(path: string) -> bool {
+	open_new_pane()
+	if !editor_load_file(active_editor(), path) {
+		fmt.eprintfln("failed to load %s", path)
+		close_active_pane_unconditional()
+		return false
+	}
+	warn_if_mixed_eol(active_editor())
+	return true
+}
+
+// True when the active pane is a "blank slate" — single pane, no file,
+// no user edits. The startup welcome buffer qualifies, as do panes that
+// were just reset after closing the last file. Used to decide whether
+// the next file open should replace the current pane or split alongside.
+should_replace_active :: proc() -> bool {
+	return len(g_editors) == 1 &&
+	       !active_editor().dirty &&
+	       len(active_editor().file_path) == 0
+}
+
+// Unified file-open entry point: replaces the welcome/blank pane in
+// place, otherwise opens the file in a new column.
+open_file_smart :: proc(path: string) {
+	if should_replace_active() {
+		ed := active_editor()
+		if editor_load_file(ed, path) {
+			warn_if_mixed_eol(ed)
+		} else {
+			fmt.eprintfln("could not open %s", path)
+		}
+		return
+	}
+	open_file_in_new_pane(path)
+}
+
+// Always replace the active pane's content with `path` regardless of its
+// current state. Used by :r to swap files inside one column without
+// spawning a new pane. Dirty changes in the active pane are dropped — the
+// caller is expected to have saved or discarded already.
+replace_active_pane_with_file :: proc(path: string) {
+	ed := active_editor()
+	if ed.dirty do fmt.eprintln("warning: discarding unsaved changes to load", path)
+	if editor_load_file(ed, path) {
+		warn_if_mixed_eol(ed)
+	} else {
+		fmt.eprintfln("could not open %s", path)
+	}
+}
+
+// Drop the active pane unconditionally. If it's the last one we replace
+// it with a fresh empty buffer instead of going to zero panes (a layout
+// with no panes has no sensible behavior).
+close_active_pane_unconditional :: proc() {
+	idx := g_active_idx
+	if len(g_editors) == 1 {
+		editor_destroy(&g_editors[0])
+		g_editors[0] = editor_make()
+		g_editors[0].mode = .Normal
+		return
+	}
+	editor_destroy(&g_editors[idx])
+	ordered_remove(&g_editors, idx)
+	remove_pane_ratio(idx)
+	if g_active_idx >= len(g_editors) do g_active_idx = len(g_editors) - 1
+}
+
+// Cmd+W path: prompt-then-close. Returns true if the pane was closed.
+try_close_active_pane :: proc() -> bool {
+	ed := active_editor()
+	if !ed.dirty {
+		close_active_pane_unconditional()
+		return true
+	}
+	switch prompt_unsaved_changes(ed) {
+	case .Save:
+		if len(ed.file_path) == 0 {
+			// Untitled — kick off Save As; we *don't* close yet (the
+			// dialog is async). For simplicity the close-after-save
+			// flow is left out for now: the user can save, then close.
+			save_as_dialog(ed)
+			return false
+		}
+		if !editor_save_file(ed) {
+			fmt.eprintln("save failed; pane stays open")
+			return false
+		}
+		close_active_pane_unconditional()
+		return true
+	case .Discard:
+		close_active_pane_unconditional()
+		return true
+	case .Cancel:
+		return false
+	}
+	return false
+}
+
 // If the just-loaded file had mixed line endings, surface a native-OS warning
 // so the user knows the file will be normalized to the dominant style on save.
 warn_if_mixed_eol :: proc(ed: ^Editor) {
@@ -1041,15 +1405,36 @@ warn_if_mixed_eol :: proc(ed: ^Editor) {
 // One full frame of drawing. Called from the main loop and also synchronously
 // from the resize event watch (so the window doesn't show stretched content
 // while macOS is in its live-resize event loop).
-draw_frame :: proc(ed: ^Editor) {
-	l := compute_layout(ed)
-	sdl.SetRenderDrawColor(g_renderer, BG_COLOR.r, BG_COLOR.g, BG_COLOR.b, BG_COLOR.a)
+draw_frame :: proc() {
+	l := compute_layout()
+	sdl.SetRenderDrawColor(g_renderer, g_theme.bg_color.r, g_theme.bg_color.g, g_theme.bg_color.b, g_theme.bg_color.a)
 	sdl.RenderClear(g_renderer)
-	draw_editor(ed, l)
-	draw_gutter(ed, l)
-	draw_scrollbars(ed, l)
-	draw_status_bar(ed, l)
+	for i in 0 ..< len(l.panes) {
+		ed := &g_editors[i]
+		p  := l.panes[i]
+		is_active := i == g_active_idx
+		draw_editor(ed, p, is_active)
+		draw_gutter(ed, p)
+		draw_scrollbars(ed, p)
+	}
+	// Dim every non-active pane with a low-alpha black overlay so the
+	// active pane reads as the focused one. Drawn before separators so
+	// the dividers stay crisp.
+	if len(l.panes) > 1 {
+		for p, i in l.panes {
+			if i == g_active_idx do continue
+			fill_rect({p.pane_x, 0, p.pane_w, l.status_y}, sdl.Color{0, 0, 0, 50})
+		}
+	}
+	// Thin vertical separator between panes so the column boundary reads
+	// even when the two adjacent files share a similar look.
+	for i in 1 ..< len(l.panes) {
+		x := l.panes[i].pane_x
+		fill_rect({x, 0, 1.0 / g_density, l.status_y}, g_theme.gutter_bg_color)
+	}
+	draw_status_bar(active_editor(), l)
 	draw_menu()
+	draw_help(l)
 	sdl.RenderPresent(g_renderer)
 }
 
@@ -1061,38 +1446,96 @@ resize_event_watch :: proc "c" (userdata: rawptr, event: ^sdl.Event) -> bool {
 	case .WINDOW_PIXEL_SIZE_CHANGED, .WINDOW_RESIZED, .WINDOW_EXPOSED:
 		context = runtime.default_context()
 		defer free_all(context.temp_allocator)
-		ed := cast(^Editor)userdata
-		draw_frame(ed)
+		draw_frame()
 	}
 	return true
 }
 
-process_event :: proc(ed: ^Editor, ev: sdl.Event, l: Layout, running: ^bool) {
+process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 	#partial switch ev.type {
 	case .QUIT:
-		if try_quit(ed) do running^ = false
+		if try_quit_all() do running^ = false
+	case .WINDOW_CLOSE_REQUESTED:
+		// macOS Cmd+W (and the red traffic light) come through here.
+		// With multiple panes open, treat it as "close the active pane"
+		// — quitting the whole app would lose every other file. With
+		// only one pane, fall through to the standard single-window
+		// app behaviour and quit (chained through the unsaved-changes
+		// prompt).
+		if len(g_editors) > 1 {
+			try_close_active_pane()
+		} else {
+			if try_quit_all() do running^ = false
+		}
 	case .KEY_DOWN:
-		handle_key_down(ed, ev.key)
+		handle_key_down(active_editor(), ev.key)
 	case .TEXT_INPUT:
-		if !cmd_or_ctrl(sdl.GetModState()) do handle_text_input(ed, ev.text.text)
-	case .MOUSE_BUTTON_DOWN, .MOUSE_BUTTON_UP:
-		handle_mouse_button(ed, ev.button, l)
+		if !cmd_or_ctrl(sdl.GetModState()) do handle_text_input(active_editor(), ev.text.text)
+	case .MOUSE_BUTTON_DOWN:
+		// Help modal swallows clicks; clicking outside dismisses it.
+		if help_handle_click(ev.button.x, ev.button.y, l) do return
+		// Divider grab takes priority over pane interior — the grab
+		// strip overlaps the rightmost few pixels of one pane's
+		// scrollbar and the leftmost few pixels of the next pane's
+		// gutter, but resize wins.
+		if div := divider_at_x(ev.button.x, l); div > 0 {
+			g_resize_divider = div
+			return
+		}
+		idx := pane_at_x(ev.button.x, l)
+		g_active_idx = idx
+		g_drag_idx   = idx
+		handle_mouse_button(&g_editors[idx], ev.button, l.panes[idx])
+	case .MOUSE_BUTTON_UP:
+		if g_resize_divider > 0 {
+			g_resize_divider = -1
+			return
+		}
+		target := g_drag_idx >= 0 && g_drag_idx < len(g_editors) ? g_drag_idx : pane_at_x(ev.button.x, l)
+		handle_mouse_button(&g_editors[target], ev.button, l.panes[target])
+		g_drag_idx = -1
 	case .MOUSE_MOTION:
-		handle_mouse_motion(ed, ev.motion, l)
+		if g_resize_divider > 0 {
+			move_divider(g_resize_divider, ev.motion.x, l.screen_w)
+			return
+		}
+		// Swap to the resize cursor while hovering a divider, default
+		// otherwise. SetCursor is cheap and SDL no-ops when unchanged.
+		if g_cursor_resize != nil {
+			if divider_at_x(ev.motion.x, l) > 0 {
+				_ = sdl.SetCursor(g_cursor_resize)
+			} else {
+				_ = sdl.SetCursor(g_cursor_default)
+			}
+		}
+		target := g_drag_idx
+		if target < 0 || target >= len(g_editors) do target = g_active_idx
+		handle_mouse_motion(&g_editors[target], ev.motion, l.panes[target])
 	case .MOUSE_WHEEL:
-		handle_mouse_wheel(ed, ev.wheel)
+		if g_help_visible {
+			line_h := g_config.font.size + HELP_LINE_GAP
+			help_scroll_by(-ev.wheel.y * line_h * SCROLL_LINES_PER_NOTCH)
+			return
+		}
+		idx := pane_at_x(ev.wheel.mouse_x, l)
+		handle_mouse_wheel(&g_editors[idx], ev.wheel)
+		clamp_scroll(&g_editors[idx], l.panes[idx])
 	case .DROP_FILE:
 		if ev.drop.data != nil {
 			path := string(ev.drop.data)
-			if ed.dirty do fmt.eprintln("warning: discarding unsaved changes to load", path)
-			if !editor_load_file(ed, path) {
-				fmt.eprintfln("failed to load %s", path)
-			} else {
-				warn_if_mixed_eol(ed)
-			}
+			open_file_smart(path)
 		}
 	}
-	if ed.want_quit do running^ = false
+	// Vim's :q / :q! / :wq set ed.want_quit. Translate that to "close this
+	// pane" — and only actually quit the app when it was the last pane.
+	if active_editor().want_quit {
+		if len(g_editors) > 1 {
+			active_editor().want_quit = false
+			close_active_pane_unconditional()
+		} else {
+			running^ = false
+		}
+	}
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -1105,6 +1548,14 @@ main :: proc() {
 		return
 	}
 	defer sdl.Quit()
+
+	// Don't auto-emit SDL_EVENT_QUIT when the last window is asked to
+	// close. Without this, Cmd+W would fire WINDOW_CLOSE_REQUESTED
+	// (which we use for "close active pane") and *also* cascade into a
+	// QUIT — quitting the app right after we'd just closed a pane. We
+	// still get QUIT for Cmd+Q (via NSApplication's terminate path) and
+	// for SIGINT, which is what we actually want.
+	_ = sdl.SetHint(sdl.HINT_QUIT_ON_LAST_WINDOW_CLOSE, "0")
 	if !ttf.Init() {
 		fmt.eprintln("TTF_Init:", sdl.GetError())
 		return
@@ -1155,23 +1606,34 @@ main :: proc() {
 	_ = sdl.StartTextInput(g_window)
 	defer { _ = sdl.StopTextInput(g_window) }
 
-	ed := editor_make()
-	defer editor_destroy(&ed)
-	ed.mode = .Normal
+	g_cursor_default = sdl.GetDefaultCursor()
+	g_cursor_resize  = sdl.CreateSystemCursor(.EW_RESIZE)
+	defer if g_cursor_resize != nil do sdl.DestroyCursor(g_cursor_resize)
 
-	_ = sdl.AddEventWatch(resize_event_watch, &ed)
-	defer sdl.RemoveEventWatch(resize_event_watch, &ed)
+	// Initial pane (welcome text or CLI-arg file).
+	append(&g_editors, editor_make())
+	append(&g_pane_ratios, f32(1))
+	g_active_idx = 0
+	defer {
+		for &e in g_editors do editor_destroy(&e)
+		delete(g_editors)
+		delete(g_pane_ratios)
+	}
+	active_editor().mode = .Normal
+
+	_ = sdl.AddEventWatch(resize_event_watch, nil)
+	defer sdl.RemoveEventWatch(resize_event_watch, nil)
 
 	if len(os.args) >= 2 {
 		path := os.args[1]
-		if !editor_load_file(&ed, path) {
+		if !editor_load_file(active_editor(), path) {
 			fmt.eprintfln("could not open %s; starting with welcome text", path)
-			editor_set_text(&ed, WELCOME_TEXT)
+			editor_set_text(active_editor(), WELCOME_TEXT)
 		} else {
-			warn_if_mixed_eol(&ed)
+			warn_if_mixed_eol(active_editor())
 		}
 	} else {
-		editor_set_text(&ed, WELCOME_TEXT)
+		editor_set_text(active_editor(), WELCOME_TEXT)
 	}
 
 	last_ticks := sdl.GetTicksNS()
@@ -1180,26 +1642,34 @@ main :: proc() {
 		now := sdl.GetTicksNS()
 		dt := f32(now - last_ticks) / 1e9
 		last_ticks = now
-		ed.blink_timer += dt
-		if ed.blink_timer > 1 do ed.blink_timer = 0
+		active_editor().blink_timer += dt
+		if active_editor().blink_timer > 1 do active_editor().blink_timer = 0
 
-		l := compute_layout(&ed)
-		prev_cursor := ed.cursor
+		l := compute_layout()
+		prev_cursor := active_editor().cursor
 
 		// Idle-block on events up to 250ms (enough for caret blink to update).
 		// When events are flowing, we drain them all and redraw immediately.
 		ev: sdl.Event
 		if sdl.WaitEventTimeout(&ev, 250) {
-			process_event(&ed, ev, l, &running)
-			for sdl.PollEvent(&ev) do process_event(&ed, ev, l, &running)
+			process_event(ev, l, &running)
+			for sdl.PollEvent(&ev) do process_event(ev, l, &running)
 		}
 
-		flush_pending_dialogs(&ed)
-		if ed.cursor != prev_cursor do auto_scroll_to_caret(&ed, l)
-		clamp_scroll(&ed, l)
-		update_window_title(&ed)
+		flush_pending_dialogs(active_editor())
+		// Layout may have shifted (open/close pane, resize), so recompute.
+		l = compute_layout()
+		ed := active_editor()
+		if ed.cursor != prev_cursor do auto_scroll_to_caret(ed, l.panes[g_active_idx])
+		// Clamp every pane — wheel events may have scrolled an inactive
+		// pane past its content bounds, and we want it pinned the next
+		// time a frame draws.
+		for i in 0 ..< len(g_editors) {
+			clamp_scroll(&g_editors[i], l.panes[i])
+		}
+		update_window_title(ed)
 
-		draw_frame(&ed)
+		draw_frame()
 
 		free_all(context.temp_allocator)
 	}

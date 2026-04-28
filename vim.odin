@@ -426,13 +426,18 @@ vim_execute_command :: proc(ed: ^Editor, raw: string) {
 			delete(ed.search_pattern)
 			ed.search_pattern = ""
 		}
+	case "h", "help":
+		help_show()
 	}
 
 	if strings.has_prefix(cmd, "e ") {
 		path := strings.trim_space(cmd[2:])
-		if len(path) > 0 {
-			if editor_load_file(ed, path) do warn_if_mixed_eol(ed)
-		}
+		if len(path) > 0 do open_file_smart(path)
+	}
+
+	if strings.has_prefix(cmd, "r ") {
+		path := strings.trim_space(cmd[2:])
+		if len(path) > 0 do replace_active_pane_with_file(path)
 	}
 
 	if strings.has_prefix(cmd, "syntax ") || strings.has_prefix(cmd, "syn ") {

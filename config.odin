@@ -110,6 +110,7 @@ config_load :: proc() {
 	}
 
 	if section, has := m["theme"]; has {
+		// Syntax tokens.
 		load_color(section, "default",  &g_config.theme.default_color)
 		load_color(section, "keyword",  &g_config.theme.keyword_color)
 		load_color(section, "type",     &g_config.theme.type_color)
@@ -118,6 +119,21 @@ config_load :: proc() {
 		load_color(section, "string",   &g_config.theme.string_color)
 		load_color(section, "comment",  &g_config.theme.comment_color)
 		load_color(section, "function", &g_config.theme.function_color)
+		// Chrome.
+		load_color(section, "bg",              &g_config.theme.bg_color)
+		load_color(section, "cursor",          &g_config.theme.cursor_color)
+		load_color(section, "selection",       &g_config.theme.selection_color)
+		load_color(section, "search_match",    &g_config.theme.search_match_color)
+		load_color(section, "sb_track",        &g_config.theme.sb_track_color)
+		load_color(section, "sb_thumb",        &g_config.theme.sb_thumb_color)
+		load_color(section, "sb_thumb_hover",  &g_config.theme.sb_thumb_hover_color)
+		load_color(section, "gutter_bg",       &g_config.theme.gutter_bg_color)
+		load_color(section, "gutter_text",     &g_config.theme.gutter_text_color)
+		load_color(section, "gutter_active",   &g_config.theme.gutter_active_color)
+		load_color(section, "status_bg",       &g_config.theme.status_bg_color)
+		load_color(section, "status_path_bg",  &g_config.theme.status_path_bg_color)
+		load_color(section, "status_text",     &g_config.theme.status_text_color)
+		load_color(section, "status_dim",      &g_config.theme.status_dim_color)
 	}
 }
 

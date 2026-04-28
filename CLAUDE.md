@@ -3,7 +3,9 @@
 A small GPU-accelerated text/code editor written in Odin. Cross-platform via
 SDL3 + SDL3_ttf. Modal (vim) editing, hand-rolled syntax highlighting, LCD
 subpixel text rendering, native file dialogs, native message boxes, custom
-in-app context menu.
+in-app context menu, **resizable side-by-side panes** for viewing /
+editing multiple files at once, **modal help screen** (`:h` / `:help`),
+fully theme-able chrome.
 
 ## Build & run
 
@@ -34,9 +36,15 @@ embedded font.
 
 Single Odin package across these files:
 
-- **`main.odin`** — SDL3 init, window/renderer/font, layout, input dispatch,
-  drawing, the main loop, theme constants, text cache, native file-dialog
-  triggers + callbacks, mixed-EOL warning, resize event-watch.
+- **`main.odin`** — SDL3 init, window/renderer/font, multi-pane layout,
+  input dispatch (incl. divider drag and Ctrl+W prefix), per-pane
+  drawing, embedded FiraCode TTF (`#load`), the main loop, `Theme`
+  struct (syntax + chrome), text cache, native file-dialog triggers +
+  callbacks, unsaved-changes prompt, mixed-EOL warning, resize
+  event-watch, pane lifecycle (`open_new_pane`,
+  `open_file_in_new_pane`, `open_file_smart`, `should_replace_active`,
+  `replace_active_pane_with_file`, `close_active_pane_unconditional`,
+  `try_close_active_pane`, `try_quit_all`).
 - **`editor.odin`** — `Editor` struct (the central state), cursor/selection
   primitives, edit operations (insert/backspace/delete/movement/select-all),
   tab-stop math, soft-tab insert, **auto-close brackets** with over-type +
@@ -67,6 +75,15 @@ Single Odin package across these files:
   enum, `CONTEXT_MENU` items array, hover/click handling, draw routine,
   per-platform shortcut hints (⌘ on macOS, Ctrl+ elsewhere). Items: Cut,
   Copy, Paste, Select All, Undo, Redo, Open…, Save, Save As…
+- **`help.odin`** — Modal cheat-sheet popup (`:h` / `:help`). Static
+  `HELP_LINES` array, scrollable via mouse-wheel / arrows / `j` `k` /
+  Page Up-Down / `g` `G`. Section headers and command keys are coloured;
+  body text uses default. Esc or click-outside dismisses; while open it
+  swallows all input so editor buffers stay untouched.
+- **`config.odin`** — INI loader. `Config { font, editor, theme }`,
+  per-platform user config path (XDG / `Application Support` / APPDATA),
+  `#RRGGBB` / `#RRGGBBAA` colour parser. `[theme]` section supports
+  every chrome colour as well as syntax tokens.
 
 ## Important globals (in main.odin)
 
@@ -78,35 +95,80 @@ Single Odin package across these files:
 - `g_text_cache` — hash-keyed cache of `(text, fg, bg) → ^sdl.Texture`. Cap
   at `TEXT_CACHE_MAX = 1024`; on overflow the whole cache is dropped (cheap
   to rebuild on the next few frames)
-- `g_theme` — `Theme` struct with one color per `Token_Kind`; eventually
-  config-driven, currently holds `DEFAULT_THEME`
-- `g_pending_open` / `g_pending_save_as` — flags that defer the actual
-  `sdl.Show*FileDialog` call to the next main-loop iteration (calling Show*
-  from inside an event handler is flaky on macOS)
-- `g_pending_raise` — flag set by dialog callbacks; `flush_pending_dialogs`
-  calls `RaiseWindow` + re-arms `StartTextInput` next iteration to restore
-  keyboard focus to the editor after the dialog closes
+- `g_theme` — `Theme` struct holding *every* drawable colour in the app
+  (syntax tokens + chrome). Loaded from the user's `[theme]` section in
+  `config.ini`; falls back to `DEFAULT_THEME`.
+- **Panes:**
+  - `g_editors: [dynamic]Editor` — one per visible column.
+  - `g_active_idx` — focused pane; receives keyboard input.
+  - `g_pane_ratios: [dynamic]f32` — per-pane width as a fraction of the
+    window (sums to 1). Scales with window resize. Adjusted when the user
+    drags a divider.
+  - `g_drag_idx` — pane that an in-flight mouse drag started in (-1 when
+    idle); routes motion / button-up back there even if the cursor wandered.
+  - `g_resize_divider` — index of the right-side pane whose left edge is
+    being dragged (-1 = no resize in progress).
+  - `g_cursor_default` / `g_cursor_resize` — system cursors swapped on
+    divider hover.
+- **Vim window-prefix:**
+  - `g_pending_ctrl_w` — set after Ctrl+W; the next key is interpreted as a
+    window command (`h` / `l` / `c` / `q` / Esc).
+  - `g_swallow_text_input` — true for one event after a prefix follow-up so
+    the rune SDL queues for the same physical keypress doesn't get inserted.
+- **Help modal:**
+  - `g_help_visible` / `g_help_scroll` — see `help.odin`.
+- **Dialogs:**
+  - `g_pending_open` / `g_pending_save_as` / `g_pending_quit_after_save` —
+    flags that defer `sdl.Show*FileDialog` and post-save quit to the next
+    main-loop iteration (calling `Show*` from inside an event handler is
+    flaky on macOS).
+  - `g_pending_raise` — set by dialog callbacks; `flush_pending_dialogs`
+    calls `RaiseWindow` + re-arms `StartTextInput` next iteration to restore
+    keyboard focus.
 
 ## Rendering pipeline
 
 Each frame (`draw_frame`):
 
-1. `compute_layout(ed)` — computes screen rects (gutter, text area,
-   scrollbar tracks, status bar) in logical pixels
-2. Bg clear → `draw_editor` → `draw_gutter` → `draw_scrollbars` →
-   `draw_status_bar` → `draw_menu` → `RenderPresent`
-3. Inside `draw_editor`, visible lines are tokenized via `syntax_tokenize`
-   and each token segment is drawn as a separate `draw_text` call (cached
-   per-segment per-color). Block comments use `compute_state_at_line` to
-   resume tokenizer state from the start of the buffer up to the first
-   visible line.
-4. Selection rects render *over* text (alpha-blended) so the LCD subpixel
-   AA stays correct against the baked BG color.
-5. Caret rendered last; in Normal mode it's a translucent block, Insert is
-   a 2px bar, Command hides the caret (it's in the status bar instead).
-6. Column guide (`COLUMN_GUIDE`, default 120) is a 1-physical-pixel vertical
-   line drawn before text in the comment hue at low alpha.
-7. Context menu is drawn last so it covers everything.
+1. `compute_layout()` — computes screen rects per pane (gutter, text
+   area, scrollbar tracks) plus the global status bar. Pane widths come
+   from `g_pane_ratios * screen_w`.
+2. BG clear → for each pane in order: `draw_editor(pane, is_active)` →
+   `draw_gutter(pane)` → `draw_scrollbars(pane)`.
+3. **Inactive-pane dim overlay**: a `~20%` black rect is filled over each
+   non-active pane's column so the focused pane reads as the focused
+   one. Drawn *before* the divider lines so the dividers stay crisp.
+4. **Pane separators**: a 1-physical-pixel vertical line is drawn at
+   each non-leftmost pane's left edge in `gutter_bg_color`.
+5. `draw_status_bar(active_editor, l)` — two-row strip:
+   - Top row (`status_path_bg_color`): one segment per pane showing its
+     full file path; active pane's path is bright (`status_text_color`),
+     others dim (`status_dim_color`). Each segment is clipped to its
+     own column so a long path doesn't bleed into the neighbour.
+   - Bottom row (`status_bg_color`): mode label + EOL + `[k/m]` search
+     count + cursor `line:col` for the active pane only. In Command /
+     Search modes the bottom row hosts the `:` / `/` prompt instead.
+6. `draw_menu()` then `draw_help(l)` — context menu draws on top of the
+   editor; the help modal draws on top of everything else (with a
+   dimming layer behind it).
+7. `RenderPresent`.
+
+Inside `draw_editor`, visible lines are tokenized via `syntax_tokenize`
+and each token segment is drawn as a separate `draw_text` call (cached
+per-segment per-color). Block comments use `compute_state_at_line` to
+resume tokenizer state from the start of the buffer up to the first
+visible line — this short-circuits for `Language.None` (plain text).
+Selection rects render *over* text (alpha-blended) so the LCD subpixel
+AA stays correct against the baked BG color. The active match of the
+current search pattern uses `search_match_color` instead of the regular
+`selection_color`. Caret renders last; in Normal mode it's a translucent
+block, Insert is a 2px bar, Command/Search hide the caret (it's in the
+status bar instead). **Inactive panes don't blink** — they paint a
+60-alpha block at the cursor position so you can see where their
+caret would resume.
+
+The column guide (`column_guide`, default 120) is a 1-physical-pixel
+vertical line drawn before text in `comment_color` at low alpha.
 
 `draw_text` uses `RenderText_LCD` (LCD subpixel AA, FreeType with
 `SetFontHinting(.NORMAL)`). Coordinates are pixel-snapped via `snap_px` to
@@ -119,27 +181,88 @@ avoid blurring at fractional positions during smooth scroll.
 - VSync is **off** — `RenderPresent`'s vsync wait makes macOS live-resize
   jerky; uncapped frame rate during active input is fine because draws are
   cache-cheap.
-- `process_event` routes keyboard, text input, mouse, scroll, drop file,
-  quit. Mode-aware (Insert / Normal / Command).
+- `process_event(ev, l, running)` routes keyboard, text input, mouse,
+  scroll, drop file, and window events. Keyboard / text input always
+  go to `active_editor()`; mouse events resolve which pane was hit
+  before being routed.
 - `resize_event_watch` (registered via `AddEventWatch`) fires
   *synchronously* during macOS live-resize and forces a redraw inside
   Cocoa's event loop, where the main thread is otherwise blocked.
-  - This *substantially* reduces resize jank but doesn't eliminate it
-    fully on macOS — see "Known quirks" below.
 - Modifiers: Cmd OR Ctrl (`KMOD_GUI | KMOD_CTRL`) trigger shortcuts so the
   same bindings work on macOS and Linux/Windows.
-- Mouse:
-  - Left click in **gutter** moves caret to start of line (drag selects
-    by line via the natural col-clamp in `mouse_to_buffer_pos`).
-  - Left click in **scrollbar track** (not on thumb) jumps the thumb
-    centre to the click position and continues as a drag.
-  - Right click in text or gutter shows the context menu; menu only
-    responds to button-DOWN events so the right-click-up doesn't
-    immediately dismiss it.
+
+### Pane routing
+
+- **`pane_at_x(x, l)`** finds the column that contains `x`.
+- **Mouse-down** sets `g_active_idx` and `g_drag_idx` to the hit pane,
+  then calls `handle_mouse_button` against that pane's `Pane_Layout`.
+- **Mouse-up** routes back to `g_drag_idx` (not the current cursor
+  pane) so the *originating* pane's drag state always gets cleared,
+  even if the mouse wandered into a neighbour before release.
+- **Mouse-motion** while a drag is active routes to the dragging pane;
+  otherwise it goes to the active pane (for menu hover effects, etc.).
+- **Mouse-wheel** routes to the pane *under the cursor* (regardless of
+  focus), and clamps that pane's scroll inline. The main loop also
+  clamps every pane's scroll once per iteration as a backstop.
+
+### Divider drag
+
+- `divider_at_x(x, l)` returns the index of a pane whose left edge is
+  within `DIVIDER_GRAB_PX / 2` of `x`. The grab strip overlaps the
+  rightmost few pixels of one pane's scrollbar and the leftmost few of
+  the next pane's gutter — divider hit takes priority.
+- On hover, `MOUSE_MOTION` swaps to `g_cursor_resize` (`EW_RESIZE`); on
+  leave, back to `g_cursor_default`.
+- On grab, `g_resize_divider` is set; subsequent motion calls
+  `move_divider` which updates the two adjacent pane ratios (clamped
+  so neither shrinks below `MIN_PANE_PX`).
+
+### Vim window-prefix (Ctrl+W)
+
+- `Ctrl+W` is captured in `handle_key_down` and sets
+  `g_pending_ctrl_w`. The next key is interpreted as a window command:
+  - `h` / Left → focus prev pane
+  - `l` / Right → focus next pane
+  - `c` / `q` → close active pane
+  - Esc → cancel the prefix
+- Whichever follow-up fires also sets `g_swallow_text_input` so the
+  rune SDL queues for the same physical keypress doesn't get inserted
+  into the new active buffer. (Set/cleared every time, so an Esc
+  cancel doesn't swallow the next unrelated text input.)
+
+### Window close vs app quit
+
+- `SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE` is set to **`"0"`**. Without
+  this, Cmd+W on macOS would fire `WINDOW_CLOSE_REQUESTED` *and*
+  cascade into a `QUIT` — quitting the app right after our handler
+  closed a pane.
+- `WINDOW_CLOSE_REQUESTED` (Cmd+W on macOS, red traffic light): closes
+  the active pane if there are multiple panes; falls through to
+  `try_quit_all` (and exits if all panes are clean / saved) if there's
+  only one. Cmd+Q always goes through `applicationShouldTerminate` →
+  `QUIT`, which always calls `try_quit_all`.
+
+### Mouse, text, gutter (per-pane)
+
+- Left click in **gutter** moves caret to start of line (drag selects
+  by line via the natural col-clamp in `mouse_to_buffer_pos`).
+- Left click in **scrollbar track** (not on thumb) jumps the thumb
+  centre to the click position and continues as a drag.
+- Right click in text or gutter shows the context menu; menu only
+  responds to button-DOWN events so the right-click-up doesn't
+  immediately dismiss it.
 - Native file dialogs (`Cmd+O`, `Cmd+Shift+S`, menu items): trigger sets a
   flag, main loop fires the actual `Show*FileDialog` after events drain.
   Callback restores window focus by setting another flag.
 - `Cmd+S` on a buffer with no path falls through to Save As.
+
+### Help modal
+
+- When `g_help_visible`, `handle_key_down` interprets keys for scrolling
+  / dismissing only and never reaches editor logic.
+- `handle_text_input` returns immediately (no rune insertion).
+- Mouse-down outside the modal dismisses it; clicks inside are
+  swallowed.
 
 ## Edit features
 
@@ -233,15 +356,24 @@ next / previous (wrap-around). Pattern is literal (no regex). Status
 bar shows `[k/total]` while the cursor sits exactly on a match;
 disappears on any motion off the match. Empty `/<Enter>` or `:noh` /
 `:nohlsearch` clears the pattern. Active match is drawn in
-`SEARCH_MATCH_COLOR` (magenta) instead of the regular selection color.
+`search_match_color` (magenta) instead of the regular selection color.
+
+**Pane navigation & layout:**
+- `Ctrl+W h` / `Ctrl+W ←` — focus left pane
+- `Ctrl+W l` / `Ctrl+W →` — focus right pane
+- `Ctrl+W c` / `Ctrl+W q` — close active pane (with unsaved-changes prompt)
+- `Cmd+[` / `Cmd+]` — single-chord focus prev / next
+- Click any pane to focus it; drag the boundary to resize.
 
 **Command line (`:` in Normal):**
-- `:w` save · `:q` quit (refuses if dirty) · `:q!` force · `:wq` / `:x`
-  save+quit
-- `:e <path>` open
+- `:w` save · `:q` quit (refuses if dirty, closes pane if not last)
+  · `:q!` force · `:wq` / `:x` save+quit
+- `:e <path>` open file (replaces blank pane, else opens a new column)
+- `:r <path>` replace active pane with file (drops unsaved changes)
 - `:42` jump to line 42
 - `:syntax <name>` switch tokenizer (`none` / `generic` / `odin`)
 - `:noh` / `:nohlsearch` clear active search pattern
+- `:h` / `:help` open the help modal
 
 ## Conventions
 
@@ -272,9 +404,10 @@ disappears on any motion off the match. Empty `/<Enter>` or `:noh` /
 - **No incremental syntax parse** — visible lines re-tokenize on every
   frame draw; the per-segment text cache makes it cheap. Very large files
   with deep block comments could feel it.
-- **Theme not config-driven yet** — `Theme` struct is structured for it,
-  just needs a config loader. Same for `TAB_SIZE`, `MARGIN`, `COLUMN_GUIDE`,
-  `FONT_SIZE`, `FONT_PATH`, hinting mode.
+- **Untitled-buffer Save flow** — Cmd+W on a dirty untitled buffer prompts
+  Save / Discard / Cancel; clicking Save fires the async Save As dialog
+  but currently doesn't auto-close the pane after a successful save (user
+  has to Cmd+W again). Cmd+Q does have this chained.
 - **No glyph atlas** — `draw_text` creates one `^sdl.Texture` per unique
   `(segment, fg, bg)`. Works fine; if memory or upload bandwidth becomes a
   concern, swap to an atlas with quad rendering.
@@ -347,10 +480,12 @@ Grouped by how badly their absence is felt.
 :syntax odin           switch to Odin highlighting
 :syntax generic        basic strings/numbers/comments highlighting
 :syntax none           plain text
-:e path/to/file        open file
+:e path/to/file        open file (replaces blank pane, else splits)
+:r path/to/file        replace active pane with file
 :w :q :wq :q! :x       save / quit / save+quit / force-quit / save+quit
 :42                    jump to line 42
 :noh :nohlsearch       clear active search pattern
+:h :help               open help modal
 ```
 
 ```
@@ -374,4 +509,12 @@ D C Y                  d$ / c$ / y$
 x X                    delete char forward / backward
 p P                    paste after / before
 u                      undo
+```
+
+```
+Ctrl+W h | l           focus pane left | right
+Ctrl+W ← | →           same as above
+Ctrl+W c | q           close active pane
+Cmd+[ | Cmd+]          focus prev | next pane (single-chord)
+drag pane border       resize adjacent panes (cursor swaps to ↔)
 ```
