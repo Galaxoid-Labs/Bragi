@@ -30,7 +30,10 @@ Editor_Config :: struct {
 
 DEFAULT_CONFIG :: Config{
 	font = {
-		path    = "FiraCode-Regular.ttf",
+		// Empty path means "use the embedded FiraCode TTF in the binary"
+		// (see FIRA_CODE_DATA in main.odin). Set in user config to
+		// override with any system font file.
+		path    = "",
 		size    = 14,
 		hinting = .NORMAL,
 	},

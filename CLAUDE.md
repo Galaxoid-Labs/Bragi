@@ -13,7 +13,8 @@ odin build .                        # produces ./Bragi
 ./Bragi path/to/file          # opens that file at startup
 ```
 
-Single binary, ~500 KB, statically linked apart from system SDL3.
+Single binary, ~930 KB (includes the embedded font), statically linked
+apart from system SDL3.
 
 **Dependencies (per platform):**
 - macOS: `brew install sdl3 sdl3_ttf`
@@ -22,9 +23,12 @@ Single binary, ~500 KB, statically linked apart from system SDL3.
   + PlutoSVG so font rendering is identical to macOS.
 - Windows: ship `SDL3.dll` and `SDL3_ttf.dll` next to the binary.
 
-The bundled `FiraCode-Regular.ttf` in the project root is the preferred
-font; system monospace fonts in `FONT_CANDIDATES` (Menlo / Monaco / DejaVu /
-Liberation / Consolas) are fallbacks.
+`FiraCode-Regular.ttf` is **embedded into the binary** at compile time
+via `#load` (see `FIRA_CODE_DATA` in `main.odin`) and loaded through
+`SDL_IOFromConstMem` + `TTF_OpenFontIO`. There is no runtime font-file
+dependency. Users can override via `font.path` in their config; if the
+override fails to load, the editor logs a warning and falls back to the
+embedded font.
 
 ## Files
 
@@ -172,10 +176,49 @@ avoid blurring at fractional positions during smooth scroll.
   files round-trip byte-identical. Mixed-EOL files trigger a native
   warning dialog (`sdl.ShowSimpleMessageBox`) on load and the status bar
   shows `MIXED→LF` / `MIXED→CRLF` until saved.
+- **Load path** reads directly into the gap buffer (`os.open` +
+  `os.file_size` + `os.read_full`) rather than going through
+  `os.read_entire_file` + memcpy. EOL detection and the
+  `line_starts`/`line_widths` build are folded into the same pass over
+  the freshly-loaded bytes. CRLF/mixed files compact in place.
+
+## Buffer caches & mutation rules
+
+Per-frame work that used to walk the entire buffer is replaced by
+incrementally maintained caches on `Editor`. Anything that mutates
+buffer bytes must keep them coherent.
+
+- `gap_buffer.version: u64` — bumped by `gap_buffer_insert` /
+  `gap_buffer_delete`. All caches key off this.
+- `line_starts: [dynamic]int` + `line_widths: [dynamic]int` — parallel
+  arrays; line `i` starts at `line_starts[i]` and is `line_widths[i]`
+  columns wide (tabs expanded). Used by `editor_pos_to_line_col`
+  (binary search, O(log n)), `editor_nth_line_start` (O(1)),
+  `editor_total_lines` (O(1)), `editor_max_line_cols` (O(lines)).
+- `cached_max_cols` / `cached_max_cols_ver` — cached scan over
+  `line_widths`; recomputed when buffer changes.
+- `search_match_positions` / `search_match_ver` /
+  `search_match_pattern` — every match position for the active search
+  pattern, keyed on (buffer.version, pattern).
+
+**Mutation rule:** all "interactive" edit paths (typing, deletion,
+paste, undo, redo) must call `editor_buffer_insert` or
+`editor_buffer_delete` rather than `gap_buffer_insert` /
+`gap_buffer_delete` directly. The wrappers do incremental
+`line_starts`/`line_widths` updates (splice and shift on insert; remove
++ shift on delete), recompute the affected line's width, and bump the
+cache version in lock-step with the buffer.
+
+Bulk/replacement paths (`editor_set_text`, `editor_load_file`) bypass
+the wrappers — they call `gap_buffer_insert` directly and rely on
+`editor_clear` setting cache versions to `max(u64)` (a sentinel the
+version counter can't reach), which forces a full rebuild on the next
+read.
 
 ## Vim mode
 
-Starts in **Normal** mode. Modes: `Insert`, `Normal`, `Command`.
+Starts in **Normal** mode. Modes: `Insert`, `Normal`, `Command`,
+`Search`.
 
 **Motions:** `h j k l`, `w b e`, `0 $ ^`, `gg G`, `<count>j` etc.
 
@@ -185,12 +228,20 @@ Starts in **Normal** mode. Modes: `Insert`, `Normal`, `Command`.
 **Inserts:** `i a I A o O`. `x / X` delete char. `p / P` paste from system
 clipboard.
 
+**Search:** `/<pattern>` forward, `?<pattern>` backward, `n` / `N`
+next / previous (wrap-around). Pattern is literal (no regex). Status
+bar shows `[k/total]` while the cursor sits exactly on a match;
+disappears on any motion off the match. Empty `/<Enter>` or `:noh` /
+`:nohlsearch` clears the pattern. Active match is drawn in
+`SEARCH_MATCH_COLOR` (magenta) instead of the regular selection color.
+
 **Command line (`:` in Normal):**
 - `:w` save · `:q` quit (refuses if dirty) · `:q!` force · `:wq` / `:x`
   save+quit
 - `:e <path>` open
 - `:42` jump to line 42
 - `:syntax <name>` switch tokenizer (`none` / `generic` / `odin`)
+- `:noh` / `:nohlsearch` clear active search pattern
 
 ## Conventions
 
@@ -236,6 +287,32 @@ clipboard.
 - **No disabled-state styling** for menu items that don't apply (e.g.
   Copy with no selection silently no-ops).
 
+## Performance: future upgrade paths
+
+The current load + edit pipeline is snappy up to ~100 MB. Beyond that
+two structural changes are on the table; neither has been started.
+
+- **mmap-backed open with copy-on-first-edit** — `mmap()` the file
+  rather than `os.read_full`-ing it. Open becomes near-instant
+  regardless of file size (OS lazy-loads pages). `line_starts` /
+  `line_widths` get built against the mmap'd region. On first edit,
+  copy the mmap'd bytes into a writable gap buffer and proceed as
+  today. Cost of first edit ≈ memcpy speed (~20-30 ms warm for 100 MB,
+  one frame). Mitigate cold-page worst case with a background thread
+  that touches pages or `madvise(MADV_WILLNEED)` right after mapping.
+  Platform-specific (`mmap` POSIX, `MapViewOfFile` Windows). ~100
+  lines of code. The right next step *for load time*.
+- **Piece table (or rope) backing store** — replaces the gap buffer
+  with an immutable "original" buffer (ideally mmap'd) plus an append-
+  only "added" buffer, with a list of pieces stitching them together.
+  Insertions and deletions are O(piece-list-edit), independent of file
+  size — no memmove on far cursor jumps. First edit is O(1) (just
+  appends a new piece). Big rewrite touching every byte-access path
+  (`gap_buffer_byte_at`, the direct gb.data scans in
+  `ensure_line_starts` / `editor_max_line_cols`, the tokenizer feed,
+  etc.). The right move *for sustained editing on gigabyte files*;
+  overkill below that.
+
 ## Missing features (roadmap)
 
 Grouped by how badly their absence is felt.
@@ -273,6 +350,14 @@ Grouped by how badly their absence is felt.
 :e path/to/file        open file
 :w :q :wq :q! :x       save / quit / save+quit / force-quit / save+quit
 :42                    jump to line 42
+:noh :nohlsearch       clear active search pattern
+```
+
+```
+/pattern               search forward (literal substring)
+?pattern               search backward
+n N                    next / previous match (wraps)
+/  then <Enter>        clear search pattern
 ```
 
 ```

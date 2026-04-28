@@ -1,5 +1,6 @@
 package bragi
 
+import "core:strings"
 import "core:unicode/utf8"
 
 Scrollbar_Drag :: enum { None, Vertical, Horizontal }
@@ -48,6 +49,24 @@ Editor :: struct {
 	// Cached editor_max_line_cols result; invalidated by buffer.version mismatch.
 	cached_max_cols:     int,
 	cached_max_cols_ver: u64,
+
+	// line_starts[i] = byte offset of the start of line i. Always at least
+	// one entry (line 0 starts at 0). Lazily rebuilt when buffer.version
+	// disagrees with line_starts_ver. Lets editor_pos_to_line_col,
+	// editor_nth_line_start, and editor_total_lines avoid full-buffer walks.
+	// line_widths[i] = column width of line i (parallel to line_starts);
+	// keeps editor_max_line_cols cheap by avoiding per-frame buffer scans.
+	line_starts:     [dynamic]int,
+	line_widths:     [dynamic]int,
+	line_starts_ver: u64,
+
+	// Cache of every match position for the current search pattern.
+	// Invalidated when buffer.version changes or the pattern differs from
+	// the one that was scanned. Without this, scrolling rescans the full
+	// buffer every frame for the [n/m] readout.
+	search_match_positions: [dynamic]int,
+	search_match_ver:       u64,
+	search_match_pattern:   string, // owned clone of pattern at time of cache
 }
 
 editor_make :: proc() -> Editor {
@@ -59,9 +78,13 @@ editor_destroy :: proc(ed: ^Editor) {
 	undo_group_destroy(&ed.pending)
 	undo_stack_destroy(&ed.undo_stack)
 	undo_stack_destroy(&ed.redo_stack)
-	if len(ed.file_path) > 0      do delete(ed.file_path)
-	if len(ed.search_pattern) > 0 do delete(ed.search_pattern)
+	if len(ed.file_path) > 0           do delete(ed.file_path)
+	if len(ed.search_pattern) > 0      do delete(ed.search_pattern)
+	if len(ed.search_match_pattern) > 0 do delete(ed.search_match_pattern)
 	delete(ed.cmd_buffer)
+	delete(ed.line_starts)
+	delete(ed.line_widths)
+	delete(ed.search_match_positions)
 }
 
 // Initial buffer setup; bypasses the undo log (no history before this point).
@@ -108,15 +131,175 @@ editor_step_forward :: proc(ed: ^Editor, pos: int) -> int {
 	return min(n, pos + size)
 }
 
-editor_pos_to_line_col :: proc(ed: ^Editor, pos: int) -> (line, col: int) {
-	i := 0
-	for i < pos {
-		b := gap_buffer_byte_at(&ed.buffer, i)
+// Rebuilds the line-start + line-width tables if stale. Walks gb.data directly
+// so the scan hits two contiguous slices rather than going through
+// gap_buffer_byte_at (which is a per-byte branch); on a 100 MB buffer that's
+// the difference between hundreds of milliseconds and tens.
+@(private="file")
+ensure_line_starts :: proc(ed: ^Editor) {
+	if ed.line_starts_ver == ed.buffer.version && len(ed.line_starts) > 0 do return
+	clear(&ed.line_starts)
+	clear(&ed.line_widths)
+	append(&ed.line_starts, 0)
+	gb := &ed.buffer
+	tab := g_config.editor.tab_size
+	cols := 0
+	for b, i in gb.data[:gb.gap_start] {
 		switch b {
 		case '\n':
-			line += 1
-			col = 0
-			i += 1
+			append(&ed.line_widths, cols)
+			append(&ed.line_starts, i + 1)
+			cols = 0
+		case '\t':
+			cols += tab - (cols % tab)
+		case:
+			if (b & 0xC0) != 0x80 do cols += 1
+		}
+	}
+	for b, i in gb.data[gb.gap_end:] {
+		pos := gb.gap_start + i
+		switch b {
+		case '\n':
+			append(&ed.line_widths, cols)
+			append(&ed.line_starts, pos + 1)
+			cols = 0
+		case '\t':
+			cols += tab - (cols % tab)
+		case:
+			if (b & 0xC0) != 0x80 do cols += 1
+		}
+	}
+	append(&ed.line_widths, cols) // last line (possibly empty)
+	ed.line_starts_ver = ed.buffer.version
+}
+
+// Walks the bytes of line `line_idx` and returns its column width, honoring
+// tab stops and skipping UTF-8 continuation bytes. Lines are typically short,
+// so the per-byte branch in gap_buffer_byte_at is a non-issue here.
+@(private="file")
+compute_line_width_for :: proc(ed: ^Editor, line_idx: int) -> int {
+	start := ed.line_starts[line_idx]
+	end: int
+	if line_idx + 1 < len(ed.line_starts) {
+		end = ed.line_starts[line_idx + 1] - 1
+	} else {
+		end = gap_buffer_len(&ed.buffer)
+	}
+	tab := g_config.editor.tab_size
+	cols := 0
+	for i in start ..< end {
+		b := gap_buffer_byte_at(&ed.buffer, i)
+		if b == '\t' {
+			cols += tab - (cols % tab)
+		} else if (b & 0xC0) != 0x80 {
+			cols += 1
+		}
+	}
+	return cols
+}
+
+@(private="file")
+bisect_first_gt :: proc(line_starts: []int, value: int) -> int {
+	lo, hi := 0, len(line_starts)
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if line_starts[mid] > value do hi = mid
+		else                        do lo = mid + 1
+	}
+	return lo
+}
+
+// Buffer-mutating wrappers that keep the line_starts / line_widths caches in
+// sync via incremental updates rather than invalidate-and-rebuild. All edits
+// that go through the editor's typical paths (typing, deleting, paste, undo,
+// redo) should use these. Bulk paths (file load, editor_set_text) bypass them
+// and rely on the lazy full rebuild in ensure_line_starts.
+editor_buffer_insert :: proc(ed: ^Editor, pos: int, bytes: []u8) {
+	if len(bytes) == 0 do return
+	caches_valid := ed.line_starts_ver == ed.buffer.version && len(ed.line_starts) > 0
+	gap_buffer_insert(&ed.buffer, pos, bytes)
+	if !caches_valid do return
+
+	bytes_len := len(bytes)
+	line_idx := bisect_first_gt(ed.line_starts[:], pos) - 1
+	if line_idx < 0 do line_idx = 0
+
+	nl_count := 0
+	for b in bytes do if b == '\n' do nl_count += 1
+
+	old_len := len(ed.line_starts)
+	if nl_count == 0 {
+		for i := line_idx + 1; i < old_len; i += 1 {
+			ed.line_starts[i] += bytes_len
+		}
+		ed.line_widths[line_idx] = compute_line_width_for(ed, line_idx)
+	} else {
+		resize(&ed.line_starts, old_len + nl_count)
+		resize(&ed.line_widths, old_len + nl_count)
+		// Shift trailing entries to make room for the inserted line starts.
+		// Walk from the end so we don't clobber unread source slots.
+		for i := old_len - 1; i > line_idx; i -= 1 {
+			ed.line_starts[i + nl_count] = ed.line_starts[i] + bytes_len
+			ed.line_widths[i + nl_count] = ed.line_widths[i]
+		}
+		slot := line_idx + 1
+		for j in 0 ..< bytes_len {
+			if bytes[j] == '\n' {
+				ed.line_starts[slot] = pos + j + 1
+				slot += 1
+			}
+		}
+		for i := line_idx; i <= line_idx + nl_count; i += 1 {
+			ed.line_widths[i] = compute_line_width_for(ed, i)
+		}
+	}
+
+	ed.line_starts_ver = ed.buffer.version
+}
+
+editor_buffer_delete :: proc(ed: ^Editor, pos: int, count: int) {
+	if count <= 0 do return
+	caches_valid := ed.line_starts_ver == ed.buffer.version && len(ed.line_starts) > 0
+	gap_buffer_delete(&ed.buffer, pos, count)
+	if !caches_valid do return
+
+	n := len(ed.line_starts)
+	first_remove := bisect_first_gt(ed.line_starts[:], pos)
+	last_remove_excl := bisect_first_gt(ed.line_starts[:], pos + count)
+	removed := last_remove_excl - first_remove
+
+	for i := last_remove_excl; i < n; i += 1 {
+		new_idx := i - removed
+		ed.line_starts[new_idx] = ed.line_starts[i] - count
+		ed.line_widths[new_idx] = ed.line_widths[i]
+	}
+	resize(&ed.line_starts, n - removed)
+	resize(&ed.line_widths, n - removed)
+
+	surviving := first_remove - 1
+	if surviving < 0 do surviving = 0
+	if surviving < len(ed.line_widths) {
+		ed.line_widths[surviving] = compute_line_width_for(ed, surviving)
+	}
+
+	ed.line_starts_ver = ed.buffer.version
+}
+
+editor_pos_to_line_col :: proc(ed: ^Editor, pos: int) -> (line, col: int) {
+	ensure_line_starts(ed)
+	// Binary search for the largest index whose offset is <= pos.
+	lo, hi := 0, len(ed.line_starts)
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if ed.line_starts[mid] <= pos do lo = mid + 1
+		else                          do hi = mid
+	}
+	line = lo - 1
+	if line < 0 do line = 0
+	for i := ed.line_starts[line]; i < pos; {
+		b := gap_buffer_byte_at(&ed.buffer, i)
+		switch b {
+		case '\n': return
 		case '\t':
 			col += g_config.editor.tab_size - (col % g_config.editor.tab_size)
 			i += 1
@@ -164,36 +347,15 @@ editor_advance_to_col :: proc(ed: ^Editor, start: int, target_col: int) -> int {
 }
 
 editor_total_lines :: proc(ed: ^Editor) -> int {
-	count := 1
-	n := gap_buffer_len(&ed.buffer)
-	for i in 0 ..< n {
-		if gap_buffer_byte_at(&ed.buffer, i) == '\n' do count += 1
-	}
-	return count
+	ensure_line_starts(ed)
+	return len(ed.line_starts)
 }
 
 editor_max_line_cols :: proc(ed: ^Editor) -> int {
 	if ed.cached_max_cols_ver == ed.buffer.version do return ed.cached_max_cols
-	n := gap_buffer_len(&ed.buffer)
+	ensure_line_starts(ed)
 	max_cols := 0
-	cols := 0
-	i := 0
-	for i < n {
-		b := gap_buffer_byte_at(&ed.buffer, i)
-		switch b {
-		case '\n':
-			if cols > max_cols do max_cols = cols
-			cols = 0
-			i += 1
-		case '\t':
-			cols += g_config.editor.tab_size - (cols % g_config.editor.tab_size)
-			i += 1
-		case:
-			cols += 1
-			i += utf8_lead_size(b)
-		}
-	}
-	if cols > max_cols do max_cols = cols
+	for w in ed.line_widths do max_cols = max(max_cols, w)
 	ed.cached_max_cols = max_cols
 	ed.cached_max_cols_ver = ed.buffer.version
 	return max_cols
@@ -201,15 +363,9 @@ editor_max_line_cols :: proc(ed: ^Editor) -> int {
 
 editor_nth_line_start :: proc(ed: ^Editor, n: int) -> int {
 	if n <= 0 do return 0
-	line := 0
-	total := gap_buffer_len(&ed.buffer)
-	for i in 0 ..< total {
-		if gap_buffer_byte_at(&ed.buffer, i) == '\n' {
-			line += 1
-			if line == n do return i + 1
-		}
-	}
-	return total
+	ensure_line_starts(ed)
+	if n >= len(ed.line_starts) do return gap_buffer_len(&ed.buffer)
+	return ed.line_starts[n]
 }
 
 editor_pos_at_line_col :: proc(ed: ^Editor, line, col: int) -> int {
@@ -221,7 +377,7 @@ editor_pos_at_line_col :: proc(ed: ^Editor, line, col: int) -> int {
 @(private="file")
 do_insert :: proc(ed: ^Editor, bytes: []u8) {
 	pos := ed.cursor
-	gap_buffer_insert(&ed.buffer, pos, bytes)
+	editor_buffer_insert(ed, pos, bytes)
 	new_cursor := pos + len(bytes)
 	record_insert(ed, pos, bytes, new_cursor, new_cursor)
 	ed.cursor = new_cursor
@@ -239,7 +395,7 @@ do_delete_range :: proc(ed: ^Editor, pos, count: int, new_cursor: int) {
 	for i in 0 ..< count {
 		bytes[i] = gap_buffer_byte_at(&ed.buffer, pos + i)
 	}
-	gap_buffer_delete(&ed.buffer, pos, count)
+	editor_buffer_delete(ed, pos, count)
 	record_delete(ed, pos, bytes, new_cursor, new_cursor)
 	ed.cursor = new_cursor
 	ed.anchor = new_cursor
@@ -575,21 +731,49 @@ find_in_range_backward :: proc(ed: ^Editor, needle: []u8, before: int) -> int {
 	return -1
 }
 
+// Rebuilds the cached list of match positions for `pattern` if buffer or
+// pattern changed since the last scan. Caller is responsible for not asking
+// when pattern is empty.
+@(private="file")
+ensure_search_matches :: proc(ed: ^Editor, pattern: string) {
+	if ed.search_match_ver == ed.buffer.version &&
+	   ed.search_match_pattern == pattern {
+		return
+	}
+	clear(&ed.search_match_positions)
+	needle := transmute([]u8)pattern
+	n := gap_buffer_len(&ed.buffer)
+	last := n - len(needle)
+	if last >= 0 {
+		for i in 0 ..= last {
+			if match_at(ed, i, needle) do append(&ed.search_match_positions, i)
+		}
+	}
+	if ed.search_match_pattern != pattern {
+		if len(ed.search_match_pattern) > 0 do delete(ed.search_match_pattern)
+		ed.search_match_pattern = strings.clone(pattern)
+	}
+	ed.search_match_ver = ed.buffer.version
+}
+
 // Returns total occurrences of `pattern` in the buffer and the 1-based index
 // of the match at ed.cursor — but only if the cursor sits exactly on a match
 // (i.e. the user just searched or pressed n/N). Otherwise current = 0, which
 // callers use to suppress the [n/m] readout once the user wanders off.
 editor_search_stats :: proc(ed: ^Editor, pattern: string) -> (current, total: int) {
-	needle := transmute([]u8)pattern
-	if len(needle) == 0 do return
-	n := gap_buffer_len(&ed.buffer)
-	last := n - len(needle)
-	if last < 0 do return
-	for i in 0 ..= last {
-		if match_at(ed, i, needle) {
-			total += 1
-			if i == ed.cursor do current = total
-		}
+	if len(pattern) == 0 do return
+	ensure_search_matches(ed, pattern)
+	total = len(ed.search_match_positions)
+	if total == 0 do return
+	// Binary search for cursor among the match positions.
+	lo, hi := 0, total
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if ed.search_match_positions[mid] < ed.cursor do lo = mid + 1
+		else                                          do hi = mid
+	}
+	if lo < total && ed.search_match_positions[lo] == ed.cursor {
+		current = lo + 1
 	}
 	return
 }

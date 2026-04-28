@@ -14,6 +14,14 @@ WINDOW_WIDTH  :: 1280
 WINDOW_HEIGHT :: 800
 WINDOW_TITLE  :: "Bragi"
 
+// FiraCode-Regular.ttf baked into the binary at compile time (~290 KB).
+// Used as the default font when g_config.font.path is empty, and as the
+// fallback if a user-configured path fails to load. Declared with `:=` so
+// the bytes live in addressable rodata (`::` would make it an unaddressable
+// compile-time constant that SDL_IOFromConstMem can't take a pointer to).
+@(rodata)
+FIRA_CODE_DATA := #load("FiraCode-Regular.ttf")
+
 // FONT_SIZE / FONT_PATH / LINE_SPACING / TAB_SIZE / COLUMN_GUIDE all live in
 // g_config and are loaded from INI at startup (see config.odin).
 SCROLL_LINES_PER_NOTCH :: 3.0
@@ -30,7 +38,8 @@ STATUS_PAD_Y :: 5.0
 BG_COLOR             :: sdl.Color{30, 30, 38, 255}
 TEXT_COLOR           :: sdl.Color{220, 220, 220, 255}
 CURSOR_COLOR         :: sdl.Color{240, 200, 80, 255}
-SELECTION_COLOR      :: sdl.Color{70, 95, 150, 200}
+SELECTION_COLOR      :: sdl.Color{70, 95, 150, 120}
+SEARCH_MATCH_COLOR   :: sdl.Color{190, 80, 180, 120}
 SB_TRACK_COLOR       :: sdl.Color{40, 40, 48, 255}
 SB_THUMB_COLOR       :: sdl.Color{90, 90, 100, 255}
 SB_THUMB_HOVER_COLOR :: sdl.Color{130, 130, 140, 255}
@@ -593,6 +602,7 @@ draw_selection_for_line :: proc(
 	line_byte_start, line_byte_end: int,
 	sel_lo, sel_hi: int,
 	x_origin, y: f32,
+	color: sdl.Color,
 ) {
 	on_line_lo := max(sel_lo, line_byte_start)
 	on_line_hi := min(sel_hi, line_byte_end)
@@ -606,7 +616,7 @@ draw_selection_for_line :: proc(
 	if sel_hi > line_byte_end do w += g_char_width
 	if w <= 0 do return
 
-	fill_rect({x, y, w, g_line_height}, SELECTION_COLOR)
+	fill_rect({x, y, w, g_line_height}, color)
 }
 
 draw_editor :: proc(ed: ^Editor, l: Layout) {
@@ -617,6 +627,16 @@ draw_editor :: proc(ed: ^Editor, l: Layout) {
 
 	sel_lo, sel_hi := editor_selection_range(ed)
 	has_sel := editor_has_selection(ed)
+
+	// Recolor the selection rect when it exactly covers the active search
+	// match — same trigger as the [n/m] readout, so the highlight only
+	// appears while the user is paging through results.
+	sel_color := SELECTION_COLOR
+	if has_sel && len(ed.search_pattern) > 0 &&
+	   sel_hi - sel_lo == len(ed.search_pattern) {
+		cur, _ := editor_search_stats(ed, ed.search_pattern)
+		if cur > 0 do sel_color = SEARCH_MATCH_COLOR
+	}
 
 	clip := sdl.Rect{i32(l.text_x * g_density), i32(l.text_y * g_density), i32(l.text_w * g_density), i32(l.text_h * g_density)}
 	sdl.SetRenderClipRect(g_renderer, &clip)
@@ -671,7 +691,7 @@ draw_editor :: proc(ed: ^Editor, l: Layout) {
 		}
 
 		if has_sel {
-			draw_selection_for_line(ed, line_start, line_end, sel_lo, sel_hi, x_origin, y)
+			draw_selection_for_line(ed, line_start, line_end, sel_lo, sel_hi, x_origin, y, sel_color)
 		}
 
 		if line_end >= buf_len do break
@@ -826,9 +846,10 @@ update_window_title :: proc(ed: ^Editor) {
 // flaky on macOS — the OS run loop can swallow the first request.
 // ──────────────────────────────────────────────────────────────────
 
-g_pending_open:     bool
-g_pending_save_as:  bool
-g_pending_raise:    bool // set by dialog callbacks; main loop calls RaiseWindow next iter
+g_pending_open:           bool
+g_pending_save_as:        bool
+g_pending_raise:          bool // set by dialog callbacks; main loop calls RaiseWindow next iter
+g_pending_quit_after_save: bool // try_quit on an untitled buffer: quit once save-as completes
 
 open_file_dialog :: proc(ed: ^Editor) {
 	g_pending_open = true
@@ -891,7 +912,11 @@ save_as_callback :: proc "c" (userdata: rawptr, filelist: [^]cstring, filter: c.
 	defer free_all(context.temp_allocator)
 	defer { g_pending_raise = true } // restore focus on next main-loop iter
 
-	if filelist == nil || filelist[0] == nil do return
+	// User cancelled the dialog — abort any pending quit so the editor stays open.
+	if filelist == nil || filelist[0] == nil {
+		g_pending_quit_after_save = false
+		return
+	}
 
 	ed := cast(^Editor)userdata
 	path := string(filelist[0])
@@ -903,7 +928,101 @@ save_as_callback :: proc "c" (userdata: rawptr, filelist: [^]cstring, filter: c.
 
 	if !editor_save_file(ed) {
 		fmt.eprintfln("save failed for %s", path)
+		g_pending_quit_after_save = false
+		return
 	}
+
+	if g_pending_quit_after_save {
+		g_pending_quit_after_save = false
+		ed.want_quit = true
+	}
+}
+
+// Loads the embedded FiraCode TTF as an SDL_ttf Font. Wraps the byte slice
+// in an SDL_IOStream and asks ttf to take ownership (closeio=true) so the
+// stream is freed when the font is closed.
+open_embedded_font :: proc(size_px: f32) -> ^ttf.Font {
+	io := sdl.IOFromConstMem(rawptr(&FIRA_CODE_DATA[0]), uint(len(FIRA_CODE_DATA)))
+	if io == nil do return nil
+	return ttf.OpenFontIO(io, true, size_px)
+}
+
+// Honours g_config.font.path: empty → embedded; non-empty → load that file
+// and fall back to embedded with a warning if it fails. Either way the
+// editor always comes up with a usable font.
+open_configured_font :: proc(size_px: f32) -> ^ttf.Font {
+	if len(g_config.font.path) == 0 do return open_embedded_font(size_px)
+
+	cstr := strings.clone_to_cstring(g_config.font.path, context.temp_allocator)
+	if f := ttf.OpenFont(cstr, size_px); f != nil do return f
+
+	fmt.eprintfln(
+		"OpenFont '%s' failed (%s); falling back to bundled FiraCode",
+		g_config.font.path, sdl.GetError(),
+	)
+	return open_embedded_font(size_px)
+}
+
+Quit_Choice :: enum { Cancel, Save, Discard }
+
+// Modal native dialog: "this buffer has unsaved changes — Save / Discard /
+// Cancel?". Returns the user's choice. Anything other than `:q!` (which
+// short-circuits this entirely) routes through here when there are dirty
+// changes that would be lost.
+prompt_unsaved_changes :: proc(ed: ^Editor) -> Quit_Choice {
+	name := len(ed.file_path) > 0 ? path_basename(ed.file_path) : "[untitled]"
+	msg := fmt.tprintf("'%s' has unsaved changes. Save before closing?", name)
+	msg_cstr := strings.clone_to_cstring(msg, context.temp_allocator)
+
+	// SDL renders buttons right-to-left on macOS by default. Order entries
+	// so the visual layout reads "Cancel | Discard | Save" with Save as the
+	// return-key default and Cancel as the escape default.
+	buttons := [3]sdl.MessageBoxButtonData{
+		{flags = {.RETURNKEY_DEFAULT}, buttonID = 1, text = "Save"},
+		{flags = {},                   buttonID = 2, text = "Discard"},
+		{flags = {.ESCAPEKEY_DEFAULT}, buttonID = 0, text = "Cancel"},
+	}
+
+	data := sdl.MessageBoxData{
+		flags      = {.WARNING},
+		window     = g_window,
+		title      = "Unsaved changes",
+		message    = msg_cstr,
+		numbuttons = c.int(len(buttons)),
+		buttons    = raw_data(buttons[:]),
+	}
+
+	choice: c.int = 0
+	if !sdl.ShowMessageBox(data, &choice) do return .Cancel
+	switch choice {
+	case 1: return .Save
+	case 2: return .Discard
+	}
+	return .Cancel
+}
+
+// Quit-with-prompt for the window-close path (Cmd+Q, red traffic light,
+// Alt+F4, etc.). Vim ':q' / ':q!' / ':wq' bypass this and live in vim.odin.
+try_quit :: proc(ed: ^Editor) -> bool {
+	if !ed.dirty do return true
+	switch prompt_unsaved_changes(ed) {
+	case .Save:
+		if len(ed.file_path) == 0 {
+			// Untitled — kick off Save As. The dialog callback will set
+			// ed.want_quit on success, so we stay running for now.
+			g_pending_quit_after_save = true
+			save_as_dialog(ed)
+			return false
+		}
+		if editor_save_file(ed) do return true
+		fmt.eprintln("save failed; aborting quit")
+		return false
+	case .Discard:
+		return true
+	case .Cancel:
+		return false
+	}
+	return false
 }
 
 // If the just-loaded file had mixed line endings, surface a native-OS warning
@@ -951,7 +1070,7 @@ resize_event_watch :: proc "c" (userdata: rawptr, event: ^sdl.Event) -> bool {
 process_event :: proc(ed: ^Editor, ev: sdl.Event, l: Layout, running: ^bool) {
 	#partial switch ev.type {
 	case .QUIT:
-		running^ = false
+		if try_quit(ed) do running^ = false
 	case .KEY_DOWN:
 		handle_key_down(ed, ev.key)
 	case .TEXT_INPUT:
@@ -1016,10 +1135,9 @@ main :: proc() {
 
 	defer text_cache_clear()
 
-	font_path_cstr := strings.clone_to_cstring(g_config.font.path, context.temp_allocator)
-	g_font = ttf.OpenFont(font_path_cstr, g_config.font.size * g_density)
+	g_font = open_configured_font(g_config.font.size * g_density)
 	if g_font == nil {
-		fmt.eprintln("OpenFont:", sdl.GetError())
+		fmt.eprintln("OpenFont (embedded fallback also failed):", sdl.GetError())
 		return
 	}
 	defer ttf.CloseFont(g_font)

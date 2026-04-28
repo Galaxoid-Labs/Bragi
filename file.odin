@@ -83,6 +83,20 @@ editor_clear :: proc(ed: ^Editor) {
 	gap_buffer_destroy(&ed.buffer)
 	ed.buffer = gap_buffer_make()
 
+	// Buffer-version-keyed caches must be invalidated explicitly: the new
+	// buffer's version restarts at 0 and will collide with stale cached
+	// versions from the previous buffer's lifetime. max(u64) is a sentinel
+	// the version counter cannot reach.
+	clear(&ed.line_starts)
+	clear(&ed.line_widths)
+	ed.line_starts_ver = max(u64)
+	ed.cached_max_cols = 0
+	ed.cached_max_cols_ver = max(u64)
+	clear(&ed.search_match_positions)
+	ed.search_match_ver = max(u64)
+	if len(ed.search_match_pattern) > 0 do delete(ed.search_match_pattern)
+	ed.search_match_pattern = ""
+
 	undo_stack_clear(&ed.undo_stack)
 	undo_stack_clear(&ed.redo_stack)
 	undo_group_destroy(&ed.pending)
@@ -100,26 +114,52 @@ editor_clear :: proc(ed: ^Editor) {
 }
 
 editor_load_file :: proc(ed: ^Editor, path: string) -> bool {
-	data, ok := os.read_entire_file(path)
-	if !ok do return false
-	defer delete(data)
+	fd, open_err := os.open(path)
+	if open_err != nil do return false
+	defer os.close(fd)
+
+	size, size_err := os.file_size(fd)
+	if size_err != nil do return false
 
 	editor_clear(ed)
 
-	eol, mixed := detect_eol(data)
-	ed.eol = eol
-	ed.eol_mixed = mixed
+	if size > 0 {
+		// Pre-size the gap buffer so the file content fits without a grow,
+		// and read straight into its data slice — no intermediate buffer,
+		// no extra memcpy.
+		gap_buffer_destroy(&ed.buffer)
+		ed.buffer = gap_buffer_make(int(size) + GAP_GROW)
 
-	if len(data) > 0 {
-		// Only normalize when CRLF is involved (touching the bytes at all is
-		// the only thing that risks corruption, so for pure-LF files we drop
-		// data straight into the buffer).
-		if eol == .CRLF || mixed {
-			normalized := normalize_crlf_to_lf(data, context.temp_allocator)
-			gap_buffer_insert(&ed.buffer, 0, normalized)
-		} else {
-			gap_buffer_insert(&ed.buffer, 0, data)
+		n, read_err := os.read_full(fd, ed.buffer.data[:size])
+		if read_err != nil || i64(n) != size {
+			ed.buffer.gap_start = 0
+			ed.buffer.gap_end   = len(ed.buffer.data)
+			return false
 		}
+		ed.buffer.gap_start = n
+		ed.buffer.version  += 1
+
+		// One pass over the freshly-read bytes: detect EOL and build the
+		// line_starts/line_widths cache eagerly. The first frame after load
+		// then doesn't need to scan the buffer again.
+		eol, mixed := scan_load(ed, ed.buffer.data[:n])
+		ed.eol = eol
+		ed.eol_mixed = mixed
+
+		// CRLF/mixed files need an in-place compaction. After that the
+		// line_starts/line_widths positions we just built are stale, so we
+		// invalidate them and let the next reader rebuild lazily.
+		if eol == .CRLF || mixed {
+			new_len := normalize_crlf_inplace(ed.buffer.data[:n])
+			ed.buffer.gap_start = new_len
+			ed.buffer.version  += 1
+			clear(&ed.line_starts)
+			clear(&ed.line_widths)
+			ed.line_starts_ver = max(u64)
+		}
+	} else {
+		ed.eol = default_eol()
+		ed.eol_mixed = false
 	}
 
 	if len(ed.file_path) > 0 do delete(ed.file_path)
@@ -127,6 +167,60 @@ editor_load_file :: proc(ed: ^Editor, path: string) -> bool {
 	ed.dirty = false
 	ed.language = language_for_path(path)
 	return true
+}
+
+// Single-pass scan over freshly-loaded bytes: counts CRLF vs lone-LF for EOL
+// detection, and (for files that look pure-LF) populates line_starts /
+// line_widths so the first draw frame doesn't have to rescan.
+@(private="file")
+scan_load :: proc(ed: ^Editor, data: []u8) -> (eol: EOL, mixed: bool) {
+	clear(&ed.line_starts)
+	clear(&ed.line_widths)
+	append(&ed.line_starts, 0)
+	tab := g_config.editor.tab_size
+	cols := 0
+	crlf_count := 0
+	lf_count := 0
+	for b, i in data {
+		switch b {
+		case '\n':
+			lf_count += 1
+			if i > 0 && data[i - 1] == '\r' do crlf_count += 1
+			append(&ed.line_widths, cols)
+			append(&ed.line_starts, i + 1)
+			cols = 0
+		case '\t':
+			cols += tab - (cols % tab)
+		case:
+			if (b & 0xC0) != 0x80 do cols += 1
+		}
+	}
+	append(&ed.line_widths, cols)
+	ed.line_starts_ver = ed.buffer.version
+
+	lone_lf := lf_count - crlf_count
+	switch {
+	case lf_count == 0:    eol, mixed = default_eol(), false
+	case crlf_count == 0:  eol, mixed = .LF,           false
+	case lone_lf == 0:     eol, mixed = .CRLF,         false
+	case crlf_count >= lone_lf: eol, mixed = .CRLF,    true
+	case:                  eol, mixed = .LF,           true
+	}
+	return
+}
+
+// In-place compact: drop every '\r' that is immediately followed by '\n'.
+// Returns the new logical length.
+@(private="file")
+normalize_crlf_inplace :: proc(buf: []u8) -> int {
+	n := len(buf)
+	j := 0
+	for i := 0; i < n; i += 1 {
+		if buf[i] == '\r' && i + 1 < n && buf[i + 1] == '\n' do continue
+		buf[j] = buf[i]
+		j += 1
+	}
+	return j
 }
 
 editor_save_file :: proc(ed: ^Editor) -> bool {

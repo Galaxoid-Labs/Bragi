@@ -169,9 +169,9 @@ editor_undo :: proc(ed: ^Editor) {
 		op := g.ops[i]
 		switch op.kind {
 		case .Insert:
-			gap_buffer_delete(&ed.buffer, op.pos, len(op.text))
+			editor_buffer_delete(ed, op.pos, len(op.text))
 		case .Delete:
-			gap_buffer_insert(&ed.buffer, op.pos, op.text)
+			editor_buffer_insert(ed, op.pos, op.text)
 		}
 	}
 
@@ -195,9 +195,9 @@ editor_redo :: proc(ed: ^Editor) {
 	for op in g.ops {
 		switch op.kind {
 		case .Insert:
-			gap_buffer_insert(&ed.buffer, op.pos, op.text)
+			editor_buffer_insert(ed, op.pos, op.text)
 		case .Delete:
-			gap_buffer_delete(&ed.buffer, op.pos, len(op.text))
+			editor_buffer_delete(ed, op.pos, len(op.text))
 		}
 	}
 
