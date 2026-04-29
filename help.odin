@@ -169,10 +169,10 @@ draw_help :: proc(l: Layout) {
 
 	// Clip text so a line longer than the modal doesn't bleed past the border.
 	clip := sdl.Rect{
-		i32((r.x + bw) * g_density),
-		i32((r.y + bw) * g_density),
-		i32((r.w - bw * 2) * g_density),
-		i32((r.h - bw * 2) * g_density),
+		i32(r.x + bw),
+		i32(r.y + bw),
+		i32(r.w - bw * 2),
+		i32(r.h - bw * 2),
 	}
 	sdl.SetRenderClipRect(g_renderer, &clip)
 	defer sdl.SetRenderClipRect(g_renderer, nil)

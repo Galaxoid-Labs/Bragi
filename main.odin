@@ -848,7 +848,9 @@ draw_editor :: proc(ed: ^Editor, p: Pane_Layout, is_active: bool) {
 		if cur > 0 do sel_color = g_theme.search_match_color
 	}
 
-	clip := sdl.Rect{i32(p.text_x * g_density), i32(p.text_y * g_density), i32(p.text_w * g_density), i32(p.text_h * g_density)}
+	// SetRenderClipRect takes logical (post-SetRenderScale) coords —
+	// don't pre-multiply by g_density or the rect doubles on Retina.
+	clip := sdl.Rect{i32(p.text_x), i32(p.text_y), i32(p.text_w), i32(p.text_h)}
 	sdl.SetRenderClipRect(g_renderer, &clip)
 	defer sdl.SetRenderClipRect(g_renderer, nil)
 
@@ -1013,10 +1015,10 @@ draw_status_bar :: proc(ed: ^Editor, l: Layout) {
 		color := i == g_active_idx ? g_theme.status_text_color : g_theme.status_dim_color
 
 		clip := sdl.Rect{
-			i32(p.pane_x * g_density),
-			i32(top_y * g_density),
-			i32(p.pane_w * g_density),
-			i32(g_config.font.size * g_density),
+			i32(p.pane_x),
+			i32(top_y),
+			i32(p.pane_w),
+			i32(g_config.font.size),
 		}
 		sdl.SetRenderClipRect(g_renderer, &clip)
 		draw_text(cstr, p.pane_x + STATUS_PAD_X, top_y, color, g_theme.status_path_bg_color)
@@ -1438,12 +1440,45 @@ draw_frame :: proc() {
 	sdl.RenderPresent(g_renderer)
 }
 
+// Re-query `g_density` from the window (it changes when the window moves
+// between displays — e.g. external 1.0 → built-in retina 2.0) and rebuild
+// every density-dependent piece of state. Without this, clip rects, text
+// rasterisation, and the 1-physical-pixel separators all stay at the
+// startup density and the layout visibly tears (text bleeds past pane
+// borders, glyphs look fuzzy, etc.).
+refresh_pixel_density :: proc() {
+	new_density := sdl.GetWindowPixelDensity(g_window)
+	if new_density <= 0 do return
+	if new_density == g_density do return
+
+	g_density = new_density
+	sdl.SetRenderScale(g_renderer, g_density, g_density)
+
+	// Re-rasterise the font at the new physical size and drop cached
+	// textures (they're sized at the previous density).
+	if g_font != nil do ttf.CloseFont(g_font)
+	g_font = open_configured_font(g_config.font.size * g_density)
+	if g_font != nil do ttf.SetFontHinting(g_font, g_config.font.hinting)
+	text_cache_clear()
+
+	w: c.int
+	if g_font != nil do ttf.GetStringSize(g_font, "M", 0, &w, nil)
+	if w > 0 do g_char_width = f32(w) / g_density
+}
+
 // SDL fires this synchronously during macOS live-resize (before the main
 // thread regains control of WaitEventTimeout). Redraw inside the callback
-// keeps the content rendered at the correct size during the drag.
+// keeps the content rendered at the correct size during the drag. The
+// display-change events also flow through here so the pixel-density
+// refresh fires before the next frame draws.
 resize_event_watch :: proc "c" (userdata: rawptr, event: ^sdl.Event) -> bool {
 	#partial switch event.type {
-	case .WINDOW_PIXEL_SIZE_CHANGED, .WINDOW_RESIZED, .WINDOW_EXPOSED:
+	case .WINDOW_PIXEL_SIZE_CHANGED, .WINDOW_DISPLAY_CHANGED, .WINDOW_DISPLAY_SCALE_CHANGED:
+		context = runtime.default_context()
+		defer free_all(context.temp_allocator)
+		refresh_pixel_density()
+		draw_frame()
+	case .WINDOW_RESIZED, .WINDOW_EXPOSED:
 		context = runtime.default_context()
 		defer free_all(context.temp_allocator)
 		draw_frame()
