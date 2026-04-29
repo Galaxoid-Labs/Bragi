@@ -7,7 +7,7 @@ import sdl "vendor:sdl3"
 Mode :: enum { Insert, Normal, Command, Search, Visual, Visual_Line }
 
 Vim_Operator :: enum { None, Delete, Change, Yank }
-Vim_Prefix   :: enum { None, G }
+Vim_Prefix   :: enum { None, G, Z, Indent, Outdent }
 
 vim_in_visual :: proc(ed: ^Editor) -> bool {
 	return ed.mode == .Visual || ed.mode == .Visual_Line
@@ -166,7 +166,7 @@ vim_goto_last_line :: proc(ed: ^Editor) {
 
 vim_apply_motion :: proc(ed: ^Editor, motion: rune, count: int) {
 	// In Visual modes we extend the selection; without `extend=true`, the
-	// editor's "collapse selection on right-arrow" behaviour would stop
+	// editor's "collapse selection on right-arrow" behavior would stop
 	// the cursor at the existing selection edge instead of advancing.
 	extend := vim_in_visual(ed)
 	for _ in 0 ..< count {
@@ -327,6 +327,14 @@ vim_handle_visual_char :: proc(ed: ^Editor, c: rune) {
 		}
 	case 'g':
 		ed.vim_prefix = .G
+	case '>':
+		vim_indent_visual(ed)
+		vim_enter_normal(ed)
+	case '<':
+		vim_outdent_visual(ed)
+		vim_enter_normal(ed)
+	case '%':
+		vim_bracket_match(ed)
 	case 'G':
 		explicit := ed.vim_count
 		ed.vim_count = 0
@@ -341,6 +349,357 @@ vim_handle_visual_char :: proc(ed: ^Editor, c: rune) {
 		vim_apply_motion(ed, c, count)
 		ed.anchor = saved
 	}
+}
+
+// Returns the active pane's visible-line count (height / line height).
+// Used by Ctrl+D/U and zz / zt / zb so they can scroll relative to the
+// viewport without taking the layout as a parameter.
+@(private="file")
+vim_visible_lines :: proc() -> int {
+	l := compute_layout()
+	if g_active_idx >= len(l.panes) do return 1
+	return max(1, int(l.panes[g_active_idx].text_h / g_line_height))
+}
+
+// Move cursor by `delta` lines (positive = down) and shift scroll by the
+// same amount so the cursor stays in roughly the same screen position.
+// Vim's Ctrl+D / Ctrl+U semantics. Preserves anchor in Visual modes.
+vim_half_page :: proc(ed: ^Editor, dir: int) {
+	half := max(1, vim_visible_lines() / 2) * dir
+	saved_anchor := ed.anchor
+	cur_line, _ := editor_pos_to_line_col(ed, ed.cursor)
+	new_line := clamp(cur_line + half, 0, editor_total_lines(ed) - 1)
+	ed.cursor = editor_pos_at_line_col(ed, new_line, ed.desired_col)
+	if vim_in_visual(ed) {
+		ed.anchor = saved_anchor
+	} else {
+		ed.anchor = ed.cursor
+	}
+	ed.scroll_y += f32(half) * g_line_height
+}
+
+// Position the cursor's line at the top / middle / bottom of the viewport.
+// Vim's zt / zz / zb. `placement` is 0=top, 1=middle, 2=bottom.
+vim_scroll_cursor_to :: proc(ed: ^Editor, placement: int) {
+	visible := vim_visible_lines()
+	cur_line, _ := editor_pos_to_line_col(ed, ed.cursor)
+	target_top: int
+	switch placement {
+	case 0: target_top = cur_line                        // zt
+	case 1: target_top = cur_line - visible / 2          // zz
+	case 2: target_top = cur_line - visible + 1          // zb
+	}
+	if target_top < 0 do target_top = 0
+	ed.scroll_y = f32(target_top) * g_line_height
+}
+
+// Strip vim's `\c` / `\C` modifiers from `pat` and return the cleaned
+// pattern plus the implied case-force value (-1 sensitive, 0 unset, +1
+// insensitive). The last occurrence wins, matching vim's behavior.
+vim_strip_case_modifiers :: proc(pat: string) -> (cleaned: string, force: i8) {
+	sb := strings.builder_make(context.temp_allocator)
+	i := 0
+	for i < len(pat) {
+		if i + 1 < len(pat) && pat[i] == '\\' {
+			switch pat[i + 1] {
+			case 'c':
+				force = 1
+				i += 2
+				continue
+			case 'C':
+				force = -1
+				i += 2
+				continue
+			}
+		}
+		strings.write_byte(&sb, pat[i])
+		i += 1
+	}
+	cleaned = strings.to_string(sb)
+	return
+}
+
+// Substitute (`:s/pat/repl/[gi I]` and `:%s/pat/repl/[gi I]`). Pattern is
+// a literal substring (no regex). `g` replaces every match per line; `i`
+// forces case-insensitive, `I` forces case-sensitive. `\c` / `\C` inside
+// the pattern act the same. Range is the current line for `s`, the whole
+// buffer for `%s`. Pattern containing `/` isn't supported.
+@(private="file")
+vim_parse_subst :: proc(cmd: string) -> (whole_buffer: bool, pat, repl: string, global: bool, force: i8, ok: bool) {
+	rest: string
+	if strings.has_prefix(cmd, "%s/") {
+		whole_buffer = true
+		rest = cmd[3:]
+	} else if strings.has_prefix(cmd, "s/") {
+		rest = cmd[2:]
+	} else {
+		return
+	}
+
+	p1 := strings.index_byte(rest, '/')
+	if p1 < 0 do return
+	pat = rest[:p1]
+	tail := rest[p1 + 1:]
+
+	p2 := strings.index_byte(tail, '/')
+	flags: string
+	if p2 < 0 {
+		repl = tail
+	} else {
+		repl  = tail[:p2]
+		flags = tail[p2 + 1:]
+		global = strings.contains(flags, "g")
+		// Last of i / I wins; pattern's \c / \C wins over both.
+		if strings.contains(flags, "i") do force = 1
+		if strings.contains(flags, "I") do force = -1
+	}
+	// Pattern-level \c / \C overrides flag-level (vim convention).
+	cleaned, pat_force := vim_strip_case_modifiers(pat)
+	pat = cleaned
+	if pat_force != 0 do force = pat_force
+	ok = len(pat) > 0
+	return
+}
+
+@(private="file")
+vim_match_here :: proc(ed: ^Editor, pos: int, needle: []u8, ignore_case: bool) -> bool {
+	for j in 0 ..< len(needle) {
+		a := gap_buffer_byte_at(&ed.buffer, pos + j)
+		b := needle[j]
+		if ignore_case {
+			la := a; lb := b
+			if la >= 'A' && la <= 'Z' do la += 32
+			if lb >= 'A' && lb <= 'Z' do lb += 32
+			if la != lb do return false
+		} else {
+			if a != b do return false
+		}
+	}
+	return true
+}
+
+vim_substitute :: proc(ed: ^Editor, cmd: string) -> bool {
+	whole_buffer, pat, repl, global, force, ok := vim_parse_subst(cmd)
+	if !ok do return false
+
+	commit_pending(ed)
+
+	needle      := transmute([]u8)pat
+	replacement := transmute([]u8)repl
+	ic          := editor_pattern_ignore_case(pat, force)
+
+	// Determine the byte range to operate on.
+	lo, hi: int
+	if whole_buffer {
+		lo = 0
+		hi = gap_buffer_len(&ed.buffer)
+	} else {
+		lo = editor_line_start(ed, ed.cursor)
+		hi = editor_line_end(ed, ed.cursor)
+	}
+
+	// Collect every match position in the range. For non-global, stop
+	// after one match per line.
+	positions := make([dynamic]int, context.temp_allocator)
+	last := hi - len(needle)
+	if whole_buffer {
+		i := lo
+		for i <= last {
+			if vim_match_here(ed, i, needle, ic) {
+				append(&positions, i)
+				i += len(needle)
+				if !global {
+					// Skip to end of this line so we only catch one
+					// match per line in non-global mode.
+					line_end := editor_line_end(ed, i)
+					i = line_end
+				}
+			} else {
+				i += 1
+			}
+		}
+	} else {
+		i := lo
+		for i <= last {
+			if vim_match_here(ed, i, needle, ic) {
+				append(&positions, i)
+				if !global do break
+				i += len(needle)
+			} else {
+				i += 1
+			}
+		}
+	}
+	if len(positions) == 0 {
+		commit_pending(ed)
+		return true
+	}
+
+	// Replace from end to start so earlier offsets don't shift under us.
+	// We bypass do_insert / do_delete_range (which are file-private to
+	// editor.odin and tied to ed.cursor) and call the buffer-mutating
+	// wrappers + record_* helpers directly so every replacement lands
+	// in the same pending undo group.
+	for k := len(positions) - 1; k >= 0; k -= 1 {
+		pos := positions[k]
+
+		// Snapshot the bytes we're about to delete so undo can put them back.
+		deleted := make([]u8, len(needle), context.temp_allocator)
+		for j in 0 ..< len(needle) {
+			deleted[j] = gap_buffer_byte_at(&ed.buffer, pos + j)
+		}
+
+		editor_buffer_delete(ed, pos, len(needle))
+		record_delete(ed, pos, deleted, pos, pos)
+
+		editor_buffer_insert(ed, pos, replacement)
+		after := pos + len(replacement)
+		record_insert(ed, pos, replacement, after, after)
+	}
+	ed.dirty = true
+
+	// Park the cursor at the start of the first match (vim convention).
+	ed.cursor = positions[0]
+	ed.anchor = ed.cursor
+	_, ed.desired_col = editor_pos_to_line_col(ed, ed.cursor)
+	commit_pending(ed)
+	return true
+}
+
+// Vim's `%`: jump from the bracket at cursor to its matching pair, with
+// proper nesting. No-op if cursor isn't on `( [ { ) ] }`.
+vim_bracket_match :: proc(ed: ^Editor) {
+	n := gap_buffer_len(&ed.buffer)
+	if ed.cursor >= n do return
+	at := gap_buffer_byte_at(&ed.buffer, ed.cursor)
+
+	open, close: u8
+	forward: bool
+	switch at {
+	case '(': open = '('; close = ')'; forward = true
+	case '[': open = '['; close = ']'; forward = true
+	case '{': open = '{'; close = '}'; forward = true
+	case ')': open = '('; close = ')'; forward = false
+	case ']': open = '['; close = ']'; forward = false
+	case '}': open = '{'; close = '}'; forward = false
+	case:
+		return
+	}
+
+	depth := 1
+	if forward {
+		for i := ed.cursor + 1; i < n; i += 1 {
+			b := gap_buffer_byte_at(&ed.buffer, i)
+			if b == open      do depth += 1
+			else if b == close {
+				depth -= 1
+				if depth == 0 {
+					ed.cursor = i
+					if !vim_in_visual(ed) do ed.anchor = i
+					_, ed.desired_col = editor_pos_to_line_col(ed, ed.cursor)
+					return
+				}
+			}
+		}
+	} else {
+		for i := ed.cursor - 1; i >= 0; i -= 1 {
+			b := gap_buffer_byte_at(&ed.buffer, i)
+			if b == close     do depth += 1
+			else if b == open {
+				depth -= 1
+				if depth == 0 {
+					ed.cursor = i
+					if !vim_in_visual(ed) do ed.anchor = i
+					_, ed.desired_col = editor_pos_to_line_col(ed, ed.cursor)
+					return
+				}
+			}
+		}
+	}
+}
+
+// Insert one tab-stop's worth of leading whitespace at the start of the
+// current line. Uses '\t' if the line already starts with a tab; spaces
+// otherwise (matching the soft-tab convention used elsewhere).
+vim_indent_line :: proc(ed: ^Editor) {
+	line_start := editor_line_start(ed, ed.cursor)
+	n := gap_buffer_len(&ed.buffer)
+	use_tab := line_start < n && gap_buffer_byte_at(&ed.buffer, line_start) == '\t'
+
+	bytes: []u8
+	if use_tab {
+		buf := make([]u8, 1, context.temp_allocator)
+		buf[0] = '\t'
+		bytes = buf
+	} else {
+		buf := make([]u8, g_config.editor.tab_size, context.temp_allocator)
+		for i in 0 ..< g_config.editor.tab_size do buf[i] = ' '
+		bytes = buf
+	}
+	editor_buffer_insert(ed, line_start, bytes)
+	ed.cursor += len(bytes)
+	ed.anchor = ed.cursor
+	ed.dirty = true
+}
+
+// Remove up to one tab-stop's worth of leading whitespace from the start
+// of the current line. A leading '\t' counts as the full tab-stop;
+// otherwise we strip up to `tab_size` leading spaces.
+vim_outdent_line :: proc(ed: ^Editor) {
+	line_start := editor_line_start(ed, ed.cursor)
+	n := gap_buffer_len(&ed.buffer)
+	if line_start >= n do return
+
+	first := gap_buffer_byte_at(&ed.buffer, line_start)
+	if first == '\t' {
+		editor_buffer_delete(ed, line_start, 1)
+		if ed.cursor > line_start do ed.cursor -= 1
+		if ed.anchor > line_start do ed.anchor -= 1
+		ed.dirty = true
+		return
+	}
+
+	tab := g_config.editor.tab_size
+	count := 0
+	for i := line_start; i < n && count < tab; i += 1 {
+		if gap_buffer_byte_at(&ed.buffer, i) != ' ' do break
+		count += 1
+	}
+	if count == 0 do return
+	editor_buffer_delete(ed, line_start, count)
+	if ed.cursor > line_start do ed.cursor = max(line_start, ed.cursor - count)
+	if ed.anchor > line_start do ed.anchor = max(line_start, ed.anchor - count)
+	ed.dirty = true
+}
+
+// Indent / outdent every line touched by the visual selection. Used by
+// `>` / `<` while in Visual or Visual_Line mode.
+vim_indent_visual :: proc(ed: ^Editor) {
+	lo, hi := visible_selection_range(ed)
+	first_line, _ := editor_pos_to_line_col(ed, lo)
+	last_line,  _ := editor_pos_to_line_col(ed, hi > lo ? hi - 1 : lo)
+	saved_cursor := ed.cursor
+	for line := last_line; line >= first_line; line -= 1 {
+		ed.cursor = editor_nth_line_start(ed, line)
+		vim_indent_line(ed)
+	}
+	ed.cursor = editor_nth_line_start(ed, first_line)
+	ed.anchor = ed.cursor
+	_, ed.desired_col = editor_pos_to_line_col(ed, ed.cursor)
+	_ = saved_cursor
+}
+
+vim_outdent_visual :: proc(ed: ^Editor) {
+	lo, hi := visible_selection_range(ed)
+	first_line, _ := editor_pos_to_line_col(ed, lo)
+	last_line,  _ := editor_pos_to_line_col(ed, hi > lo ? hi - 1 : lo)
+	for line := last_line; line >= first_line; line -= 1 {
+		ed.cursor = editor_nth_line_start(ed, line)
+		vim_outdent_line(ed)
+	}
+	ed.cursor = editor_nth_line_start(ed, first_line)
+	ed.anchor = ed.cursor
+	_, ed.desired_col = editor_pos_to_line_col(ed, ed.cursor)
 }
 
 // Vim's `h` doesn't cross to the previous line — being at the start of a
@@ -391,6 +750,38 @@ vim_handle_char :: proc(ed: ^Editor, c: rune) {
 	}
 	if c == '0' && ed.vim_count > 0 {
 		ed.vim_count = ed.vim_count * 10
+		return
+	}
+
+	// `z` prefix continuation (zz / zt / zb — viewport positioning).
+	if ed.vim_prefix == .Z {
+		ed.vim_prefix = .None
+		ed.vim_count = 0
+		switch c {
+		case 'z': vim_scroll_cursor_to(ed, 1) // center
+		case 't': vim_scroll_cursor_to(ed, 0) // top
+		case 'b': vim_scroll_cursor_to(ed, 2) // bottom
+		}
+		return
+	}
+
+	// `>` / `<` doubled — indent / outdent the current line.
+	if ed.vim_prefix == .Indent {
+		ed.vim_prefix = .None
+		count := max(1, ed.vim_count)
+		ed.vim_count = 0
+		if c == '>' {
+			for _ in 0 ..< count do vim_indent_line(ed)
+		}
+		return
+	}
+	if ed.vim_prefix == .Outdent {
+		ed.vim_prefix = .None
+		count := max(1, ed.vim_count)
+		ed.vim_count = 0
+		if c == '<' {
+			for _ in 0 ..< count do vim_outdent_line(ed)
+		}
 		return
 	}
 
@@ -464,6 +855,19 @@ vim_handle_char :: proc(ed: ^Editor, c: rune) {
 	case 'g':
 		ed.vim_prefix = .G
 		return
+	case 'z':
+		ed.vim_prefix = .Z
+		return
+	case '>':
+		ed.vim_prefix = .Indent
+		ed.vim_op_count = max(1, ed.vim_count)
+		ed.vim_count = 0
+		return
+	case '<':
+		ed.vim_prefix = .Outdent
+		ed.vim_op_count = max(1, ed.vim_count)
+		ed.vim_count = 0
+		return
 	case 'd':
 		ed.vim_op = .Delete
 		ed.vim_op_count = max(1, ed.vim_count)
@@ -530,6 +934,8 @@ vim_handle_char :: proc(ed: ^Editor, c: rune) {
 		vim_paste_after(ed)
 	case 'P':
 		vim_paste_before(ed)
+	case '%':
+		vim_bracket_match(ed)
 	case 'v':
 		vim_enter_visual(ed)
 	case 'V':
@@ -602,6 +1008,12 @@ vim_execute_command :: proc(ed: ^Editor, raw: string) {
 	if strings.has_prefix(cmd, "r ") {
 		path := strings.trim_space(cmd[2:])
 		if len(path) > 0 do replace_active_pane_with_file(path)
+	}
+
+	// :s/…/…/ and :%s/…/…/ — substitute. Tried last so other commands
+	// (like the bare line numbers above) win where there's overlap.
+	if strings.has_prefix(cmd, "s/") || strings.has_prefix(cmd, "%s/") {
+		vim_substitute(ed, cmd)
 	}
 
 	if strings.has_prefix(cmd, "syntax ") || strings.has_prefix(cmd, "syn ") {

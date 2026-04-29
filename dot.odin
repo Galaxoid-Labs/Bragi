@@ -29,13 +29,24 @@ commit_dot :: proc() {
 	for r in g_dot_buf do append(&g_dot_last, r)
 }
 
+// True when the vim FSM is at a settled "no command in progress" state
+// — Normal mode, no operator pending, no count being built, no prefix
+// awaiting a follow-up. We use this as the boundary marker for the dot
+// recording (commit on entry, clear if no buffer change happened).
+@(private="file")
+dot_settled :: proc(ed: ^Editor) -> bool {
+	return ed.mode == .Normal &&
+	       ed.vim_op == .None &&
+	       ed.vim_count == 0 &&
+	       ed.vim_prefix == .None
+}
+
 // Called *before* vim_handle_char processes `c` in non-visual modes.
 // Resets the buffer when we're at a settled fresh state, otherwise
 // continues the in-progress recording.
 dot_observe_pre :: proc(ed: ^Editor, c: rune) {
 	if g_dot_replaying do return
-	fresh := ed.mode == .Normal && ed.vim_op == .None && ed.vim_count == 0
-	if fresh do clear(&g_dot_buf)
+	if dot_settled(ed) do clear(&g_dot_buf)
 	append(&g_dot_buf, c)
 }
 
@@ -47,14 +58,16 @@ dot_observe_pre :: proc(ed: ^Editor, c: rune) {
 dot_observe_post :: proc(ed: ^Editor, pre_version: u64) {
 	if g_dot_replaying do return
 	switch {
-	case ed.mode == .Normal && ed.vim_op == .None && ed.vim_count == 0:
-		if ed.buffer.version != pre_version do commit_dot()
-		else                                do clear(&g_dot_buf)
 	case ed.mode == .Insert:
 		// Recording continues; runes flow through dot_observe_insert.
 	case ed.mode == .Visual || ed.mode == .Visual_Line ||
 	     ed.mode == .Command || ed.mode == .Search:
 		clear(&g_dot_buf)
+	case dot_settled(ed):
+		if ed.buffer.version != pre_version do commit_dot()
+		else                                do clear(&g_dot_buf)
+		// Otherwise mid-command (operator pending, count being built,
+		// or prefix awaiting follow-up) — keep recording.
 	}
 }
 

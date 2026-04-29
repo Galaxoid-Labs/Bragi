@@ -77,13 +77,13 @@ Single Odin package across these files:
   Copy, Paste, Select All, Undo, Redo, Open…, Save, Save As…
 - **`help.odin`** — Modal cheat-sheet popup (`:h` / `:help`). Static
   `HELP_LINES` array, scrollable via mouse-wheel / arrows / `j` `k` /
-  Page Up-Down / `g` `G`. Section headers and command keys are coloured;
+  Page Up-Down / `g` `G`. Section headers and command keys are colored;
   body text uses default. Esc or click-outside dismisses; while open it
   swallows all input so editor buffers stay untouched.
 - **`config.odin`** — INI loader. `Config { font, editor, theme }`,
   per-platform user config path (XDG / `Application Support` / APPDATA),
-  `#RRGGBB` / `#RRGGBBAA` colour parser. `[theme]` section supports
-  every chrome colour as well as syntax tokens.
+  `#RRGGBB` / `#RRGGBBAA` color parser. `[theme]` section supports
+  every chrome color as well as syntax tokens.
 
 ## Important globals (in main.odin)
 
@@ -95,7 +95,7 @@ Single Odin package across these files:
 - `g_text_cache` — hash-keyed cache of `(text, fg, bg) → ^sdl.Texture`. Cap
   at `TEXT_CACHE_MAX = 1024`; on overflow the whole cache is dropped (cheap
   to rebuild on the next few frames)
-- `g_theme` — `Theme` struct holding *every* drawable colour in the app
+- `g_theme` — `Theme` struct holding *every* drawable color in the app
   (syntax tokens + chrome). Loaded from the user's `[theme]` section in
   `config.ini`; falls back to `DEFAULT_THEME`.
 - **Panes:**
@@ -144,7 +144,7 @@ Each frame (`draw_frame`):
    - Top row (`status_path_bg_color`): one segment per pane showing its
      full file path; active pane's path is bright (`status_text_color`),
      others dim (`status_dim_color`). Each segment is clipped to its
-     own column so a long path doesn't bleed into the neighbour.
+     own column so a long path doesn't bleed into the neighbor.
    - Bottom row (`status_bg_color`): mode label + EOL + `[k/m]` search
      count + cursor `line:col` for the active pane only. In Command /
      Search modes the bottom row hosts the `:` / `/` prompt instead.
@@ -198,7 +198,7 @@ avoid blurring at fractional positions during smooth scroll.
   then calls `handle_mouse_button` against that pane's `Pane_Layout`.
 - **Mouse-up** routes back to `g_drag_idx` (not the current cursor
   pane) so the *originating* pane's drag state always gets cleared,
-  even if the mouse wandered into a neighbour before release.
+  even if the mouse wandered into a neighbor before release.
 - **Mouse-motion** while a drag is active routes to the dragging pane;
   otherwise it goes to the active pane (for menu hover effects, etc.).
 - **Mouse-wheel** routes to the pane *under the cursor* (regardless of
@@ -247,7 +247,7 @@ avoid blurring at fractional positions during smooth scroll.
 - Left click in **gutter** moves caret to start of line (drag selects
   by line via the natural col-clamp in `mouse_to_buffer_pos`).
 - Left click in **scrollbar track** (not on thumb) jumps the thumb
-  centre to the click position and continues as a drag.
+  center to the click position and continues as a drag.
 - Right click in text or gutter shows the context menu; menu only
   responds to button-DOWN events so the right-click-up doesn't
   immediately dismiss it.

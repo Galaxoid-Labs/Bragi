@@ -35,7 +35,7 @@ GUTTER_MIN_DIGITS :: 3
 STATUS_PAD_X :: 8.0
 STATUS_PAD_Y :: 5.0
 
-// Syntax + chrome theme. All visible colours live here so they can be
+// Syntax + chrome theme. All visible colors live here so they can be
 // overridden from the [theme] section of the user's config.ini.
 Theme :: struct {
 	// Syntax tokens.
@@ -106,7 +106,84 @@ theme_color :: proc(theme: ^Theme, kind: Token_Kind) -> sdl.Color {
 
 g_theme: Theme = DEFAULT_THEME
 
-WELCOME_TEXT :: "Bragi — fast, lightweight editor"
+// Lines drawn centered on a fresh / blank-slate pane (see is_welcome_pane).
+// `key   description` rows split on any 3+ space run; the key half is drawn
+// in the help-screen blue, the description half is dim. Empty strings are
+// rendered as gaps for vertical breathing room.
+WELCOME_LINES :: [?]string{
+	"Bragi",
+	"",
+	"a small modal editor",
+	"",
+	"i              start editing",
+	"Shift+Space    open file",
+	":h             show help",
+	":q             quit",
+}
+
+@(private="file")
+WELCOME_TITLE_COLOR :: sdl.Color{229, 192, 123, 255} // gold accent
+@(private="file")
+WELCOME_KEY_COLOR   :: sdl.Color{ 97, 175, 239, 255} // help-screen blue
+
+is_welcome_pane :: proc(ed: ^Editor) -> bool {
+	return ed.mode == .Normal &&
+	       len(g_editors) == 1 &&
+	       !ed.dirty &&
+	       len(ed.file_path) == 0 &&
+	       gap_buffer_len(&ed.buffer) == 0
+}
+
+draw_welcome :: proc(ed: ^Editor, p: Pane_Layout) {
+	line_h := g_line_height
+	total_h := f32(len(WELCOME_LINES)) * line_h
+	start_y := p.text_y + (p.text_h - total_h) * 0.5
+
+	// First pass: measure the widest key column and the widest description
+	// column across the key/desc rows so they all line up at one offset.
+	WELCOME_GAP :: f32(4) // chars of gap between key and description
+	max_key_w:  f32 = 0
+	max_desc_w: f32 = 0
+	for line in WELCOME_LINES {
+		if len(line) == 0 do continue
+		key, _, has_desc := split_help_line(line)
+		if !has_desc do continue
+		desc := strings.trim_left(line[len(key):], " ")
+		key_w  := f32(len(key))  * g_char_width
+		desc_w := f32(len(desc)) * g_char_width
+		if key_w  > max_key_w  do max_key_w  = key_w
+		if desc_w > max_desc_w do max_desc_w = desc_w
+	}
+	block_w := max_key_w + WELCOME_GAP * g_char_width + max_desc_w
+	block_x := p.text_x + (p.text_w - block_w) * 0.5
+
+	for line, i in WELCOME_LINES {
+		if len(line) == 0 do continue
+		y := start_y + f32(i) * line_h
+
+		key, _, has_desc := split_help_line(line)
+		if has_desc {
+			// Aligned column layout. Key flush-left in the block, desc
+			// at a fixed x so every row's description starts at the
+			// same column.
+			desc := strings.trim_left(line[len(key):], " ")
+			key_cstr  := strings.clone_to_cstring(key,  context.temp_allocator)
+			desc_cstr := strings.clone_to_cstring(desc, context.temp_allocator)
+			draw_text(key_cstr,  block_x,                                       y, WELCOME_KEY_COLOR,        g_theme.bg_color)
+			draw_text(desc_cstr, block_x + max_key_w + WELCOME_GAP * g_char_width, y, g_theme.status_dim_color, g_theme.bg_color)
+		} else {
+			// Title / subtitle / prose — measured independently and
+			// centered on the pane.
+			full_cstr := strings.clone_to_cstring(line, context.temp_allocator)
+			full_w_px: c.int
+			ttf.GetStringSize(g_font, full_cstr, 0, &full_w_px, nil)
+			full_w := f32(full_w_px) / g_density
+			x := p.text_x + (p.text_w - full_w) * 0.5
+			color := i == 0 ? WELCOME_TITLE_COLOR : g_theme.status_dim_color
+			draw_text(full_cstr, x, y, color, g_theme.bg_color)
+		}
+	}
+}
 
 // Globals — easier than threading through every proc. Set in main, read elsewhere.
 g_renderer:    ^sdl.Renderer
@@ -166,7 +243,7 @@ Layout :: struct {
 // keyboard input always goes to it, and mouse events that hit a different
 // pane move focus there before being handled. g_drag_idx tracks which
 // pane the current mouse drag (if any) started in so motion / button-up
-// events route back there even if the cursor wandered into a neighbour.
+// events route back there even if the cursor wandered into a neighbor.
 //
 // g_pane_ratios stores each pane's width as a fraction of the window
 // (sums to 1.0). Ratios scale naturally on window resize and are
@@ -188,7 +265,7 @@ g_cursor_resize:  ^sdl.Cursor
 g_pending_ctrl_w:     bool
 g_swallow_text_input: bool
 
-DIVIDER_GRAB_PX :: 6.0  // total grab width centred on the divider line
+DIVIDER_GRAB_PX :: 6.0  // total grab width centerd on the divider line
 MIN_PANE_PX     :: 80.0 // minimum width a pane can be shrunk to
 
 // Returns the index of the divider near `x` (= the index of the pane to
@@ -473,6 +550,18 @@ shift_held    :: proc(mods: sdl.Keymod) -> bool { return mods & sdl.KMOD_SHIFT !
 cmd_or_ctrl   :: proc(mods: sdl.Keymod) -> bool { return mods & (sdl.KMOD_GUI | sdl.KMOD_CTRL) != {} }
 
 handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
+	// Shift+Space toggles the fuzzy file finder. Detecting it before any
+	// modal/mode logic so it works from anywhere.
+	if ev.key == sdl.K_SPACE && ev.mod & sdl.KMOD_SHIFT != {} {
+		if g_finder_visible do finder_hide()
+		else                do finder_show()
+		g_swallow_text_input = true
+		return
+	}
+
+	// Finder modal swallows every key while visible.
+	if finder_handle_key(ev) do return
+
 	// Help modal eats every key. Esc dismisses; arrows / page keys / j /
 	// k / g / G scroll its contents.
 	if g_help_visible {
@@ -522,8 +611,21 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 		case sdl.K_W:
 			// Ctrl+W is vim's window-prefix — wait for the follow-up
 			// key (h / l for focus, c / q for close). Cmd+W is left
-			// alone so macOS's standard close-window behaviour fires.
+			// alone so macOS's standard close-window behavior fires.
 			if mods & sdl.KMOD_CTRL != {} do g_pending_ctrl_w = true
+		case sdl.K_D:
+			// Ctrl+D — half-page scroll down (vim). Cmd+D is unused
+			// here; only fire on Ctrl-only and only in Normal /
+			// Visual. Insert mode lets it through to whatever the
+			// system would do.
+			if mods & sdl.KMOD_CTRL != {} && (ed.mode == .Normal || vim_in_visual(ed)) {
+				vim_half_page(ed, +1)
+			}
+		case sdl.K_U:
+			// Ctrl+U — half-page scroll up.
+			if mods & sdl.KMOD_CTRL != {} && (ed.mode == .Normal || vim_in_visual(ed)) {
+				vim_half_page(ed, -1)
+			}
 		case sdl.K_LEFTBRACKET:
 			// Cmd+[ → focus left pane (single-chord alternative to Ctrl+W h).
 			if g_active_idx > 0 do g_active_idx -= 1
@@ -590,12 +692,17 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 			text := string(ed.cmd_buffer[:])
 			if ed.mode == .Search {
 				if len(text) > 0 {
+					// Strip `\c` / `\C` and remember which one (if any)
+					// was present so search uses the right case mode.
+					cleaned, force := vim_strip_case_modifiers(text)
 					if len(ed.search_pattern) > 0 do delete(ed.search_pattern)
-					ed.search_pattern = strings.clone(text)
+					ed.search_pattern    = strings.clone(cleaned)
+					ed.search_force_case = force
 					editor_find_next(ed, ed.search_pattern, ed.search_forward)
 				} else if len(ed.search_pattern) > 0 {
 					delete(ed.search_pattern)
-					ed.search_pattern = ""
+					ed.search_pattern    = ""
+					ed.search_force_case = 0
 				}
 			} else {
 				vim_execute_command(ed, text)
@@ -622,6 +729,7 @@ handle_text_input :: proc(ed: ^Editor, text: cstring) {
 	}
 	if text == nil do return
 	s := string(text)
+	if finder_handle_text(s) do return
 
 	switch ed.mode {
 	case .Insert:
@@ -697,7 +805,7 @@ handle_mouse_button :: proc(ed: ^Editor, ev: sdl.MouseButtonEvent, p: Pane_Layou
 		return
 	}
 
-	// Click on the V track (but not on the thumb): jump the thumb centre to
+	// Click on the V track (but not on the thumb): jump the thumb center to
 	// the click position and continue as a drag. Same for H.
 	if content_h > p.text_h && point_in_rect(mouse, p.v_track) {
 		target_thumb_y := my - p.v_track.y - v_thumb_size / 2
@@ -981,7 +1089,15 @@ draw_editor :: proc(ed: ^Editor, p: Pane_Layout, is_active: bool) {
 		visible = false
 	}
 
+	if is_welcome_pane(ed) {
+		// Suppress the caret on the welcome screen — there's nothing to
+		// edit yet, and a stray block at (0, 0) under the title looks weird.
+		visible = false
+	}
+
 	if visible do fill_rect({caret_x, caret_y, caret_w, g_line_height}, caret_color)
+
+	if is_welcome_pane(ed) do draw_welcome(ed, p)
 }
 
 draw_scrollbars :: proc(ed: ^Editor, p: Pane_Layout) {
@@ -1046,7 +1162,7 @@ draw_status_bar :: proc(ed: ^Editor, l: Layout) {
 
 	// Top row: per-pane file path strips. Each pane's full path sits
 	// inside its own column, clipped so a long path doesn't bleed into
-	// the neighbour. Active pane gets the bright text colour.
+	// the neighbor. Active pane gets the bright text color.
 	for p, i in l.panes {
 		e := &g_editors[i]
 		path := len(e.file_path) > 0 ? e.file_path : "[untitled]"
@@ -1193,7 +1309,7 @@ open_file_callback :: proc "c" (userdata: rawptr, filelist: [^]cstring, filter: 
 	defer free_all(context.temp_allocator)
 	defer { g_pending_raise = true } // restore focus on next main-loop iter
 
-	if filelist == nil || filelist[0] == nil do return // cancelled or error
+	if filelist == nil || filelist[0] == nil do return // canceled or error
 
 	path := string(filelist[0])
 	open_file_smart(path)
@@ -1204,7 +1320,7 @@ save_as_callback :: proc "c" (userdata: rawptr, filelist: [^]cstring, filter: c.
 	defer free_all(context.temp_allocator)
 	defer { g_pending_raise = true } // restore focus on next main-loop iter
 
-	// User cancelled the dialog — abort any pending quit so the editor stays open.
+	// User canceled the dialog — abort any pending quit so the editor stays open.
 	if filelist == nil || filelist[0] == nil {
 		g_pending_quit_after_save = false
 		return
@@ -1318,7 +1434,7 @@ try_quit :: proc(ed: ^Editor) -> bool {
 }
 
 // Window-close path with multiple panes: prompt for each dirty pane in turn.
-// If any prompt is cancelled (or save fails), abort the quit and leave
+// If any prompt is canceled (or save fails), abort the quit and leave
 // every pane intact.
 try_quit_all :: proc() -> bool {
 	for &e in g_editors {
@@ -1391,15 +1507,19 @@ replace_active_pane_with_file :: proc(path: string) {
 	}
 }
 
-// Drop the active pane unconditionally. If it's the last one we replace
-// it with a fresh empty buffer instead of going to zero panes (a layout
-// with no panes has no sensible behavior).
+// Drop the active pane unconditionally. The last pane is replaced with a
+// fresh welcome buffer rather than removed, so the editor never has zero
+// panes — pressing Cmd/Ctrl+W on a file goes back to the welcome screen,
+// then a second Cmd/Ctrl+W (handled higher up via `should_replace_active`)
+// quits.
 close_active_pane_unconditional :: proc() {
 	idx := g_active_idx
 	if len(g_editors) == 1 {
 		editor_destroy(&g_editors[0])
 		g_editors[0] = editor_make()
 		g_editors[0].mode = .Normal
+		// Empty buffer + clean + untitled triggers the centered welcome
+		// overlay; no inline text needed.
 		return
 	}
 	editor_destroy(&g_editors[idx])
@@ -1408,9 +1528,16 @@ close_active_pane_unconditional :: proc() {
 	if g_active_idx >= len(g_editors) do g_active_idx = len(g_editors) - 1
 }
 
-// Cmd+W path: prompt-then-close. Returns true if the pane was closed.
+// Cmd+W / Ctrl+W path: prompt-then-close. Returns true if the pane was
+// closed (or replaced with welcome). On a single welcome pane we set
+// `want_quit` instead so the main loop exits — pressing close from
+// welcome means "actually quit the app".
 try_close_active_pane :: proc() -> bool {
 	ed := active_editor()
+	if len(g_editors) == 1 && should_replace_active() {
+		ed.want_quit = true
+		return false
+	}
 	if !ed.dirty {
 		close_active_pane_unconditional()
 		return true
@@ -1485,6 +1612,7 @@ draw_frame :: proc() {
 	draw_status_bar(active_editor(), l)
 	draw_menu()
 	draw_help(l)
+	draw_finder(l)
 	sdl.RenderPresent(g_renderer)
 }
 
@@ -1540,21 +1668,19 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		if try_quit_all() do running^ = false
 	case .WINDOW_CLOSE_REQUESTED:
 		// macOS Cmd+W (and the red traffic light) come through here.
-		// With multiple panes open, treat it as "close the active pane"
-		// — quitting the whole app would lose every other file. With
-		// only one pane, fall through to the standard single-window
-		// app behaviour and quit (chained through the unsaved-changes
-		// prompt).
-		if len(g_editors) > 1 {
-			try_close_active_pane()
-		} else {
-			if try_quit_all() do running^ = false
-		}
+		// With multiple panes open, treat it as "close the active pane".
+		// With a single pane, route through `try_close_active_pane`
+		// which: on a file → resets to welcome; already on welcome →
+		// sets want_quit and the loop exits.
+		try_close_active_pane()
 	case .KEY_DOWN:
 		handle_key_down(active_editor(), ev.key)
 	case .TEXT_INPUT:
 		if !cmd_or_ctrl(sdl.GetModState()) do handle_text_input(active_editor(), ev.text.text)
 	case .MOUSE_BUTTON_DOWN:
+		// Finder modal swallows clicks; outside-click dismisses,
+		// inside-click selects (and double-click activates).
+		if finder_handle_button(ev.button, l) do return
 		// Help modal swallows clicks; clicking outside dismisses it.
 		if help_handle_click(ev.button.x, ev.button.y, l) do return
 		// Divider grab takes priority over pane interior — the grab
@@ -1570,6 +1696,8 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		g_drag_idx   = idx
 		handle_mouse_button(&g_editors[idx], ev.button, l.panes[idx])
 	case .MOUSE_BUTTON_UP:
+		// Finder swallows the up so it doesn't fall through to a pane.
+		if g_finder_visible do return
 		if g_resize_divider > 0 {
 			g_resize_divider = -1
 			return
@@ -1595,6 +1723,7 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		if target < 0 || target >= len(g_editors) do target = g_active_idx
 		handle_mouse_motion(&g_editors[target], ev.motion, l.panes[target])
 	case .MOUSE_WHEEL:
+		if finder_handle_wheel(ev.wheel) do return
 		if g_help_visible {
 			line_h := g_config.font.size + HELP_LINE_GAP
 			help_scroll_by(-ev.wheel.y * line_h * SCROLL_LINES_PER_NOTCH)
@@ -1710,14 +1839,13 @@ main :: proc() {
 	if len(os.args) >= 2 {
 		path := os.args[1]
 		if !editor_load_file(active_editor(), path) {
-			fmt.eprintfln("could not open %s; starting with welcome text", path)
-			editor_set_text(active_editor(), WELCOME_TEXT)
+			fmt.eprintfln("could not open %s; starting with welcome screen", path)
+			// Buffer stays empty → welcome overlay renders.
 		} else {
 			warn_if_mixed_eol(active_editor())
 		}
-	} else {
-		editor_set_text(active_editor(), WELCOME_TEXT)
 	}
+	// No CLI arg → empty buffer → welcome overlay (no work needed).
 
 	last_ticks := sdl.GetTicksNS()
 	running := true

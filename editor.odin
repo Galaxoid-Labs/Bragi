@@ -64,9 +64,15 @@ Editor :: struct {
 	// Invalidated when buffer.version changes or the pattern differs from
 	// the one that was scanned. Without this, scrolling rescans the full
 	// buffer every frame for the [n/m] readout.
-	search_match_positions: [dynamic]int,
-	search_match_ver:       u64,
-	search_match_pattern:   string, // owned clone of pattern at time of cache
+	search_match_positions:    [dynamic]int,
+	search_match_ver:          u64,
+	search_match_pattern:      string, // owned clone of pattern at time of cache
+	search_match_ignore_case:  bool,   // case-mode the cache was built under
+
+	// Per-search override of case sensitivity (-1 = sensitive via `\C`,
+	// 0 = use config defaults, +1 = insensitive via `\c`). Set when the
+	// user submits a pattern via `/` or `?`.
+	search_force_case: i8
 }
 
 editor_make :: proc() -> Editor {
@@ -702,42 +708,76 @@ editor_insert_soft_tab :: proc(ed: ^Editor) {
 // Search (literal substring; vim-style /, ?, n, N)
 // ──────────────────────────────────────────────────────────────────
 
+// ASCII tolower. Used by case-insensitive search; sufficient for the
+// literal-substring matcher we have today (no Unicode case folding).
 @(private="file")
-match_at :: proc(ed: ^Editor, pos: int, needle: []u8) -> bool {
+ascii_tolower :: proc(b: u8) -> u8 {
+	if b >= 'A' && b <= 'Z' do return b + 32
+	return b
+}
+
+// Effective ignore-case for `pattern` given the current force override and
+// global ignorecase / smartcase settings. Vim's smartcase rule: only ignore
+// case when no uppercase appears in the pattern.
+editor_pattern_ignore_case :: proc(pattern: string, force: i8) -> bool {
+	switch force {
+	case  1: return true
+	case -1: return false
+	}
+	if !g_config.editor.ignorecase do return false
+	if g_config.editor.smartcase {
+		for i in 0 ..< len(pattern) {
+			b := pattern[i]
+			if b >= 'A' && b <= 'Z' do return false
+		}
+	}
+	return true
+}
+
+@(private="file")
+match_at :: proc(ed: ^Editor, pos: int, needle: []u8, ignore_case: bool) -> bool {
 	for j in 0 ..< len(needle) {
-		if gap_buffer_byte_at(&ed.buffer, pos + j) != needle[j] do return false
+		a := gap_buffer_byte_at(&ed.buffer, pos + j)
+		b := needle[j]
+		if ignore_case {
+			if ascii_tolower(a) != ascii_tolower(b) do return false
+		} else {
+			if a != b do return false
+		}
 	}
 	return true
 }
 
 // Find first occurrence of `needle` at or after `start`, in [start, end).
 @(private="file")
-find_in_range :: proc(ed: ^Editor, needle: []u8, start, end: int) -> int {
+find_in_range :: proc(ed: ^Editor, needle: []u8, start, end: int, ignore_case: bool) -> int {
 	if len(needle) == 0 do return -1
 	last := end - len(needle)
 	for i in start ..= last {
-		if match_at(ed, i, needle) do return i
+		if match_at(ed, i, needle, ignore_case) do return i
 	}
 	return -1
 }
 
 // Find last occurrence of `needle` strictly before `before`, scanning backward.
 @(private="file")
-find_in_range_backward :: proc(ed: ^Editor, needle: []u8, before: int) -> int {
+find_in_range_backward :: proc(ed: ^Editor, needle: []u8, before: int, ignore_case: bool) -> int {
 	if len(needle) == 0 do return -1
 	for i := before - len(needle); i >= 0; i -= 1 {
-		if match_at(ed, i, needle) do return i
+		if match_at(ed, i, needle, ignore_case) do return i
 	}
 	return -1
 }
 
-// Rebuilds the cached list of match positions for `pattern` if buffer or
-// pattern changed since the last scan. Caller is responsible for not asking
-// when pattern is empty.
+// Rebuilds the cached list of match positions for `pattern` if buffer,
+// pattern, or effective case-mode changed since the last scan. Caller is
+// responsible for not asking when pattern is empty.
 @(private="file")
 ensure_search_matches :: proc(ed: ^Editor, pattern: string) {
+	ic := editor_pattern_ignore_case(pattern, ed.search_force_case)
 	if ed.search_match_ver == ed.buffer.version &&
-	   ed.search_match_pattern == pattern {
+	   ed.search_match_pattern == pattern &&
+	   ed.search_match_ignore_case == ic {
 		return
 	}
 	clear(&ed.search_match_positions)
@@ -746,7 +786,7 @@ ensure_search_matches :: proc(ed: ^Editor, pattern: string) {
 	last := n - len(needle)
 	if last >= 0 {
 		for i in 0 ..= last {
-			if match_at(ed, i, needle) do append(&ed.search_match_positions, i)
+			if match_at(ed, i, needle, ic) do append(&ed.search_match_positions, i)
 		}
 	}
 	if ed.search_match_pattern != pattern {
@@ -754,6 +794,7 @@ ensure_search_matches :: proc(ed: ^Editor, pattern: string) {
 		ed.search_match_pattern = strings.clone(pattern)
 	}
 	ed.search_match_ver = ed.buffer.version
+	ed.search_match_ignore_case = ic
 }
 
 // Returns total occurrences of `pattern` in the buffer and the 1-based index
@@ -785,17 +826,18 @@ editor_find_next :: proc(ed: ^Editor, pattern: string, forward: bool) -> bool {
 	needle := transmute([]u8)pattern
 	if len(needle) == 0 do return false
 	n := gap_buffer_len(&ed.buffer)
+	ic := editor_pattern_ignore_case(pattern, ed.search_force_case)
 
 	idx: int
 	if forward {
 		// Search after the *current* match end (so n doesn't re-find current).
 		from := ed.cursor + 1
 		if from > n do from = n
-		idx = find_in_range(ed, needle, from, n)
-		if idx < 0 do idx = find_in_range(ed, needle, 0, n) // wrap
+		idx = find_in_range(ed, needle, from, n, ic)
+		if idx < 0 do idx = find_in_range(ed, needle, 0, n, ic) // wrap
 	} else {
-		idx = find_in_range_backward(ed, needle, ed.cursor)
-		if idx < 0 do idx = find_in_range_backward(ed, needle, n) // wrap
+		idx = find_in_range_backward(ed, needle, ed.cursor, ic)
+		if idx < 0 do idx = find_in_range_backward(ed, needle, n, ic) // wrap
 	}
 	if idx < 0 do return false
 

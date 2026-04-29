@@ -5,7 +5,7 @@ import "core:strings"
 import sdl "vendor:sdl3"
 
 // Modal help/cheat-sheet popup. Shown via `:h` / `:help`. Styled like the
-// right-click context menu (same border / bg colours) but laid out as a
+// right-click context menu (same border / bg colors) but laid out as a
 // scrollable list of shortcuts. Captures Esc and outside-clicks to dismiss.
 
 g_help_visible: bool
@@ -54,10 +54,17 @@ HELP_LINES :: [?]string{
 	"p  P          paste after / before",
 	"u             undo  ·  Cmd/Ctrl+Shift+Z to redo",
 	".             repeat last change (insert run, op+motion, x, p, …)",
+	">>  <<        indent / outdent current line",
+	"%             jump to matching bracket   ( ) [ ] { }",
+	"",
+	"── Scrolling ──",
+	"Ctrl+D / U    half-page down / up",
+	"zz  zt  zb    center / top / bottom — scroll cursor's line there",
 	"",
 	"── Visual mode (after v / V) ──",
 	"motion keys   extend the selection (h j k l w b e 0 $ ^ gg G)",
 	"d  c  y       delete / change / yank the selection then exit",
+	">  <          indent / outdent every line in the selection",
 	"v             exit VISUAL  ·  V exits VISUAL-LINE",
 	"Esc           exit visual without operating",
 	"",
@@ -67,8 +74,13 @@ HELP_LINES :: [?]string{
 	"n  N          next / previous match (wraps)",
 	"[k/m]         status bar shows match index while on a hit",
 	":noh          clear active search pattern",
+	"\\c  \\C        force case-insensitive / case-sensitive  (in pattern)",
+	":s/pat/repl/[gi I]   substitute on current line  (g=all  i=icase  I=case)",
+	":%s/pat/repl/[gi I]  substitute across the whole buffer",
 	"",
 	"── Files & panes ──",
+	"Shift+Space   directory navigator (Enter dives into a dir / opens a file)",
+	"              Backspace or `..` goes up · type to fuzzy-filter the listing",
 	":e <path>     open file (replaces blank pane, else splits)",
 	":r <path>     replace active pane with file (drops unsaved changes)",
 	":w  :q  :wq   save / close pane / save+close",
@@ -130,14 +142,13 @@ HELP_SECTION_COLOR :: sdl.Color{198, 120, 221, 255} // purple
 @(private="file")
 HELP_KEY_COLOR :: sdl.Color{ 97, 175, 239, 255} // blue
 @(private="file")
-HELP_TEXT_COLOR :: sdl.Color{220, 220, 220, 255} // default light grey
+HELP_TEXT_COLOR :: sdl.Color{220, 220, 220, 255} // default light gray
 
 // Splits a help line into its key column and description column. The split
 // point is the first run of >= 3 consecutive spaces; everything before is
 // the key, everything after (including the spaces) is the trailing layout +
 // description. Returns has_desc=false for lines that are pure prose
-// (titles, section headers, blanks).
-@(private="file")
+// (titles, section headers, blanks). Reused by the welcome screen.
 split_help_line :: proc(line: string) -> (key: string, rest: string, has_desc: bool) {
 	n := len(line)
 	if n < 4 do return line, "", false

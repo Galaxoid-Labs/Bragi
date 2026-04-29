@@ -26,6 +26,12 @@ Editor_Config :: struct {
 	tab_size:     int,
 	column_guide: int,
 	line_spacing: f32,
+	// Vim-style case sensitivity for search and :s.
+	//   ignorecase = true   → /foo also matches Foo, FOO, etc.
+	//   smartcase  = true   → only ignore case when pattern is all lowercase.
+	// `\c` / `\C` in a pattern (and `i` / `I` flag on :s) override per call.
+	ignorecase:   bool,
+	smartcase:    bool,
 }
 
 DEFAULT_CONFIG :: Config{
@@ -41,6 +47,8 @@ DEFAULT_CONFIG :: Config{
 		tab_size     = 4,
 		column_guide = 120,
 		line_spacing = 1.3,
+		ignorecase   = false,
+		smartcase    = false,
 	},
 	theme = DEFAULT_THEME,
 }
@@ -104,9 +112,11 @@ config_load :: proc() {
 	}
 
 	if section, has := m["editor"]; has {
-		load_int(section, "tab_size",     &g_config.editor.tab_size)
-		load_int(section, "column_guide", &g_config.editor.column_guide)
-		load_f32(section, "line_spacing", &g_config.editor.line_spacing)
+		load_int(section,  "tab_size",     &g_config.editor.tab_size)
+		load_int(section,  "column_guide", &g_config.editor.column_guide)
+		load_f32(section,  "line_spacing", &g_config.editor.line_spacing)
+		load_bool(section, "ignorecase",   &g_config.editor.ignorecase)
+		load_bool(section, "smartcase",    &g_config.editor.smartcase)
 	}
 
 	if section, has := m["theme"]; has {
@@ -201,5 +211,15 @@ load_f32 :: proc(section: map[string]string, key: string, dest: ^f32) {
 load_color :: proc(section: map[string]string, key: string, dest: ^sdl.Color) {
 	if v, ok := section[key]; ok {
 		if c, cok := parse_color(v); cok do dest^ = c
+	}
+}
+
+@(private="file")
+load_bool :: proc(section: map[string]string, key: string, dest: ^bool) {
+	if v, ok := section[key]; ok {
+		switch strings.to_lower(strings.trim_space(v), context.temp_allocator) {
+		case "true", "1", "yes", "on":  dest^ = true
+		case "false", "0", "no", "off": dest^ = false
+		}
 	}
 }
