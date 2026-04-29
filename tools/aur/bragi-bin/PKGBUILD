@@ -1,0 +1,54 @@
+# Maintainer: Jacob Davis <noreply@example.com>
+#
+# `bragi-bin` — installs the prebuilt Linux binary release. Zero build
+# dependencies on the user's machine; just downloads the tarball
+# produced by tools/package_linux.sh and drops the FHS tree into place.
+#
+# Each release: bump `pkgver`, replace `sha256sums` with the actual
+# hash of the corresponding tarball (run `updpkgsums` or compute by
+# hand), then commit + push to the AUR.
+
+pkgname=bragi-bin
+_pkgname=bragi
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="A small GPU-accelerated, vim-flavoured text/code editor"
+arch=('x86_64')
+url="https://github.com/Galaxoid-Labs/Bragi"
+license=('MIT')
+
+# Runtime deps. SDL3 / SDL3_ttf / libvterm landed in the repos around
+# the same time as Arch's transition to SDL3 (2025). If a user's host
+# is too old to have these, they'll see a clear pacman dep error.
+depends=('sdl3' 'sdl3_ttf' 'libvterm')
+
+# `provides=bragi` lets dependent packages declare a generic dep on
+# `bragi`; `conflicts` makes pacman refuse to install bragi-bin
+# alongside bragi or bragi-git (only one Bragi at a time).
+provides=("$_pkgname=$pkgver")
+conflicts=("$_pkgname" "$_pkgname-git")
+
+# Source tarball: the FHS-shaped output of tools/package_linux.sh,
+# uploaded as a GitHub release artifact. The `::` rename gives the
+# downloaded file a stable name regardless of any redirect quirks.
+source=("$_pkgname-$pkgver-x86_64-linux.tar.gz::$url/releases/download/v$pkgver/$_pkgname-$pkgver-x86_64-linux.tar.gz")
+
+# TODO: replace with the real sha256 of the uploaded tarball before
+# pushing to the AUR. `updpkgsums` does this for you in one step.
+sha256sums=('SKIP')
+
+package() {
+	cd "$srcdir"
+	# The tarball already has the canonical FHS layout we want under
+	# /usr — just splat it into $pkgdir and we're done. -a preserves
+	# permissions + symlinks. The trailing `/.` copies *contents*
+	# rather than the `usr` directory itself, so we don't end up with
+	# /usr/usr.
+	cp -a usr/. "$pkgdir/usr"
+
+	# Arch convention puts the license at /usr/share/licenses/<pkg>/.
+	# We keep the Debian-style copyright at its original path too
+	# (harmless duplication; some indexers prefer one over the other).
+	install -Dm644 "$srcdir/usr/share/doc/$_pkgname/copyright" \
+		"$pkgdir/usr/share/licenses/$_pkgname/LICENSE"
+}
