@@ -135,6 +135,31 @@ menu_hide :: proc() {
 	g_menu.hovered = -1
 }
 
+// True when the action makes sense given the current editor state. Used
+// by the renderer to dim disabled rows and by the click handler to no-op
+// them. Anything always-available (Open / Save / Save As / Select All
+// when the buffer has any bytes) returns true unconditionally.
+@(private="file")
+menu_action_enabled :: proc(ed: ^Editor, action: Menu_Action) -> bool {
+	switch action {
+	case .None:
+		return false
+	case .Cut, .Copy:
+		return editor_has_selection(ed)
+	case .Paste:
+		return sdl.HasClipboardText()
+	case .Select_All:
+		return gap_buffer_len(&ed.buffer) > 0
+	case .Undo:
+		return len(ed.undo_stack) > 0 || len(ed.pending.ops) > 0
+	case .Redo:
+		return len(ed.redo_stack) > 0
+	case .Open, .Save, .Save_As:
+		return true
+	}
+	return true
+}
+
 @(private="file")
 menu_item_at :: proc(local_x, local_y: f32) -> int {
 	if local_x < 0 || local_x > g_menu.width do return -1
@@ -162,7 +187,12 @@ menu_handle_click :: proc(ed: ^Editor, mx, my: f32) -> bool {
 	if !point_in_rect({mx, my}, rect) do return false
 
 	idx := menu_item_at(mx - g_menu.pos.x, my - g_menu.pos.y)
-	if idx >= 0 do menu_dispatch(ed, CONTEXT_MENU[idx].action)
+	if idx >= 0 {
+		action := CONTEXT_MENU[idx].action
+		if menu_action_enabled(ed, action) do menu_dispatch(ed, action)
+		// Disabled-item click still closes the menu, matching the
+		// behavior of native context menus.
+	}
 	menu_hide()
 	return true
 }
@@ -185,6 +215,10 @@ menu_dispatch :: proc(ed: ^Editor, action: Menu_Action) {
 
 draw_menu :: proc() {
 	if !g_menu.visible do return
+
+	// Disabled-state checks need an editor reference. The active pane is
+	// the right one — the right-click that opened the menu set it.
+	ed := active_editor()
 
 	rect := sdl.FRect{g_menu.pos.x, g_menu.pos.y, g_menu.width, g_menu.height}
 
@@ -211,23 +245,39 @@ draw_menu :: proc() {
 			continue
 		}
 
+		enabled := menu_action_enabled(ed, item.action)
+
 		bg := MENU_BG_COLOR
-		if idx == g_menu.hovered {
+		// Hover highlight only on enabled items — disabled rows stay
+		// flat so the dimming reads as "you can't click this".
+		if idx == g_menu.hovered && enabled {
 			fill_rect({rect.x + 2, y, rect.w - 4, MENU_ITEM_H}, MENU_HOVER_COLOR)
 			bg = MENU_HOVER_COLOR
 		}
 
 		text_y := y + (MENU_ITEM_H - g_config.font.size) * 0.5
 
+		label_color: sdl.Color
+		sc_color:    sdl.Color
+		switch {
+		case !enabled:
+			label_color = MENU_DIM_COLOR
+			sc_color    = MENU_DIM_COLOR
+		case bg == MENU_HOVER_COLOR:
+			label_color = MENU_TEXT_COLOR
+			sc_color    = MENU_TEXT_COLOR
+		case:
+			label_color = MENU_TEXT_COLOR
+			sc_color    = MENU_DIM_COLOR
+		}
+
 		label_cstr := strings.clone_to_cstring(item.label, context.temp_allocator)
-		draw_text(label_cstr, rect.x + MENU_PAD_X, text_y, MENU_TEXT_COLOR, bg)
+		draw_text(label_cstr, rect.x + MENU_PAD_X, text_y, label_color, bg)
 
 		if len(item.shortcut) > 0 {
 			sc_cstr := strings.clone_to_cstring(item.shortcut, context.temp_allocator)
 			sc_w := measure_text_w(item.shortcut)
 			sc_x := rect.x + rect.w - MENU_PAD_X - sc_w
-			// On hover, use full-bright text for the shortcut too; otherwise dim.
-			sc_color := bg == MENU_HOVER_COLOR ? MENU_TEXT_COLOR : MENU_DIM_COLOR
 			draw_text(sc_cstr, sc_x, text_y, sc_color, bg)
 		}
 

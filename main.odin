@@ -118,7 +118,7 @@ WELCOME_LINES :: [?]string{
 	"a small modal editor",
 	"",
 	"i              start editing",
-	"Shift+Space    open file",
+	"Cmd/Ctrl+F     open file",
 	":h             show help",
 	":q             quit",
 }
@@ -577,9 +577,10 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 	// own input loops and shouldn't acknowledge buffer-level messages.
 	if !g_finder_visible && !g_help_visible do clear_status_message()
 
-	// Shift+Space toggles the fuzzy file finder. Detecting it before any
-	// modal/mode logic so it works from anywhere.
-	if ev.key == sdl.K_SPACE && ev.mod & sdl.KMOD_SHIFT != {} {
+	// Cmd+F (macOS) / Ctrl+F (everywhere else) toggles the directory
+	// navigator. Detected before any modal/mode logic so it works
+	// from anywhere — even Insert mode.
+	if ev.key == sdl.K_F && ev.mod & (sdl.KMOD_GUI | sdl.KMOD_CTRL) != {} {
 		if g_finder_visible do finder_hide()
 		else                do finder_show()
 		g_swallow_text_input = true
@@ -1255,7 +1256,12 @@ draw_status_bar :: proc(ed: ^Editor, l: Layout) {
 		cur, tot := editor_search_stats(ed, ed.search_pattern)
 		if cur > 0 do search_part = fmt.tprintf("[%d/%d]   ", cur, tot)
 	}
-	right := fmt.tprintf("%s%s   %d:%d", search_part, eol_str, line + 1, col + 1)
+	// Active language label, omitted for plain text.
+	lang_part := ""
+	if ed.language != .None {
+		lang_part = fmt.tprintf("{{}} %s   ", language_display_name(ed.language))
+	}
+	right := fmt.tprintf("%s%s%s   %d:%d", search_part, lang_part, eol_str, line + 1, col + 1)
 
 	left_cstr  := strings.clone_to_cstring(mode_label, context.temp_allocator)
 	right_cstr := strings.clone_to_cstring(right, context.temp_allocator)
