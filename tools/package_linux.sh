@@ -103,7 +103,12 @@ RPM_REQUIRES="$(ini_get linux rpm_requires)"
 # Tool detection.
 HAS_DEB=1; command -v dpkg-deb >/dev/null 2>&1 || HAS_DEB=0
 HAS_RPM=1; command -v rpmbuild >/dev/null 2>&1 || HAS_RPM=0
-HAS_CONVERT=1; command -v convert >/dev/null 2>&1 || HAS_CONVERT=0
+HAS_CONVERT=0
+if command -v magick >/dev/null 2>&1; then
+	HAS_CONVERT=1; CONVERT_CMD="magick"
+elif command -v convert >/dev/null 2>&1; then
+	HAS_CONVERT=1; CONVERT_CMD="convert"
+fi
 
 # Refuse to run on macOS — this script needs the actual Linux build of
 # the binary plus dpkg-deb/rpmbuild. If you only have a Mac, run this
@@ -170,7 +175,7 @@ if [[ -n "$ICON_PNG" && -f "$REPO_ROOT/$ICON_PNG" ]]; then
 		for size in 16 32 48 64 128 256 512; do
 			dir="$STAGING/usr/share/icons/hicolor/${size}x${size}/apps"
 			mkdir -p "$dir"
-			convert "$REPO_ROOT/$ICON_PNG" -resize "${size}x${size}" "$dir/$BIN_NAME.png"
+			"$CONVERT_CMD" "$REPO_ROOT/$ICON_PNG" -resize "${size}x${size}" "$dir/$BIN_NAME.png"
 		done
 	else
 		# Without ImageMagick we still drop ONE hicolor entry (the
@@ -292,6 +297,12 @@ if (( STAGE_RPM && HAS_RPM )); then
 	fi
 
 	{
+		# We ship a stripped, prebuilt binary — no debug info to harvest.
+		# Without this, Fedora's rpmbuild auto-generates an empty
+		# -debugsource subpackage and dies on "Empty %files file ...
+		# debugsourcefiles.list".
+		echo "%global debug_package %{nil}"
+		echo
 		echo "Name:           $BIN_NAME"
 		echo "Version:        $VERSION"
 		echo "Release:        1%{?dist}"
@@ -318,7 +329,8 @@ if (( STAGE_RPM && HAS_RPM )); then
 		echo
 		echo "%install"
 		echo "rm -rf %{buildroot}"
-		echo "cp -a usr %{buildroot}/usr"
+		echo "mkdir -p %{buildroot}"
+		echo "cp -a usr %{buildroot}/"
 		echo
 		echo "%files"
 		echo "%license /usr/share/doc/$BIN_NAME/copyright"
@@ -326,7 +338,6 @@ if (( STAGE_RPM && HAS_RPM )); then
 		echo "/usr/share/applications/$BIN_NAME.desktop"
 		echo "/usr/share/pixmaps/$BIN_NAME.png"
 		echo "/usr/share/icons/hicolor/*/apps/$BIN_NAME.png"
-		echo "/usr/share/doc/$BIN_NAME/"
 		echo
 		echo "%changelog"
 		echo "* $(date '+%a %b %d %Y') $AUTHOR <$MAINTAINER_EMAIL> - $VERSION-1"

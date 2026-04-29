@@ -45,9 +45,15 @@ pty_spawn :: proc(argv: []string, cols, rows: int) -> (pty: PTY, ok: bool) {
 			return {}, false
 		}
 		if pid == 0 {
-			// Child. Replace ourselves with the requested program. If
-			// execvp fails, _exit (not exit) so we don't run the
-			// parent's atexit handlers / SDL cleanup in the fork copy.
+			// Child. Make sure TERM is set — when Bragi is launched from
+			// a .desktop entry (no parent terminal), TERM is unset and
+			// `clear` / curses apps abort with "TERM environment variable
+			// not set." libvterm emulates xterm-256color.
+			_ = setenv("TERM", "xterm-256color", 1)
+			_ = setenv("COLORTERM", "truecolor", 1)
+			// Replace ourselves with the requested program. If execvp
+			// fails, _exit (not exit) so we don't run the parent's
+			// atexit handlers / SDL cleanup in the fork copy.
 			_ = execvp(cargs[0], raw_data(cargs))
 			libc_exit(127)
 		}
@@ -162,6 +168,7 @@ when ODIN_OS == .Darwin || ODIN_OS == .Linux {
 		ioctl  :: proc(fd: c.int, request: c.ulong, arg: rawptr) -> c.int ---
 		fcntl  :: proc(fd: c.int, cmd: c.int, #c_vararg args: ..any) -> c.int ---
 		kill   :: proc(pid: c.int, sig: c.int) -> c.int ---
+		setenv :: proc(name: cstring, value: cstring, overwrite: c.int) -> c.int ---
 
 		// Bypasses atexit handlers — what we want in the post-fork
 		// child path so we don't run the parent's cleanup twice.
