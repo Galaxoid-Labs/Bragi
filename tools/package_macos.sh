@@ -356,16 +356,32 @@ fi
 if (( STAGE_DMG )); then
 	echo "→ building $DMG_PATH"
 	rm -f "$DMG_PATH"
-	# `hdiutil create -srcfolder` with a single .app produces a tidy
-	# disk image. For drag-to-Applications layouts you'd use
-	# create-dmg or a custom AppleScript; v1 is just the .app on a
-	# bare volume.
+
+	# Stage the volume contents: the .app plus an `/Applications`
+	# symlink so the mounted DMG shows the conventional drag-to-
+	# install layout (Bragi.app on the left, Applications shortcut
+	# on the right, user drags one onto the other). Without the
+	# symlink users have to know to copy the .app to /Applications
+	# manually — most don't, and end up running it from the mounted
+	# volume which won't survive eject.
+	#
+	# A pretty .DS_Store with positioned icons + background image
+	# would polish this further but needs an AppleScript / dmg-
+	# styling pass; the symlink alone is enough for the standard UX.
+	DMG_STAGING="$DIST_DIR/dmg-staging"
+	rm -rf "$DMG_STAGING"
+	mkdir -p "$DMG_STAGING"
+	cp -a "$APP_DIR" "$DMG_STAGING/$APP_NAME.app"
+	ln -s /Applications "$DMG_STAGING/Applications"
+
 	hdiutil create \
 		-volname "$APP_NAME" \
-		-srcfolder "$APP_DIR" \
+		-srcfolder "$DMG_STAGING" \
 		-ov \
 		-format "$DMG_FORMAT" \
 		"$DMG_PATH" >/dev/null
+
+	rm -rf "$DMG_STAGING"
 
 	if [[ -n "$SIGN_ID" ]]; then
 		codesign --force --sign "$SIGN_ID" --timestamp "$DMG_PATH"
