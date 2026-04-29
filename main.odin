@@ -1536,6 +1536,36 @@ open_embedded_font :: proc(size_px: f32) -> ^ttf.Font {
 	return ttf.OpenFontIO(io, true, size_px)
 }
 
+// Per-character advance for a monospace font in *logical* pixels.
+//
+// Asking SDL_ttf for the bounding box of "M" (or any rendered string)
+// gives back the rasterised pixel extent — that includes side bearings
+// and rounding to whole physical pixels, neither of which is the value
+// the renderer actually steps by between glyphs. At small sizes the
+// difference is enough to drift the cursor a full cell off the
+// characters beneath it.
+//
+// What we actually want is the font's *advance* metric — that's the
+// horizontal step between glyph origins, in font-design units rounded
+// to the rasterised grid, which is exactly what TTF_RenderText_LCD
+// uses to lay out subsequent glyphs. Pull it via GetGlyphMetrics.
+// Falls back to the GetStringSize approach if the font doesn't have
+// metrics for "M" (shouldn't happen with Fira Code).
+measure_char_width :: proc(font: ^ttf.Font) -> f32 {
+	if font == nil || g_density <= 0 do return 0
+
+	advance: c.int
+	if ttf.GetGlyphMetrics(font, 'M', nil, nil, nil, nil, &advance) && advance > 0 {
+		return f32(advance) / g_density
+	}
+
+	// Fallback: a single-glyph string measurement. Less accurate at
+	// small sizes (as above) but better than nothing.
+	w: c.int
+	if !ttf.GetStringSize(font, "M", 0, &w, nil) || w <= 0 do return 0
+	return f32(w) / g_density
+}
+
 // Same idea, but loads the Nerd Font variant used by the terminal pane.
 open_terminal_font :: proc(size_px: f32) -> ^ttf.Font {
 	io := sdl.IOFromConstMem(rawptr(&NERD_FONT_DATA[0]), uint(len(NERD_FONT_DATA)))
@@ -1666,6 +1696,37 @@ should_replace_active :: proc() -> bool {
 	return len(g_editors) == 1 &&
 	       !active_editor().dirty &&
 	       len(active_editor().file_path) == 0
+}
+
+// Open the user's config.ini for editing. If the file already exists,
+// goes through the normal open-file path. If it doesn't, seeds a buffer
+// with the default-config template and points its file_path at the
+// per-platform config location — saving from this buffer just writes
+// the file into existence at the right spot. The buffer starts non-
+// dirty so navigating away without edits doesn't prompt.
+bragi_open_config :: proc() {
+	path := config_path(context.allocator)
+	if len(path) == 0 {
+		set_status_message("E: could not resolve config path", is_error = true)
+		return
+	}
+	if os.exists(path) {
+		open_file_smart(path)
+		return
+	}
+	// Pick a pane: replace the active blank pane in place, else split.
+	if !should_replace_active() do open_new_pane()
+	ed := active_editor()
+	editor_clear(ed)
+	editor_set_text(ed, DEFAULT_CONFIG_INI)
+	if len(ed.file_path) > 0 do delete(ed.file_path)
+	ed.file_path = strings.clone(path)
+	ed.language  = .Ini
+	ed.dirty     = false           // Untouched template — closing without edits should be silent.
+	ed.cursor    = 0
+	ed.scroll_x  = 0
+	ed.scroll_y  = 0
+	set_status_message(fmt.tprintf("config does not exist — save this buffer to create %s", path))
 }
 
 // Unified file-open entry point: replaces the welcome/blank pane in
@@ -1830,9 +1891,7 @@ refresh_pixel_density :: proc() {
 
 	text_cache_clear()
 
-	w: c.int
-	if g_font != nil do ttf.GetStringSize(g_font, "M", 0, &w, nil)
-	if w > 0 do g_char_width = f32(w) / g_density
+	g_char_width = measure_char_width(g_font)
 }
 
 // SDL fires this synchronously during macOS live-resize (before the main
@@ -2100,11 +2159,15 @@ main :: proc() {
 	defer if g_terminal_font != nil do ttf.CloseFont(g_terminal_font)
 
 	// Measure char width once. Monospace assumption.
-	{
-		w: c.int
-		ttf.GetStringSize(g_font, "M", 0, &w, nil)
-		g_char_width = f32(w) / g_density
-	}
+	//
+	// Measuring a *single* "M" and dividing by density rounds the
+	// glyph's bounding box to whole physical pixels — at small font
+	// sizes the rounding error is a meaningful fraction of the actual
+	// per-char advance, so the cursor block ends up subtly wider or
+	// narrower than the chars beneath it. Measuring a long run and
+	// averaging averages the rounding away and lands much closer to
+	// the font's true advance width.
+	g_char_width = measure_char_width(g_font)
 	g_line_height = g_config.font.size * g_config.editor.line_spacing
 
 	_ = sdl.StartTextInput(g_window)

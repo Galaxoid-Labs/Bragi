@@ -36,6 +36,7 @@ Language :: enum {
 	Go,
 	Jai,
 	Swift,
+	Ini,
 }
 
 // Per-language data table that drives `tokenize_with_spec`. New languages
@@ -335,6 +336,16 @@ g_specs := [Language]Language_Spec{
 		capitalized_types   = true,
 		detect_function_call = true,
 	},
+	.Ini     = Language_Spec{
+		// INI doesn't fit the C-family Language_Spec shape (no block
+		// comments, sections aren't keywords, key/value rules differ
+		// per side of the `=`). syntax_tokenize special-cases this
+		// language to call `tokenize_ini` directly; the spec entry
+		// is here just for the name / display / extension lookup.
+		name         = "ini",
+		display_name = "INI",
+		extensions   = []string{".ini", ".cfg", ".conf"},
+	},
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -377,7 +388,172 @@ language_display_name :: proc(lang: Language) -> string {
 // the next line should resume from. For Language.None, returns no tokens.
 syntax_tokenize :: proc(lang: Language, line: []u8, state_in: Tokenizer_State) -> ([]Token, Tokenizer_State) {
 	if lang == .None do return nil, .Normal
+	if lang == .Ini  do return tokenize_ini(line), .Normal
 	return tokenize_with_spec(line, state_in, &g_specs[lang])
+}
+
+// ──────────────────────────────────────────────────────────────────
+// INI tokenizer
+// ──────────────────────────────────────────────────────────────────
+//
+// Hand-rolled because the Language_Spec model is C-family-shaped and
+// INI's structural elements (sections, keys, values) don't fit. Single-
+// line, no inter-line state (so the proc takes just `line: []u8`).
+//
+// Recognises:
+//   `; comment` or `# comment` at start of line   → Comment
+//   `[section]`                                   → Type
+//   `key = value`                                 → key as Function;
+//                                                   value classified by content:
+//                                                     true / false / null / yes / no  → Constant
+//                                                     "..." or '...' literals        → String
+//                                                     #RRGGBB / #RRGGBBAA hex colors → String
+//                                                     numbers (10, 0x1f, 1.3, -2)    → Number
+//                                                     anything else                  → Default
+//
+// `#` is intentionally not treated as an inline comment — Bragi's
+// config uses `#RRGGBB` colors in the right-hand side, and supporting
+// inline `#` comments would force a heuristic that's unreliable. Whole-
+// line `#` and `;` comments cover everything in practice.
+@(private="file")
+tokenize_ini :: proc(line: []u8) -> []Token {
+	tokens := make([dynamic]Token, 0, 4, context.temp_allocator)
+	n := len(line)
+	i := 0
+
+	// Skip leading whitespace.
+	for i < n && (line[i] == ' ' || line[i] == '\t') do i += 1
+	if i >= n do return tokens[:]
+
+	// Whole-line comment.
+	if line[i] == ';' || line[i] == '#' {
+		append(&tokens, Token{i, n, .Comment})
+		return tokens[:]
+	}
+
+	// Section header: [name]. We highlight from the `[` through the `]`
+	// (inclusive); anything after a malformed header — missing `]` —
+	// just runs to end-of-line so the user can see it isn't closed.
+	if line[i] == '[' {
+		j := i + 1
+		for j < n && line[j] != ']' do j += 1
+		if j < n do j += 1   // include the ']'
+		append(&tokens, Token{i, j, .Type})
+		return tokens[:]
+	}
+
+	// key = value
+	eq := -1
+	for j := i; j < n; j += 1 {
+		if line[j] == '=' { eq = j; break }
+	}
+	if eq < 0 do return tokens[:]   // malformed line; render plain
+
+	// Trim trailing whitespace off the key.
+	key_end := eq
+	for key_end > i && (line[key_end - 1] == ' ' || line[key_end - 1] == '\t') do key_end -= 1
+	if key_end > i do append(&tokens, Token{i, key_end, .Function})
+
+	// Trim leading + trailing whitespace off the value.
+	val_start := eq + 1
+	for val_start < n && (line[val_start] == ' ' || line[val_start] == '\t') do val_start += 1
+	val_end := n
+	for val_end > val_start && (line[val_end - 1] == ' ' || line[val_end - 1] == '\t') do val_end -= 1
+	if val_end > val_start {
+		append(&tokens, classify_ini_value(line, val_start, val_end))
+	}
+	return tokens[:]
+}
+
+// Inspect a value's bytes and pick the right Token_Kind. Order matters:
+// hex-color check has to come before the generic number check so
+// `#FF` doesn't get mistaken for "default" via the unrecognised-prefix
+// fallthrough.
+@(private="file")
+classify_ini_value :: proc(line: []u8, start, end: int) -> Token {
+	val := line[start:end]
+	m   := len(val)
+
+	// Quoted string literal.
+	if m >= 2 {
+		q := val[0]
+		if (q == '"' || q == '\'') && val[m - 1] == q {
+			return Token{start, end, .String}
+		}
+	}
+
+	// Hex color: #RRGGBB or #RRGGBBAA.
+	if m == 7 || m == 9 {
+		if val[0] == '#' {
+			all_hex := true
+			for k in 1 ..< m do if !is_hex_digit(val[k]) { all_hex = false; break }
+			if all_hex do return Token{start, end, .String}
+		}
+	}
+
+	// Boolean / null-ish constants. Case-insensitive on the first char
+	// is enough for the common spellings; full case-fold avoids a
+	// temp allocation.
+	if ini_match_const(val) do return Token{start, end, .Constant}
+
+	// Number: optional leading sign, decimal / hex / float.
+	if ini_is_number(val) do return Token{start, end, .Number}
+
+	return Token{start, end, .Default}
+}
+
+@(private="file")
+ini_match_const :: proc(val: []u8) -> bool {
+	// Matches: true, false, null, nil, yes, no, on, off (any case).
+	@(static) CONSTS := [?]string{
+		"true", "false", "null", "nil", "yes", "no", "on", "off",
+	}
+	if len(val) == 0 do return false
+	for c in CONSTS {
+		if len(c) != len(val) do continue
+		match := true
+		for k in 0 ..< len(c) {
+			a := c[k]
+			b := val[k]
+			// Lowercase b if it's an uppercase ASCII letter.
+			if b >= 'A' && b <= 'Z' do b += 32
+			if a != b { match = false; break }
+		}
+		if match do return true
+	}
+	return false
+}
+
+@(private="file")
+ini_is_number :: proc(val: []u8) -> bool {
+	n := len(val)
+	if n == 0 do return false
+	i := 0
+	if val[i] == '+' || val[i] == '-' do i += 1
+	if i >= n do return false
+
+	// 0x hex literal.
+	if i + 1 < n && val[i] == '0' && (val[i + 1] == 'x' || val[i + 1] == 'X') {
+		i += 2
+		if i >= n do return false
+		for ; i < n; i += 1 do if !is_hex_digit(val[i]) do return false
+		return true
+	}
+
+	// Decimal int / float.
+	saw_digit := false
+	for ; i < n; i += 1 {
+		if !is_digit(val[i]) do break
+		saw_digit = true
+	}
+	if i < n && val[i] == '.' {
+		i += 1
+		for ; i < n; i += 1 {
+			if !is_digit(val[i]) do break
+			saw_digit = true
+		}
+	}
+	return saw_digit && i == n
 }
 
 // ──────────────────────────────────────────────────────────────────

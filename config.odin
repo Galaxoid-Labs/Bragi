@@ -34,6 +34,69 @@ Editor_Config :: struct {
 	smartcase:    bool,
 }
 
+// Heavily-commented template seeded into a fresh buffer when the user
+// invokes `:config` and no config file exists yet. Values match
+// DEFAULT_CONFIG exactly — keep them in sync if defaults change.
+DEFAULT_CONFIG_INI :: `# Bragi configuration. Save this file to
+#   macOS:   ~/Library/Application Support/Bragi/config.ini
+#   Linux:   $XDG_CONFIG_HOME/bragi/config.ini  (~/.config/bragi/config.ini)
+#   Windows: %APPDATA%\Bragi\config.ini
+# Bragi auto-targets the right path when you save from the :config buffer.
+# Restart Bragi to pick up changes.
+
+[font]
+# Path to a TTF / OTF font file. Empty → use the embedded Fira Code.
+path    =
+# Logical font size in pixels.
+size    = 14
+# Hinting mode: normal / light / light_subpixel / mono / none.
+hinting = normal
+
+[editor]
+# Tab width in columns (also drives soft-tab insert width).
+tab_size     = 4
+# Vertical line at column N. 0 to disable.
+column_guide = 120
+# Line height = font.size × line_spacing.
+line_spacing = 1.3
+# Vim-style case behavior for /search and :s.
+#   ignorecase = true   → /foo matches Foo / FOO / etc.
+#   smartcase  = true   → only ignore case when the pattern is all lowercase.
+# \c / \C in a pattern (and i / I on :s) override per call.
+ignorecase   = false
+smartcase    = false
+
+[theme]
+# Each value is #RRGGBB or #RRGGBBAA.
+
+# Syntax tokens
+default  = #DCDCDC
+keyword  = #C678DD
+type     = #5FC8DA
+constant = #E5C07B
+number   = #D7915A
+string   = #98C379
+comment  = #5F6E82
+function = #61AFEF
+
+# Chrome
+bg              = #1E1E26
+cursor          = #F0C850
+selection       = #465F9678
+search_match    = #BE50B478
+gutter_bg       = #18181E
+gutter_text     = #5A5F6E
+gutter_active   = #C8C8D2
+status_bg       = #14141A
+status_path_bg  = #1C1C24
+status_text     = #C8C8D2
+status_dim      = #787D8C
+status_error    = #DC5A5A
+sb_track        = #282830
+sb_thumb        = #5A5A64
+sb_thumb_hover  = #82828C
+`
+
 DEFAULT_CONFIG :: Config{
 	font = {
 		// Empty path means "use the embedded FiraCode TTF in the binary"

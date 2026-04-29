@@ -1003,6 +1003,8 @@ vim_execute_command :: proc(ed: ^Editor, raw: string) {
 		terminal_toggle(24, 80)
 	case "termclose":
 		terminal_close()
+	case "config":
+		bragi_open_config()
 	}
 
 	// :s/…/…/ and :%s/…/…/ — substitute. Tried last so other commands

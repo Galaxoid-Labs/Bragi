@@ -74,6 +74,7 @@ HELP_LINES :: [?]string{
 	"n  N          next / previous match (wraps)",
 	"[k/m]         status bar shows match index while on a hit",
 	":noh          clear active search pattern",
+	":config       open / create the user config.ini",
 	":term :terminal   open / focus the bottom terminal  (Cmd/Ctrl+J toggles)",
 	":termclose        close the terminal pane",
 	"wheel over term   scroll the terminal scrollback (4096-line ring)",

@@ -39,9 +39,10 @@ apart from system SDL3 / SDL3_ttf / libvterm.
   reads. 100 MB plain-text files load in a few hundred milliseconds and
   edit smoothly.
 - **Syntax highlighting** for **Odin**, **C**, **C++**, **Go**, **Jai**,
-  **Swift**, plus a **Generic** fallback (strings / numbers / `//` and
-  `/* */` comments) for everything else. Detection by file extension;
-  switch manually with `:syntax <name>`.
+  **Swift**, **INI** (sections, keys, hex colors, booleans), plus a
+  **Generic** fallback (strings / numbers / `//` and `/* */` comments)
+  for everything else. Detection by file extension; switch manually
+  with `:syntax <name>`.
 - **Search** — `/foo` / `?foo` (literal, no regex), `n` / `N` to page,
   `[k/m]` match counter in the status bar, faint match highlights for
   every visible occurrence, `\c` / `\C` per-pattern case overrides,
@@ -295,6 +296,9 @@ n N                 next / prev match (wraps)
 :%s/pat/repl/[gi I] substitute (whole buffer)
 :term :terminal     open / focus the terminal (Cmd/Ctrl+J toggles)
 :termclose          close the terminal pane
+:config             open the user config.ini (creates a default-seeded
+                    buffer if no config exists yet — saving writes it
+                    to the platform's config dir)
 :h  :help           open this cheat sheet
 
 Cmd/Ctrl+F          open the directory navigator
@@ -322,7 +326,12 @@ Bragi reads `config.ini` from a per-platform location at startup:
 | Linux    | `$XDG_CONFIG_HOME/bragi/config.ini` (defaults to `~/.config/bragi/config.ini`) |
 | Windows  | `%APPDATA%\Bragi\config.ini` |
 
-The file is optional — every field has a sensible default. Example:
+The file is optional — every field has a sensible default. The
+fastest way to start tweaking is `:config` from inside Bragi: if the
+file already exists it just opens it; if it doesn't, you get a
+buffer pre-populated with the commented default template, and saving
+writes it to the right path with the right syntax (INI mode is
+auto-detected by the `.ini` extension). Example:
 
 ```ini
 [font]
@@ -334,8 +343,8 @@ hinting = normal                # normal / light / light_subpixel / mono / none
 tab_size     = 4
 column_guide = 120              # 0 to disable
 line_spacing = 1.3
-ignorecase   = true
-smartcase    = true
+ignorecase   = false
+smartcase    = false
 
 [theme]
 # Syntax (any field can be #RRGGBB or #RRGGBBAA)
