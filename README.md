@@ -9,8 +9,8 @@ odin build .
 ./Bragi path/to/file.go       # opens that file
 ```
 
-Single binary, ~930 KB (the font is embedded). Statically linked apart
-from system SDL3 / SDL3_ttf.
+Single binary, ~1.3 MB (both fonts are embedded). Statically linked
+apart from system SDL3 / SDL3_ttf / libvterm.
 
 ## Highlights
 
@@ -22,6 +22,14 @@ from system SDL3 / SDL3_ttf.
   Cmd/Ctrl+F to open a directory navigator. Each new file opens in a
   resizable column. `Ctrl+W h` / `Ctrl+W l` (or `Cmd+[` / `Cmd+]`)
   switches focus; drag the boundary to resize.
+- **Embedded terminal** — `Cmd+J` / `Ctrl+J` (or `:term`) toggles a
+  bottom strip running your `$SHELL` against a real PTY. libvterm
+  drives the cell grid; 4096-line scrollback with its own scrollbar
+  matching the editor's chrome; mouse-wheel scrolls history; typing
+  snaps back to live; `clear` wipes scrollback (Ghostty-style); `exit`
+  closes the pane. Powerline / dev glyphs render correctly via an
+  embedded Nerd Font variant of Fira Code. Unix-only for now (Windows
+  ConPTY support is a future task).
 - **Fuzzy directory navigator** — Cmd+F (macOS) / Ctrl+F (Linux,
   Windows) opens a centered modal at your home directory. Type to
   filter, Enter to dive into a folder or open a file, Backspace or `..`
@@ -57,25 +65,59 @@ from system SDL3 / SDL3_ttf.
 ### Dependencies
 
 - A recent [Odin compiler](https://odin-lang.org/docs/install/).
-- **SDL3** + **SDL3_ttf** at runtime.
+- **SDL3** and **SDL3_ttf** for window / renderer / text.
+- **libvterm** for the embedded terminal pane (Unix only — see Windows
+  notes below).
+- **forkpty** lives in **libutil** on Linux; macOS rolls it into
+  libSystem so no extra package is needed.
+
+The two embedded TTFs (`FiraCode-Regular.ttf` and
+`FiraCodeNerdFont-Regular.ttf`) are checked in and `#load`-ed at compile
+time. There is no runtime font dependency on either.
 
 #### macOS
 
 ```sh
-brew install sdl3 sdl3_ttf
+brew install sdl3 sdl3_ttf libvterm
 ```
+
+That's it. SDL3 and SDL3_ttf give you the window + LCD-AA text;
+libvterm runs the terminal pane's VT state machine. `forkpty` lives in
+libSystem.
+
+If `odin build` complains about a missing `vterm` symbol at link time,
+make sure your `DYLD_LIBRARY_PATH` (or just your default linker search
+path) covers Homebrew's lib directory — Apple Silicon Macs put it at
+`/opt/homebrew/lib`, Intel Macs at `/usr/local/lib`. Homebrew sets this
+up automatically on a fresh install.
 
 #### Linux (Debian / Ubuntu)
 
 ```sh
-sudo apt install libsdl3-dev libsdl3-ttf-dev
+sudo apt install libsdl3-dev libsdl3-ttf-dev libvterm-dev libutil-dev
 ```
 
-(or `SDL3-devel SDL3_ttf-devel` on Fedora)
+#### Linux (Fedora)
+
+```sh
+sudo dnf install SDL3-devel SDL3_ttf-devel libvterm-devel libutil-devel
+```
+
+`libvterm-devel` ships the same `0.3.x` ABI as Homebrew so the Odin
+bindings in `vterm.odin` cover both unchanged. Glibc and musl both
+expose `forkpty(3)` via libutil — `libutil-dev` on debian/ubuntu,
+`glibc-devel`'s linker stubs on fedora (the package list above already
+covers it; on a minimal container you may need `glibc-static`).
 
 #### Windows
 
 Ship `SDL3.dll` and `SDL3_ttf.dll` next to the produced binary.
+
+**The terminal pane is not available on Windows yet.** `pty.odin`'s
+Windows branch is stubbed (returns `false` from `pty_spawn`), so
+`Cmd+J` / `:term` will fail to open until ConPTY support
+(`CreatePseudoConsole` + `CreateProcess`) is wired up. Everything else
+— editor, panes, search, syntax, file dialogs — works on Windows.
 
 ### Build
 
@@ -122,9 +164,12 @@ n N                 next / prev match (wraps)
 :syntax <name>      switch tokenizer
 :s/pat/repl/[gi I]  substitute (current line)
 :%s/pat/repl/[gi I] substitute (whole buffer)
+:term :terminal     open / focus the terminal (Cmd/Ctrl+J toggles)
+:termclose          close the terminal pane
 :h  :help           open this cheat sheet
 
 Cmd/Ctrl+F          open the directory navigator
+Cmd/Ctrl+J          toggle the bottom terminal pane
 Cmd+S               save
 Cmd+Shift+S         save as
 Cmd+O               native open dialog
@@ -134,6 +179,8 @@ Ctrl+W h / l        focus pane left / right
 Ctrl+W c / q        close active pane
 Cmd+[ / Cmd+]       focus prev / next pane (single-chord)
 drag pane border    resize adjacent panes
+drag term divider   resize the terminal strip
+wheel over term     scroll the terminal scrollback (4096-line ring)
 ```
 
 ## Configuration
@@ -199,11 +246,15 @@ amazing — see CLAUDE.md for the upgrade paths (mmap-backed open,
 piece-table backing store).
 
 Things that aren't done yet but are tracked in CLAUDE.md:
+- Windows terminal pane (ConPTY support).
 - Incremental search (debounced).
 - Mouse double / triple-click selection in the editor itself.
 - Cmd+W → Save → auto-close (untitled-buffer save flow).
-- Python / Markdown / JSON syntax tokenizers.
+- Python / Markdown / JSON / Zig / TS-JS syntax tokenizers.
 - Glyph atlas (would speed up first-display of large files).
+- Terminal mouse forwarding (so tmux / htop / vim get mouse events
+  inside the terminal pane).
+- Comment toggle (`gc` / `Ctrl+/`), language-aware.
 
 ## Architecture
 

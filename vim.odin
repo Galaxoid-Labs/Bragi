@@ -998,6 +998,11 @@ vim_execute_command :: proc(ed: ^Editor, raw: string) {
 		}
 	case "h", "help":
 		help_show()
+	case "term", "terminal":
+		// Default size; first frame fits to the actual rect.
+		terminal_toggle(24, 80)
+	case "termclose":
+		terminal_close()
 	}
 
 	if strings.has_prefix(cmd, "e ") {

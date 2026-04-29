@@ -4,8 +4,9 @@ A small GPU-accelerated text/code editor written in Odin. Cross-platform via
 SDL3 + SDL3_ttf. Modal (vim) editing, hand-rolled syntax highlighting, LCD
 subpixel text rendering, native file dialogs, native message boxes, custom
 in-app context menu, **resizable side-by-side panes** for viewing /
-editing multiple files at once, **modal help screen** (`:h` / `:help`),
-fully theme-able chrome.
+editing multiple files at once, **embedded terminal pane** (libvterm + PTY)
+with scrollback, **modal help screen** (`:h` / `:help`), fully theme-able
+chrome.
 
 ## Build & run
 
@@ -15,22 +16,33 @@ odin build .                        # produces ./Bragi
 ./Bragi path/to/file          # opens that file at startup
 ```
 
-Single binary, ~930 KB (includes the embedded font), statically linked
-apart from system SDL3.
+Single binary, ~1.3 MB (includes two embedded TTFs), statically linked
+apart from system SDL3 / SDL3_ttf / libvterm.
 
 **Dependencies (per platform):**
-- macOS: `brew install sdl3 sdl3_ttf`
-- Linux: `libsdl3-dev` and `libsdl3-ttf-dev` (debian/ubuntu) or
-  `SDL3-devel SDL3_ttf-devel` (fedora). SDL3_ttf bundles FreeType + HarfBuzz
-  + PlutoSVG so font rendering is identical to macOS.
+- macOS: `brew install sdl3 sdl3_ttf libvterm` — that's it. `forkpty` lives
+  in libutil, which is rolled into libSystem so no extra package.
+- Linux: `libsdl3-dev`, `libsdl3-ttf-dev`, `libvterm-dev`, `libutil-dev`
+  on debian/ubuntu (the matching `*-devel` variants on fedora). SDL3_ttf
+  bundles FreeType + HarfBuzz + PlutoSVG so font rendering is identical
+  to macOS.
 - Windows: ship `SDL3.dll` and `SDL3_ttf.dll` next to the binary.
+  **The terminal pane is not yet implemented on Windows** —
+  `pty.odin`'s Windows branch returns `false` from `pty_spawn`, so
+  `:term` / `Cmd+J` will fail to open. ConPTY support
+  (`CreatePseudoConsole` + `CreateProcess`) is a future task.
+  Everything else (editor, panes, search, syntax, etc.) works.
 
-`FiraCode-Regular.ttf` is **embedded into the binary** at compile time
-via `#load` (see `FIRA_CODE_DATA` in `main.odin`) and loaded through
-`SDL_IOFromConstMem` + `TTF_OpenFontIO`. There is no runtime font-file
-dependency. Users can override via `font.path` in their config; if the
-override fails to load, the editor logs a warning and falls back to the
-embedded font.
+Both TTFs are **embedded into the binary** at compile time via `#load`
+(`FIRA_CODE_DATA` and `NERD_FONT_DATA` in `main.odin`) and loaded
+through `SDL_IOFromConstMem` + `TTF_OpenFontIO`. The editor pane uses
+plain Fira Code; the terminal pane uses the Nerd Font variant
+(`FiraCodeNerdFont-Regular.ttf`) so prompts that ship powerline / dev
+glyphs render correctly. Both fonts have identical advance width — cell
+math doesn't change between them. Users can override the editor font
+via `font.path` in their config; if the override fails to load, the
+editor logs a warning and falls back to the embedded Fira Code. There
+is no override for the terminal font yet.
 
 ## Files
 
@@ -84,23 +96,64 @@ Single Odin package across these files:
   per-platform user config path (XDG / `Application Support` / APPDATA),
   `#RRGGBB` / `#RRGGBBAA` color parser. `[theme]` section supports
   every chrome color as well as syntax tokens.
+- **`finder.odin`** — Fuzzy directory navigator (Cmd/Ctrl+F).
+  `g_finder_visible`, the listing + filter ring, hover/keyboard/wheel
+  routing. Centered modal styled like the help / context menu;
+  `Backspace` / `..` go up, Enter dives into a directory or opens a file.
+- **`dot.odin`** — `.` (repeat last edit) recorder. Watches Insert mode
+  runs (`dot_observe_pre`/`post`/`insert`/`esc`) and operator+motion
+  sequences and stores them as a replayable thunk that fires when the
+  user hits `.` in Normal.
+- **`vterm.odin`** — Odin foreign bindings for libvterm 0.3.x. Just the
+  surface we need: `vterm_new`/`free`/`set_size`, `vterm_input_write`,
+  `vterm_output_read`, keyboard encoding (`vterm_keyboard_unichar` /
+  `vterm_keyboard_key`), screen + state handles, `vterm_screen_get_cell`,
+  `vterm_screen_set_callbacks`, `VTermScreenCallbacks` struct,
+  `VTermColor` tagged union, `VTermProp_AltScreen` constant. Layout
+  matches `/opt/homebrew/include/vterm.h` byte-for-byte —
+  `VTermScreenCellAttrs.flags` is a `u32` (NOT `u16+u16`) so the
+  4-byte-aligned C bitfield doesn't shift `fg`/`bg` reads.
+- **`pty.odin`** — Pseudo-terminal abstraction. Unix path uses
+  `forkpty(3)` (libutil on macOS / glibc-musl on Linux), which wraps
+  openpt+grantpt+unlockpt+fork+TIOCSCTTY into one call. Master fd is
+  set non-blocking; reader thread polls + sleeps 1 ms on EAGAIN.
+  `pty_close` sends SIGTERM after closing the master fd in case the
+  shell ignored the SIGHUP. Windows branch is stubbed (`return false`).
+- **`terminal.odin`** — Embedded terminal pane on top of `vterm.odin` +
+  `pty.odin`. `Terminal` struct: vterm + screen + state handles, PTY,
+  reader thread + mutex + `pending_input` ring, scrollback ring
+  (`Scrollback_Line` / `TERMINAL_SCROLLBACK_MAX = 4096`), `scroll_offset`,
+  `on_alt_screen` flag, blink timer, `exited` flag, scrollbar drag
+  state, `callbacks` (kept inline so libvterm's pointer stays valid).
+  Public surface: `terminal_open` / `_close` / `_resize` /
+  `_pump` / `_flush_output` / `_send_rune` / `_send_special` /
+  `_toggle` / `_fit_to_rect` / `_scroll_by` / scrollbar hit-test +
+  drag procs. `TERMINAL_EVENT` is the SDL custom-event code the
+  reader pushes when bytes arrive or the shell exits.
 
 ## Important globals (in main.odin)
 
-- `g_renderer`, `g_window`, `g_font` — SDL3 / TTF handles
-- `g_density` — `GetWindowPixelDensity` result; the font is opened at
-  `FONT_SIZE * g_density` so glyphs rasterize at full physical resolution
+- `g_renderer`, `g_window`, `g_font`, `g_terminal_font` — SDL3 / TTF
+  handles. The Nerd Font is a separate `^ttf.Font` opened at the same
+  size; only the terminal pane uses it.
+- `g_density` — `GetWindowPixelDensity` result; both fonts are opened
+  at `FONT_SIZE * g_density` so glyphs rasterize at full physical resolution.
 - `g_char_width`, `g_line_height` — precomputed monospace metrics in logical
-  pixels
-- `g_text_cache` — hash-keyed cache of `(text, fg, bg) → ^sdl.Texture`. Cap
-  at `TEXT_CACHE_MAX = 1024`; on overflow the whole cache is dropped (cheap
-  to rebuild on the next few frames)
+  pixels. Identical for both fonts.
+- `g_text_cache` — hash-keyed cache of `(text, fg, bg, font_ptr) → ^sdl.Texture`.
+  The font pointer is mixed into the key so editor + terminal textures
+  for the same `(text, fg, bg)` don't collide. Cap at `TEXT_CACHE_MAX = 1024`;
+  on overflow the whole cache is dropped (cheap to rebuild on the next few frames).
 - `g_theme` — `Theme` struct holding *every* drawable color in the app
   (syntax tokens + chrome). Loaded from the user's `[theme]` section in
   `config.ini`; falls back to `DEFAULT_THEME`.
+- `INACTIVE_DIM` — `Color{0, 0, 0, 50}` overlay used to dim non-focused
+  panes (and the terminal when it doesn't have focus). Single shared
+  constant so both call sites stay in sync.
 - **Panes:**
   - `g_editors: [dynamic]Editor` — one per visible column.
-  - `g_active_idx` — focused pane; receives keyboard input.
+  - `g_active_idx` — focused editor pane index. Receives keyboard input
+    when the terminal does *not* own focus.
   - `g_pane_ratios: [dynamic]f32` — per-pane width as a fraction of the
     window (sums to 1). Scales with window resize. Adjusted when the user
     drags a divider.
@@ -108,13 +161,31 @@ Single Odin package across these files:
     idle); routes motion / button-up back there even if the cursor wandered.
   - `g_resize_divider` — index of the right-side pane whose left edge is
     being dragged (-1 = no resize in progress).
-  - `g_cursor_default` / `g_cursor_resize` — system cursors swapped on
-    divider hover.
+  - `g_cursor_default` / `g_cursor_resize_h` / `g_cursor_resize_v` —
+    system cursors. `_resize_h` is `EW_RESIZE` (↔), used on vertical
+    pane dividers. `_resize_v` is `NS_RESIZE` (↕), used on the
+    horizontal terminal divider.
+- **Terminal:**
+  - `g_terminal: ^Terminal` — non-nil while a terminal pane exists.
+    Cleared by `terminal_close` (which is called from the main loop
+    when the child shell exits or the user hits `:termclose`).
+  - `g_terminal_visible` — controls whether the bottom strip is laid
+    out and drawn. Toggled by Cmd+J / Ctrl+J / `:term`.
+  - `g_terminal_active` — keyboard focus is on the terminal. When
+    true, all non-shortcut keys route to libvterm's keyboard encoder
+    instead of the active editor; clicking inside the editor area
+    flips it back to false.
+  - `g_terminal_height_ratio` — fraction of `screen_h - status_h` the
+    terminal occupies (default 0.30). Survives window resize.
+  - `g_terminal_resizing` — true mid-drag of the horizontal divider.
 - **Vim window-prefix:**
   - `g_pending_ctrl_w` — set after Ctrl+W; the next key is interpreted as a
     window command (`h` / `l` / `c` / `q` / Esc).
-  - `g_swallow_text_input` — true for one event after a prefix follow-up so
-    the rune SDL queues for the same physical keypress doesn't get inserted.
+  - `g_swallow_text_input` — one-batch guard for chord follow-ups (Ctrl+W h,
+    etc.). Set when a key handler knows a TEXT_INPUT for the same physical
+    press is about to fire and shouldn't reach the buffer. Cleared at the
+    end of every event-drain batch in the main loop, so it can never bleed
+    into the next iteration and eat an unrelated keystroke.
 - **Help modal:**
   - `g_help_visible` / `g_help_scroll` — see `help.odin`.
 - **Dialogs:**
@@ -131,16 +202,32 @@ Single Odin package across these files:
 Each frame (`draw_frame`):
 
 1. `compute_layout()` — computes screen rects per pane (gutter, text
-   area, scrollbar tracks) plus the global status bar. Pane widths come
-   from `g_pane_ratios * screen_w`.
+   area, scrollbar tracks), the status bar position, and the terminal
+   strip + divider when visible. With the terminal hidden, status pins
+   to the bottom and the editor zone fills everything above it. With it
+   visible, the vertical stack from top to bottom is: editor → status
+   bar → 4-px divider → terminal. The status bar always sits adjacent
+   to the editor it describes. `Layout.editor_bottom` is the bottom y
+   of the editor zone — call sites that paint "down to the bottom of
+   the editor" use it instead of `status_y`.
 2. BG clear → for each pane in order: `draw_editor(pane, is_active)` →
    `draw_gutter(pane)` → `draw_scrollbars(pane)`.
-3. **Inactive-pane dim overlay**: a `~20%` black rect is filled over each
-   non-active pane's column so the focused pane reads as the focused
-   one. Drawn *before* the divider lines so the dividers stay crisp.
+3. **Inactive-pane dim overlay**: an `INACTIVE_DIM` (alpha 50) rect is
+   filled over each non-focused pane's column. When the terminal owns
+   keyboard focus *every* editor pane gets dimmed (the active editor
+   no longer reads as focused — the terminal does); when an editor
+   pane owns focus, only its peers dim. Drawn *before* the separators
+   so the dividers stay crisp.
 4. **Pane separators**: a 1-physical-pixel vertical line is drawn at
    each non-leftmost pane's left edge in `gutter_bg_color`.
-5. `draw_status_bar(active_editor, l)` — two-row strip:
+5. **Terminal strip** (`g_terminal_visible`): the divider strip is
+   filled in `gutter_bg_color`, then `draw_terminal(l.terminal_rect)`
+   walks the cell grid (live screen + scrollback as appropriate) and
+   draws its own scrollbar inside the right `SB_THICKNESS` of the rect.
+   When the terminal doesn't own focus, the same `INACTIVE_DIM`
+   overlay is filled over the terminal rect so it reads as inactive
+   alongside dimmed editor panes.
+6. `draw_status_bar(active_editor, l)` — two-row strip:
    - Top row (`status_path_bg_color`): one segment per pane showing its
      full file path; active pane's path is bright (`status_text_color`),
      others dim (`status_dim_color`). Each segment is clipped to its
@@ -148,10 +235,10 @@ Each frame (`draw_frame`):
    - Bottom row (`status_bg_color`): mode label + EOL + `[k/m]` search
      count + cursor `line:col` for the active pane only. In Command /
      Search modes the bottom row hosts the `:` / `/` prompt instead.
-6. `draw_menu()` then `draw_help(l)` — context menu draws on top of the
+7. `draw_menu()` then `draw_help(l)` — context menu draws on top of the
    editor; the help modal draws on top of everything else (with a
    dimming layer behind it).
-7. `RenderPresent`.
+8. `RenderPresent`.
 
 Inside `draw_editor`, visible lines are tokenized via `syntax_tokenize`
 and each token segment is drawn as a separate `draw_text` call (cached
@@ -225,10 +312,13 @@ avoid blurring at fractional positions during smooth scroll.
   - `l` / Right → focus next pane
   - `c` / `q` → close active pane
   - Esc → cancel the prefix
-- Whichever follow-up fires also sets `g_swallow_text_input` so the
-  rune SDL queues for the same physical keypress doesn't get inserted
-  into the new active buffer. (Set/cleared every time, so an Esc
-  cancel doesn't swallow the next unrelated text input.)
+- The follow-up handler sets `g_swallow_text_input` so the rune SDL
+  queues for the same physical keypress doesn't get inserted into the
+  new active buffer. The flag is also cleared at the end of each
+  event-drain batch (see `g_swallow_text_input` in the globals
+  section) — that's the safety net that prevents a chord that doesn't
+  actually queue a TEXT_INPUT (e.g. some Cmd+letter combinations on
+  macOS) from leaking the swallow into the user's next real keystroke.
 
 ### Window close vs app quit
 
@@ -263,6 +353,132 @@ avoid blurring at fractional positions during smooth scroll.
 - `handle_text_input` returns immediately (no rune insertion).
 - Mouse-down outside the modal dismisses it; clicks inside are
   swallowed.
+
+## Embedded terminal
+
+The terminal pane is a real pane at the bottom of the window: cell
+grid + scrollbar + scrollback + horizontal divider. It's a thin shell
+over libvterm (the VT state machine + cell grid) plus a forkpty-spawned
+child shell.
+
+### Lifecycle
+
+- `terminal_open(rows, cols)` allocates the `Terminal`, calls
+  `vterm_new`, registers screen callbacks (`sb_pushline`,
+  `settermprop`), spawns `$SHELL` (or `/bin/sh`) on the slave end of a
+  fresh PTY, and starts a reader thread.
+- `terminal_toggle(rows, cols)` opens on first call; afterwards flips
+  visibility without killing the child shell. Bound to Cmd+J /
+  Ctrl+J / `:term` / `:terminal`.
+- `terminal_close()` sets the reader-quit flag, closes the master fd
+  (which unblocks the reader's `read()`), `WaitThread`s the reader,
+  frees vterm + scrollback + mutex + the struct itself, and resets
+  `g_terminal_visible` and `g_terminal_active`. Bound to `:termclose`,
+  the explicit kill path; also called automatically when the child
+  shell exits (see "auto-close" below).
+- `terminal_resize(rows, cols)` updates libvterm + the PTY's winsize
+  (TIOCSWINSZ) so apps like vim and htop redraw at the new dimensions.
+  Called every frame from `draw_frame` via `terminal_fit_to_rect`,
+  which re-derives `(rows, cols)` from the current pane rect minus
+  `SB_THICKNESS` (the scrollbar strip).
+
+### Cross-thread input pumping
+
+The PTY reader thread reads bytes off the master fd into a thread-local
+`buf [4096]u8`, locks `input_mutex`, appends them to
+`pending_input: [dynamic]u8`, unlocks, and pushes a custom SDL event
+(`type = USER`, `code = TERMINAL_EVENT`). The main loop's
+`WaitEventTimeout` wakes on this; the USER handler calls
+`terminal_pump`, which:
+
+1. Locks the mutex, hands the buffer to `vterm_input_write`, scans for
+   "clear screen" sequences, clears the buffer, sets `dirty`, unlocks.
+2. After pump, if `g_terminal.exited` is set, calls `terminal_close()`
+   on the spot (see auto-close).
+
+`terminal_flush_output` then drains libvterm's outbound queue (escape
+sequences it generated in response to keyboard / mouse encoding) back
+to the PTY master fd via `pty_write`.
+
+### Scrollback
+
+- `scrollback: [dynamic]Scrollback_Line` (cap `TERMINAL_SCROLLBACK_MAX = 4096`)
+  is fed by libvterm's `sb_pushline` callback — fired when a line
+  scrolls off the top of the live grid. We deep-copy the cell row
+  (libvterm's pointer is only valid during the call), evict the
+  oldest at capacity (`ordered_remove(0)`), and append.
+- `scroll_offset` is the user's view position, in lines above live.
+  When `> 0` and the ring grows, `sb_pushline` increments
+  `scroll_offset` by 1 to keep the visible window anchored — the
+  user's reading position doesn't jump as new bottom lines push
+  history off the top. Capped at `len(scrollback)`.
+- Render math (`terminal_cell_at`): visible row `i` reads from
+  scrollback when `i < scroll_offset` (index `len - scroll_offset + i`),
+  else from the live screen at row `i - scroll_offset`.
+- `scroll_offset` resets to 0 on any keystroke (`terminal_send_rune` /
+  `_send_special`) so typing snaps back to live, and on `terminal_resize`
+  because the grid has been warped and the position is meaningless.
+  The cursor block is hidden whenever `scroll_offset > 0`.
+
+### `clear` wipes scrollback (Ghostty-style)
+
+The settermprop callback tracks `VTermProp_AltScreen`. After every
+`vterm_input_write`, `bytes_contain_clear_screen` scans the freshly-
+fed bytes for `\033[2J`, `\033[3J`, or `\033c`; if any matched and we
+are *not* on the alt screen, `terminal_clear_scrollback` frees the
+ring and snaps `scroll_offset = 0`. TUI apps (vim / htop / less) emit
+the same erase sequences on every redraw — the alt-screen guard
+prevents those from wiping the pre-app history the user wants to scroll
+back to after they exit.
+
+### Scrollbar
+
+`terminal_split_rect` reserves the rightmost `SB_THICKNESS` for the
+scrollbar track, even when no scrollback exists yet (so the cell-grid
+width doesn't reflow the moment the first line scrolls). Thumb metrics
+go through the same `scrollbar_thumb_metrics` helper as the editor
+panes, parameterised on `(sb_count + rows)` total / `rows` viewport.
+Click on track outside the thumb jumps the thumb center to the click;
+click on the thumb starts a drag (`sb_dragging` + `sb_drag_offset`).
+Mouse-motion routes to `terminal_handle_sb_drag` whenever
+`terminal_sb_dragging()` is true, even if the cursor wandered out of
+the strip; `MOUSE_BUTTON_UP` clears the drag.
+
+### Cursor render
+
+- `g_terminal_active` true + `scroll_offset == 0`: blink at the
+  editor's cadence (`int(blink_timer * 2) % 2 == 0`, 0.5 s on / off).
+  `blink_timer` is bumped each frame in the main loop alongside
+  `active_editor().blink_timer` and reset to 0 on every keystroke so
+  the block stays solid while typing.
+- Inactive + `scroll_offset == 0`: 60-alpha ghost. The
+  `INACTIVE_DIM` overlay drawn afterwards tints it further; matches
+  inactive editor panes.
+- `scroll_offset > 0`: not drawn at all — the live grid isn't
+  (fully) visible.
+
+### Auto-close on shell exit
+
+When the user types `exit` (or otherwise terminates the child shell),
+`pty_read` returns -2 (EOF). The reader sets `Terminal.exited = true`,
+pushes one final `TERMINAL_EVENT` (so the main loop wakes even if no
+bytes were waiting), and breaks out of its loop. The main loop's USER
+handler pumps any remaining bytes (so the shell's last output lands on
+screen), then calls `terminal_close()` if `exited` is set. This
+chains the `g_terminal_active = false` reset cleanly so subsequent
+typing routes back to the editor.
+
+### Focus model
+
+- Click inside the terminal cell area → `g_terminal_active = true`.
+- Click inside an editor pane → `g_terminal_active = false` and the
+  hit pane becomes the active editor.
+- Cmd+J / Ctrl+J: toggle visibility. Opening always grants focus;
+  closing yields focus.
+- `Cmd+S` / `Cmd+W` / `Cmd+O` / `Cmd+Z` / Ctrl+W chord etc. always
+  reach the editor regardless of terminal focus — the Cmd/Ctrl
+  branch in `handle_key_down` runs *before* the
+  `if g_terminal_active` route-to-terminal branch.
 
 ## Edit features
 
@@ -340,23 +556,36 @@ read.
 
 ## Vim mode
 
-Starts in **Normal** mode. Modes: `Insert`, `Normal`, `Command`,
-`Search`.
+Starts in **Normal** mode. Modes: `Insert`, `Normal`, `Visual`,
+`Visual_Line`, `Command`, `Search`.
 
-**Motions:** `h j k l`, `w b e`, `0 $ ^`, `gg G`, `<count>j` etc.
+**Motions:** `h j k l`, `w b e`, `0 $ ^`, `gg G`, `<count>j`, `%`
+(matching bracket).
 
 **Operators:** `d c y` + motion or doubled (`dd yy cc`), counts compose
 (`3dw` and `d3w` both delete 3 words). `D / C / Y` are `d$ / c$ / y$`.
+`>>` / `<<` indent / outdent the current line; in Visual / Visual-Line
+the operator works against the selection.
 
 **Inserts:** `i a I A o O`. `x / X` delete char. `p / P` paste from system
-clipboard.
+clipboard. `.` repeats the last completed change (Insert run, op+motion,
+`x`, `p`, etc.) — recorded by `dot.odin`.
+
+**Visual:** `v` enters character-wise selection, `V` enters line-wise.
+Motion keys extend the selection; `d` / `c` / `y` operate against it
+and exit visual mode; `>` / `<` indent / outdent every line in the
+selection. `Esc` exits without operating.
+
+**Scrolling:** `Ctrl+D` / `Ctrl+U` half-page jumps. `zz` / `zt` / `zb`
+center / top / bottom-align the cursor's line.
 
 **Search:** `/<pattern>` forward, `?<pattern>` backward, `n` / `N`
-next / previous (wrap-around). Pattern is literal (no regex). Status
-bar shows `[k/total]` while the cursor sits exactly on a match;
-disappears on any motion off the match. Empty `/<Enter>` or `:noh` /
-`:nohlsearch` clears the pattern. Active match is drawn in
-`search_match_color` (magenta) instead of the regular selection color.
+next / previous (wrap-around). Pattern is literal (no regex). All
+visible matches render with a faint highlight; the active match uses
+`search_match_color` (magenta). Status bar shows `[k/total]` while the
+cursor sits exactly on a match; disappears on any motion off the match.
+Empty `/<Enter>` or `:noh` / `:nohlsearch` clears the pattern.
+`\c` / `\C` in the pattern force case-insensitive / sensitive.
 
 **Pane navigation & layout:**
 - `Ctrl+W h` / `Ctrl+W ←` — focus left pane
@@ -371,8 +600,13 @@ disappears on any motion off the match. Empty `/<Enter>` or `:noh` /
 - `:e <path>` open file (replaces blank pane, else opens a new column)
 - `:r <path>` replace active pane with file (drops unsaved changes)
 - `:42` jump to line 42
-- `:syntax <name>` switch tokenizer (`none` / `generic` / `odin`)
+- `:syntax <name>` switch tokenizer (`none` / `generic` / `odin` /
+  `c` / `cpp` / `go` / `jai` / `swift`)
+- `:s/pat/repl/[gi I]` substitute on the current line · `:%s/...`
+  whole buffer (`g` = all matches on the line, `i` = case-insensitive,
+  `I` = case-sensitive)
 - `:noh` / `:nohlsearch` clear active search pattern
+- `:term` / `:terminal` open / focus the terminal · `:termclose` close it
 - `:h` / `:help` open the help modal
 
 ## Conventions
@@ -389,7 +623,7 @@ disappears on any motion off the match. Empty `/<Enter>` or `:noh` /
 - C-conv callbacks (`proc "c"`) set `context = runtime.default_context()`
   before calling Odin code.
 
-## Known quirks / open work
+## Known quirks / engine-level limitations
 
 - **macOS live-resize jumpiness** still visible from right/bottom edges.
   The event watch redraws during the drag but macOS's compositor stretches
@@ -409,16 +643,15 @@ disappears on any motion off the match. Empty `/<Enter>` or `:noh` /
   but currently doesn't auto-close the pane after a successful save (user
   has to Cmd+W again). Cmd+Q does have this chained.
 - **No glyph atlas** — `draw_text` creates one `^sdl.Texture` per unique
-  `(segment, fg, bg)`. Works fine; if memory or upload bandwidth becomes a
-  concern, swap to an atlas with quad rendering.
-- **Wrap-selection-in-brackets** — typing `(` with a selection currently
-  replaces selection. Could wrap instead.
-- **Smart unindent on Backspace** — Backspace at column N (where N is a
-  multiple of `TAB_SIZE` and only whitespace precedes) currently deletes
-  one space, not a whole indent level.
-- **No keyboard nav in context menu** (Up/Down/Enter while menu is open).
-- **No disabled-state styling** for menu items that don't apply (e.g.
-  Copy with no selection silently no-ops).
+  `(segment, fg, bg, font_ptr)`. Works fine; if memory or upload bandwidth
+  becomes a concern, swap to an atlas with quad rendering.
+- **Terminal scrollback eviction is O(n)** at steady state —
+  `ordered_remove(&scrollback, 0)` memmoves up to 4096 entries on every
+  push once the ring is full. Fine in practice (it's one shift per line),
+  but a true ring index would be cleaner if it ever shows up in profiles.
+- **Combiners aren't rendered in the terminal** — `terminal_cell_at`
+  draws `cell.chars[0]` only and skips the up-to-five additional
+  combiner code points.
 
 ## Performance: future upgrade paths
 
@@ -450,29 +683,42 @@ two structural changes are on the table; neither has been started.
 
 Grouped by how badly their absence is felt.
 
-**Tier 1 — felt immediately by any vim user:**
-- **Visual mode (`v`, `V`)** — character / line selection. Selection
-  rendering already exists; needs a new `Mode` value and `d`/`c`/`y`
-  routed against the selection instead of a motion.
-- **Search highlighting** — light up *all* matches in the viewport, not
-  just the current. Reuses the selection-rect alpha-blending; iterate
-  matches in the visible byte range during `draw_editor`.
-- **`.` (repeat last edit)** — record the last completed Insert session
-  or operator+motion as a replayable thunk.
-
-**Tier 2 — quality-of-life, mostly small:**
-- **Page scrolling** (`Ctrl+D` / `Ctrl+U`) — half-page jumps.
-- **`zz` / `zt` / `zb`** — center / top / bottom cursor on screen.
-- **`%`** — jump to matching bracket; small stack scan.
-- **`>>` / `<<`** — indent / outdent line, plus visual-mode forms.
+**Tier 1 — most felt:**
+- **Windows terminal pane** — `pty.odin`'s Windows branch is stubbed.
+  Needs `CreatePseudoConsole` + `CreateProcess` glue. Shell-side bytes
+  go through libvterm exactly the same as Unix.
+- **Mouse double-click / triple-click** — word and line selection in
+  the editor.
 - **Incremental search** — re-find on every keystroke into `cmd_buffer`,
   restore cursor on Esc.
-- **Mouse double-click / triple-click** — word and line selection.
 
-**Tier 3 — bigger but still bounded:**
-- **`:s/foo/bar/g`** — substitute, builds on existing search.
+**Tier 2 — nice-to-have:**
 - **Comment toggle** (`gc` or `Ctrl+/`) — language-aware; needs per-
   `Language` line/block comment metadata.
+- **More syntax tokenizers** — Python, Markdown, JSON, Zig, TS/JS.
+  Generic mode is fine for most of them today, but real tokenizers
+  unlock keyword / type / function-call coloring.
+- **Wrap-selection-in-brackets** — typing `(` with a non-empty
+  selection currently replaces the selection. Could wrap instead.
+- **Smart unindent on Backspace** — Backspace at column N (multiple
+  of `TAB_SIZE` with only whitespace before the caret) currently
+  deletes one space rather than a full indent level.
+- **Keyboard nav in the context menu** — Up / Down / Enter while the
+  menu is open.
+- **Disabled-state styling for menu items** — Copy / Cut / Paste etc.
+  silently no-op when they don't apply; should grey out.
+
+**Tier 3 — terminal polish:**
+- **Terminal font override** — currently the Nerd Font is hard-wired;
+  could surface a `[terminal] font_path` config field.
+- **Terminal mouse support** — forward SDL mouse events through
+  `vterm_mouse_*` so apps like `tmux`, `htop`, `vim` can use the mouse
+  inside the pane.
+- **Bell handling** — libvterm's `bell` callback fires; we currently
+  ignore it. Could flash the divider or play a system sound.
+- **Title / icon-name updates** — `VTermProp_TITLE` lands in
+  `settermprop`; could surface in the status bar so users see what
+  command is running.
 
 ## Useful tasks (vim mode quick reference)
 
@@ -484,7 +730,11 @@ Grouped by how badly their absence is felt.
 :r path/to/file        replace active pane with file
 :w :q :wq :q! :x       save / quit / save+quit / force-quit / save+quit
 :42                    jump to line 42
+:s/pat/repl/[gi I]     substitute on the current line
+:%s/pat/repl/[gi I]    substitute across the whole buffer
 :noh :nohlsearch       clear active search pattern
+:term :terminal        open / focus the terminal pane (Cmd/Ctrl+J toggles)
+:termclose             close the terminal pane
 :h :help               open help modal
 ```
 
@@ -492,23 +742,30 @@ Grouped by how badly their absence is felt.
 /pattern               search forward (literal substring)
 ?pattern               search backward
 n N                    next / previous match (wraps)
+\c \C                  force case-insensitive / sensitive (in pattern)
 /  then <Enter>        clear search pattern
 ```
 
 ```
 i a I A o O            enter Insert mode (varying caret placement)
+v V                    enter Visual / Visual-Line mode
 Esc                    return to Normal mode (and dismiss menu)
 h j k l                left / down / up / right
 w b e                  word forward / back / to end
 0 $ ^                  line start / end / first non-blank
 gg G                   first line / last line
 <n>G                   jump to line n
+%                      jump to matching bracket
+Ctrl+D Ctrl+U          half-page down / up
+zz zt zb               center / top / bottom-align cursor line
 dd yy cc               delete / yank / change current line
 dw d$ y3w 3dw          operator + motion (counts compose)
 D C Y                  d$ / c$ / y$
+>> <<                  indent / outdent current line
 x X                    delete char forward / backward
 p P                    paste after / before
-u                      undo
+u                      undo  ·  Cmd/Ctrl+Shift+Z to redo
+.                      repeat last change
 ```
 
 ```
@@ -516,5 +773,9 @@ Ctrl+W h | l           focus pane left | right
 Ctrl+W ← | →           same as above
 Ctrl+W c | q           close active pane
 Cmd+[ | Cmd+]          focus prev | next pane (single-chord)
+Cmd+J / Ctrl+J         toggle the bottom terminal pane
 drag pane border       resize adjacent panes (cursor swaps to ↔)
+drag terminal divider  resize the terminal strip   (cursor swaps to ↕)
+wheel over terminal    scroll the terminal scrollback (4096-line ring)
+click+drag term sb     drag the scrollbar thumb · click track to jump
 ```

@@ -22,12 +22,26 @@ WINDOW_TITLE  :: "Bragi"
 @(rodata)
 FIRA_CODE_DATA := #load("FiraCode-Regular.ttf")
 
+// Fira Code Nerd Font — adds powerline / Devicon / etc. glyphs on top of
+// the regular Fira Code outlines. Used for the embedded terminal so
+// shells with Nerd-Font-aware prompts (oh-my-zsh, starship, p10k, …)
+// render their icons instead of tofu boxes. Identical advance width to
+// the regular variant, so terminal cell math doesn't change.
+@(rodata)
+NERD_FONT_DATA := #load("FiraCodeNerdFont-Regular.ttf")
+
 // FONT_SIZE / FONT_PATH / LINE_SPACING / TAB_SIZE / COLUMN_GUIDE all live in
 // g_config and are loaded from INI at startup (see config.odin).
 SCROLL_LINES_PER_NOTCH :: 3.0
 
 SB_THICKNESS :: 14.0
 SB_MIN_THUMB :: 24.0
+
+// Low-alpha black overlay drawn on every pane that doesn't own keyboard
+// focus (editor panes when another pane is active, the terminal when
+// the terminal isn't focused). Tuned to be obvious enough to read as
+// "this is dimmed" without making the underlying text unreadable.
+INACTIVE_DIM :: sdl.Color{0, 0, 0, 50}
 
 GUTTER_PADDING    :: 12.0
 GUTTER_MIN_DIGITS :: 3
@@ -190,9 +204,10 @@ draw_welcome :: proc(ed: ^Editor, p: Pane_Layout) {
 // Globals — easier than threading through every proc. Set in main, read elsewhere.
 g_renderer:    ^sdl.Renderer
 g_window:      ^sdl.Window
-g_font:        ^ttf.Font
-g_density:     f32   // pixel density (1.0 non-retina, 2.0 retina)
-g_char_width:  f32   // logical px per monospace char
+g_font:           ^ttf.Font
+g_terminal_font:  ^ttf.Font // Nerd Font variant used by the terminal pane
+g_density:        f32   // pixel density (1.0 non-retina, 2.0 retina)
+g_char_width:     f32   // logical px per monospace char
 g_line_height: f32   // logical px per line
 
 // Text cache: keyed by hash of (text, fg, bg). Avoids re-rasterizing unchanged
@@ -211,11 +226,13 @@ fnv64a :: proc(data: []u8) -> u64 {
 	return h
 }
 
-text_cache_key :: proc(text: string, fg, bg: sdl.Color) -> u64 {
+text_cache_key :: proc(text: string, fg, bg: sdl.Color, font: ^ttf.Font) -> u64 {
 	h := fnv64a(transmute([]u8)text)
 	fg_u := u64(fg.r) | u64(fg.g)<<8 | u64(fg.b)<<16 | u64(fg.a)<<24
 	bg_u := u64(bg.r) | u64(bg.g)<<8 | u64(bg.b)<<16 | u64(bg.a)<<24
-	return h ~ fg_u ~ (bg_u << 32) ~ (bg_u >> 32)
+	// Mix the font pointer in too — same text + same colors but a
+	// different font (regular Fira vs. Nerd) need separate textures.
+	return h ~ fg_u ~ (bg_u << 32) ~ (bg_u >> 32) ~ u64(uintptr(font))
 }
 
 text_cache_clear :: proc() {
@@ -237,7 +254,24 @@ Pane_Layout :: struct {
 Layout :: struct {
 	screen_w, screen_h: f32,
 	status_y, status_h: f32,
+
+	// Bottom edge of the editor zone (y of the strip below it). With the
+	// terminal hidden this equals status_y; with it visible the status bar
+	// sits below the editor and above the terminal divider, so editor_bottom
+	// is status_y in both cases — but kept as a separate field so calling
+	// code reads as intent ("draw down to the editor zone bottom") rather
+	// than coincidentally tracking status_y.
+	editor_bottom:      f32,
 	panes:              []Pane_Layout,
+
+	// Bottom-of-screen terminal strip. Populated only when
+	// g_terminal_visible is true; otherwise terminal_rect is zero-sized.
+	// Vertical stack when visible (top → bottom):
+	//   editor zone → status bar → terminal_divider → terminal_rect.
+	// The 4-px `terminal_divider_y..+h` strip is the grab handle.
+	terminal_rect:           sdl.FRect,
+	terminal_divider_y:      f32,
+	terminal_divider_h:      f32,
 }
 
 // Multi-pane editor list. Panes are rendered as columns left-to-right
@@ -257,8 +291,9 @@ g_pane_ratios:    [dynamic]f32
 g_active_idx:     int
 g_drag_idx:       int = -1
 g_resize_divider: int = -1
-g_cursor_default: ^sdl.Cursor
-g_cursor_resize:  ^sdl.Cursor
+g_cursor_default:    ^sdl.Cursor
+g_cursor_resize_h:   ^sdl.Cursor // ↔  for vertical pane dividers (left/right resize)
+g_cursor_resize_v:   ^sdl.Cursor // ↕  for the horizontal terminal divider (up/down resize)
 
 // Vim's Ctrl+W "window" prefix. When set, the next key is interpreted as
 // a window command (h / l for focus, c / q for close) instead of going to
@@ -383,8 +418,36 @@ compute_layout :: proc() -> Layout {
 	// Status bar is two rows tall: top = per-pane file paths, bottom =
 	// active-pane mode/position/etc. Three vertical pads (top, between
 	// rows, bottom) + two rows of font-size-tall text.
-	l.status_h = 2 * g_config.font.size + 3 * STATUS_PAD_Y
-	l.status_y = l.screen_h - l.status_h
+	// Status bar = two rows of font-size-tall text.
+	// Vertical pads (top → bottom): 1× above top-row text, 2× below it
+	// (so brackets and `%` descenders don't kiss the row boundary), 1×
+	// above bottom-row text, 1× below.
+	l.status_h = 2 * g_config.font.size + 4 * STATUS_PAD_Y
+
+	// Vertical layout. With the terminal hidden, the status bar pins to
+	// the bottom of the window and the editor zone fills everything
+	// above it. With the terminal visible the stack from top to bottom
+	// is: editor → status bar → 4-px divider → terminal strip. Putting
+	// the status bar above the terminal (rather than at the very
+	// bottom) keeps it adjacent to the editor it describes — mode /
+	// path / cursor info follows the buffer it belongs to.
+	if g_terminal_visible {
+		// `content_h` is everything except the status bar: editor +
+		// divider + terminal share this region. Keeps the
+		// terminal_height_ratio meaning stable regardless of where
+		// the status bar happens to land.
+		content_h := l.screen_h - l.status_h
+		divider_h: f32 = 4
+		// Clamp so editor + status fit; min editor zone ≈ 100 px.
+		t_h := clamp(content_h * g_terminal_height_ratio, 60, content_h - divider_h - 100)
+		l.terminal_rect      = sdl.FRect{0, l.screen_h - t_h, l.screen_w, t_h}
+		l.terminal_divider_y = l.screen_h - t_h - divider_h
+		l.terminal_divider_h = divider_h
+		l.status_y           = l.terminal_divider_y - l.status_h
+	} else {
+		l.status_y = l.screen_h - l.status_h
+	}
+	l.editor_bottom = l.status_y
 
 	n := max(1, len(g_editors))
 	panes := make([]Pane_Layout, n, context.temp_allocator)
@@ -405,7 +468,7 @@ compute_layout :: proc() -> Layout {
 		text_x := pane_x + gutter_w
 		text_y := f32(0)
 		text_w := pane_w - gutter_w - SB_THICKNESS
-		text_h := l.status_y - SB_THICKNESS - text_y
+		text_h := l.editor_bottom - SB_THICKNESS - text_y
 
 		panes[i] = Pane_Layout{
 			pane_x   = pane_x,
@@ -416,7 +479,7 @@ compute_layout :: proc() -> Layout {
 			text_w   = text_w,
 			text_h   = text_h,
 			v_track  = sdl.FRect{pane_x + pane_w - SB_THICKNESS, text_y,                  SB_THICKNESS, text_h},
-			h_track  = sdl.FRect{text_x,                          l.status_y - SB_THICKNESS, text_w,       SB_THICKNESS},
+			h_track  = sdl.FRect{text_x,                          l.editor_bottom - SB_THICKNESS, text_w,       SB_THICKNESS},
 		}
 	}
 	l.panes = panes
@@ -433,20 +496,24 @@ snap_px :: proc(v: f32) -> f32 {
 // Render a UTF-8 string at (x,y) using LCD subpixel AA. Returns logical pixel
 // width. Caches rasterized textures by content+colors so unchanged lines don't
 // hit FreeType every frame.
-draw_text :: proc(text: cstring, x, y: f32, fg, bg: sdl.Color) -> f32 {
+draw_text :: proc(text: cstring, x, y: f32, fg, bg: sdl.Color, font: ^ttf.Font = nil) -> f32 {
 	if text == nil || len(string(text)) == 0 do return 0
+
+	f := font
+	if f == nil do f = g_font
+	if f == nil do return 0
 
 	sx := snap_px(x)
 	sy := snap_px(y)
 
-	key := text_cache_key(string(text), fg, bg)
+	key := text_cache_key(string(text), fg, bg, f)
 	if entry, ok := g_text_cache[key]; ok {
 		dst := sdl.FRect{sx, sy, entry.w, entry.h}
 		sdl.RenderTexture(g_renderer, entry.tex, nil, &dst)
 		return entry.w
 	}
 
-	surface := ttf.RenderText_LCD(g_font, text, 0, fg, bg)
+	surface := ttf.RenderText_LCD(f, text, 0, fg, bg)
 	if surface == nil do return 0
 	defer sdl.DestroySurface(surface)
 
@@ -583,7 +650,17 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 	if ev.key == sdl.K_F && ev.mod & (sdl.KMOD_GUI | sdl.KMOD_CTRL) != {} {
 		if g_finder_visible do finder_hide()
 		else                do finder_show()
-		g_swallow_text_input = true
+		return
+	}
+
+	// Cmd+J / Ctrl+J — toggle the bottom terminal strip. Mirrors VS
+	// Code's "Show / hide terminal" muscle memory.
+	if ev.key == sdl.K_J && ev.mod & (sdl.KMOD_GUI | sdl.KMOD_CTRL) != {} {
+		// Default size on first open — gets re-fit to the actual rect
+		// on the next frame via terminal_fit_to_rect.
+		if !terminal_toggle(24, 80) {
+			set_status_message("E: failed to open terminal", is_error = true)
+		}
 		return
 	}
 
@@ -677,6 +754,17 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 		return
 	}
 
+	// Terminal has keyboard focus → route non-shortcut keys to it
+	// instead of the editor. Cmd / Ctrl chord shortcuts handled above
+	// already returned, so app-level actions (Cmd+S, etc.) keep
+	// working regardless of which pane has focus.
+	if g_terminal_active && g_terminal_visible {
+		if handle_terminal_keydown(ev) {
+			g_swallow_text_input = false
+			return
+		}
+	}
+
 	// Mode-specific keys
 	switch ed.mode {
 	case .Insert:
@@ -758,6 +846,10 @@ handle_text_input :: proc(ed: ^Editor, text: cstring) {
 	if text == nil do return
 	s := string(text)
 	if finder_handle_text(s) do return
+	if g_terminal_active && g_terminal_visible {
+		handle_terminal_text(s)
+		return
+	}
 
 	switch ed.mode {
 	case .Insert:
@@ -1156,7 +1248,13 @@ draw_scrollbars :: proc(ed: ^Editor, p: Pane_Layout) {
 }
 
 draw_gutter :: proc(ed: ^Editor, p: Pane_Layout) {
-	fill_rect({p.pane_x, p.text_y, p.gutter_w, p.text_h}, g_theme.gutter_bg_color)
+	// Fill the full gutter column, not just the text rect — the strip
+	// below the text area (alongside the horizontal scrollbar track)
+	// needs the gutter bg too, otherwise line numbers that scroll
+	// into that strip render their own bg as a dark patch on top of
+	// the editor bg.
+	gutter_h := p.h_track.y + p.h_track.h - p.text_y
+	fill_rect({p.pane_x, p.text_y, p.gutter_w, gutter_h}, g_theme.gutter_bg_color)
 
 	first_visible := max(0, int(ed.scroll_y / g_line_height))
 	last_visible  := first_visible + int(p.text_h / g_line_height) + 1
@@ -1179,34 +1277,74 @@ draw_gutter :: proc(ed: ^Editor, p: Pane_Layout) {
 	}
 }
 
+// vim-style scroll indicator for a pane: "Top" when the first line is
+// in view, "Bot" when the last line is in view, "nn%" otherwise (cursor
+// line as a percentage of the total). Returns "" when the buffer
+// already fits in the pane and there's no scrolling to indicate.
+@(private="file")
+pane_scroll_indicator :: proc(ed: ^Editor, p: Pane_Layout) -> string {
+	total := editor_total_lines(ed)
+	if total <= 0 do return ""
+	visible := int(p.text_h / g_line_height)
+	if total <= visible do return ""
+
+	if ed.scroll_y <= 0 do return "Top"
+	content_h := f32(total) * g_line_height
+	if ed.scroll_y + p.text_h >= content_h do return "Bot"
+
+	cur_line, _ := editor_pos_to_line_col(ed, ed.cursor)
+	pct := cur_line * 100 / max(1, total - 1)
+	return fmt.tprintf("%d%%", pct)
+}
+
 draw_status_bar :: proc(ed: ^Editor, l: Layout) {
-	row_h := g_config.font.size + STATUS_PAD_Y * 1.5
+	row_h := g_config.font.size + STATUS_PAD_Y * 2
 	// Top row (paths) gets a subtly lighter background so the eye can
 	// separate "which file is in which pane" from the global status.
 	fill_rect({0, l.status_y,         l.screen_w, row_h},               g_theme.status_path_bg_color)
 	fill_rect({0, l.status_y + row_h, l.screen_w, l.status_h - row_h},  g_theme.status_bg_color)
 	top_y := l.status_y + STATUS_PAD_Y
-	bot_y := l.status_y + 2 * STATUS_PAD_Y + g_config.font.size
+	bot_y := l.status_y + 3 * STATUS_PAD_Y + g_config.font.size
 
-	// Top row: per-pane file path strips. Each pane's full path sits
-	// inside its own column, clipped so a long path doesn't bleed into
-	// the neighbor. Active pane gets the bright text color.
+	// Top row: per-pane file strips. Filename on the left (basename
+	// only — the full path is already visible in the OS title bar /
+	// Cmd+O dialog and would overflow narrow panes), vim-style scroll
+	// indicator (Top / Bot / nn%) right-aligned. Each pane's segment
+	// is clipped to its own column so neither half bleeds into the
+	// neighbor. Active pane gets the bright text color.
 	for p, i in l.panes {
 		e := &g_editors[i]
-		path := len(e.file_path) > 0 ? e.file_path : "[untitled]"
+		name  := len(e.file_path) > 0 ? path_basename(e.file_path) : "[untitled]"
 		dirty := e.dirty ? " *" : ""
-		text  := fmt.tprintf("%s%s", path, dirty)
-		cstr  := strings.clone_to_cstring(text, context.temp_allocator)
+		left_text := fmt.tprintf("%s%s", name, dirty)
+		left_cstr := strings.clone_to_cstring(left_text, context.temp_allocator)
 		color := i == g_active_idx ? g_theme.status_text_color : g_theme.status_dim_color
 
+		// Clip to the full row height (not just `font.size`) so glyph
+		// descenders and characters like `%` aren't shaved off at the
+		// bottom by a too-tight clip rect.
 		clip := sdl.Rect{
 			i32(p.pane_x),
-			i32(top_y),
+			i32(l.status_y),
 			i32(p.pane_w),
-			i32(g_config.font.size),
+			i32(row_h),
 		}
 		sdl.SetRenderClipRect(g_renderer, &clip)
-		draw_text(cstr, p.pane_x + STATUS_PAD_X, top_y, color, g_theme.status_path_bg_color)
+		draw_text(left_cstr, p.pane_x + STATUS_PAD_X, top_y, color, g_theme.status_path_bg_color)
+
+		// Right-aligned scroll indicator. Empty when the buffer fits
+		// in the pane (no scrolling needed).
+		if right_text := pane_scroll_indicator(e, p); len(right_text) > 0 {
+			right_cstr := strings.clone_to_cstring(right_text, context.temp_allocator)
+			right_w_px: c.int
+			ttf.GetStringSize(g_font, right_cstr, 0, &right_w_px, nil)
+			right_w := f32(right_w_px) / g_density
+			draw_text(right_cstr,
+			          p.pane_x + p.pane_w - STATUS_PAD_X - right_w,
+			          top_y,
+			          color,
+			          g_theme.status_path_bg_color)
+		}
 	}
 	// Thin separators between path segments to mirror the editor-area
 	// dividers above.
@@ -1396,6 +1534,15 @@ open_embedded_font :: proc(size_px: f32) -> ^ttf.Font {
 	io := sdl.IOFromConstMem(rawptr(&FIRA_CODE_DATA[0]), uint(len(FIRA_CODE_DATA)))
 	if io == nil do return nil
 	return ttf.OpenFontIO(io, true, size_px)
+}
+
+// Same idea, but loads the Nerd Font variant used by the terminal pane.
+open_terminal_font :: proc(size_px: f32) -> ^ttf.Font {
+	io := sdl.IOFromConstMem(rawptr(&NERD_FONT_DATA[0]), uint(len(NERD_FONT_DATA)))
+	if io == nil do return nil
+	f := ttf.OpenFontIO(io, true, size_px)
+	if f != nil do ttf.SetFontHinting(f, g_config.font.hinting)
+	return f
 }
 
 // Honours g_config.font.path: empty → embedded; non-empty → load that file
@@ -1648,21 +1795,37 @@ draw_frame :: proc() {
 		draw_gutter(ed, p)
 		draw_scrollbars(ed, p)
 	}
-	// Dim every non-active pane with a low-alpha black overlay so the
-	// active pane reads as the focused one. Drawn before separators so
+	// Dim non-focused panes with a low-alpha black overlay so the
+	// focused pane reads as the focused one. When the terminal owns
+	// keyboard focus, every editor pane is inactive — drop the active
+	// editor's bright treatment too. The terminal itself gets the
+	// same overlay below, after it draws. Drawn before separators so
 	// the dividers stay crisp.
-	if len(l.panes) > 1 {
-		for p, i in l.panes {
-			if i == g_active_idx do continue
-			fill_rect({p.pane_x, 0, p.pane_w, l.status_y}, sdl.Color{0, 0, 0, 50})
-		}
+	editor_focused := !(g_terminal_visible && g_terminal_active)
+	for p, i in l.panes {
+		if editor_focused && i == g_active_idx do continue
+		fill_rect({p.pane_x, 0, p.pane_w, l.editor_bottom}, INACTIVE_DIM)
 	}
 	// Thin vertical separator between panes so the column boundary reads
 	// even when the two adjacent files share a similar look.
 	for i in 1 ..< len(l.panes) {
 		x := l.panes[i].pane_x
-		fill_rect({x, 0, 1.0 / g_density, l.status_y}, g_theme.gutter_bg_color)
+		fill_rect({x, 0, 1.0 / g_density, l.editor_bottom}, g_theme.gutter_bg_color)
 	}
+	// Terminal pane (bottom strip) — drawn before status / modals so
+	// they overlay it cleanly. The thin divider above it doubles as
+	// the resize-grab strip.
+	if g_terminal_visible {
+		// Re-fit the cell grid to whatever the layout gave us this
+		// frame (covers window resize + divider drag in one place).
+		terminal_fit_to_rect(l.terminal_rect)
+		fill_rect({0, l.terminal_divider_y, l.screen_w, l.terminal_divider_h}, g_theme.gutter_bg_color)
+		draw_terminal(l.terminal_rect)
+		// Match the editor-pane treatment: dim the terminal when it
+		// doesn't own keyboard focus.
+		if !g_terminal_active do fill_rect(l.terminal_rect, INACTIVE_DIM)
+	}
+
 	draw_status_bar(active_editor(), l)
 	draw_menu()
 	draw_help(l)
@@ -1684,11 +1847,15 @@ refresh_pixel_density :: proc() {
 	g_density = new_density
 	sdl.SetRenderScale(g_renderer, g_density, g_density)
 
-	// Re-rasterise the font at the new physical size and drop cached
+	// Re-rasterise both fonts at the new physical size and drop cached
 	// textures (they're sized at the previous density).
 	if g_font != nil do ttf.CloseFont(g_font)
 	g_font = open_configured_font(g_config.font.size * g_density)
 	if g_font != nil do ttf.SetFontHinting(g_font, g_config.font.hinting)
+
+	if g_terminal_font != nil do ttf.CloseFont(g_terminal_font)
+	g_terminal_font = open_terminal_font(g_config.font.size * g_density)
+
 	text_cache_clear()
 
 	w: c.int
@@ -1718,6 +1885,19 @@ resize_event_watch :: proc "c" (userdata: rawptr, event: ^sdl.Event) -> bool {
 
 process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 	#partial switch ev.type {
+	case .USER:
+		// Reader thread tagged this with TERMINAL_EVENT when new PTY
+		// bytes arrived OR when the child shell exited. Pump any
+		// pending bytes (so the final output is on screen), drain
+		// libvterm's outbound queue, then auto-close the pane if the
+		// shell exited — typing `exit<Enter>` should retire the
+		// terminal pane the same way Cmd+W retires an editor pane.
+		if ev.user.code == TERMINAL_EVENT {
+			terminal_pump()
+			terminal_flush_output()
+			if g_terminal != nil && g_terminal.exited do terminal_close()
+		}
+		return
 	case .QUIT:
 		if try_quit_all() do running^ = false
 	case .WINDOW_CLOSE_REQUESTED:
@@ -1737,6 +1917,30 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		if finder_handle_button(ev.button, l) do return
 		// Help modal swallows clicks; clicking outside dismisses it.
 		if help_handle_click(ev.button.x, ev.button.y, l) do return
+		// Terminal-divider drag (horizontal). Has to win over the
+		// editor pane area below it, but only when the terminal is
+		// showing and the click is in the divider strip.
+		if g_terminal_visible &&
+		   ev.button.y >= l.terminal_divider_y &&
+		   ev.button.y <  l.terminal_divider_y + l.terminal_divider_h {
+			g_terminal_resizing = true
+			return
+		}
+		// Click inside the terminal rect → focus the terminal. The
+		// scrollbar strip is part of that rect, so check it first; a
+		// thumb-grab steals the click instead of stealing focus.
+		if g_terminal_visible && point_in_rect({ev.button.x, ev.button.y}, l.terminal_rect) {
+			pt := sdl.FPoint{ev.button.x, ev.button.y}
+			if ev.button.button == sdl.BUTTON_LEFT && ev.button.down &&
+			   terminal_handle_sb_button_down(l.terminal_rect, pt) {
+				return
+			}
+			g_terminal_active = true
+			return
+		}
+		// Anything else lands in editor territory; if a terminal had
+		// focus, it's losing it now.
+		g_terminal_active = false
 		// Divider grab takes priority over pane interior — the grab
 		// strip overlaps the rightmost few pixels of one pane's
 		// scrollbar and the leftmost few pixels of the next pane's
@@ -1752,6 +1956,16 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 	case .MOUSE_BUTTON_UP:
 		// Finder swallows the up so it doesn't fall through to a pane.
 		if g_finder_visible do return
+		if g_terminal_resizing {
+			g_terminal_resizing = false
+			return
+		}
+		// Releasing while dragging the terminal scrollbar ends the drag —
+		// even if the cursor wandered out of the terminal rect.
+		if terminal_sb_dragging() {
+			terminal_handle_sb_button_up()
+			return
+		}
 		if g_resize_divider > 0 {
 			g_resize_divider = -1
 			return
@@ -1760,18 +1974,46 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		handle_mouse_button(&g_editors[target], ev.button, l.panes[target])
 		g_drag_idx = -1
 	case .MOUSE_MOTION:
+		// In-flight scrollbar drag wins over everything else; route the
+		// motion straight to the terminal so the thumb tracks the mouse
+		// even if it wanders out of the strip.
+		if terminal_sb_dragging() {
+			terminal_handle_sb_drag(l.terminal_rect, ev.motion.y)
+			return
+		}
+		if g_terminal_resizing {
+			// Convert mouse-y → desired terminal height, then store
+			// as a fraction of the editor+terminal zone (content_h)
+			// so the ratio survives window resizes. The status bar
+			// sits between the editor and the divider, so the
+			// divider top is `screen_h - t_h - divider_h`.
+			content_h := l.screen_h - l.status_h
+			if content_h > 0 {
+				new_t_h := l.screen_h - ev.motion.y - l.terminal_divider_h
+				g_terminal_height_ratio = clamp(new_t_h / content_h, 0.05, 0.9)
+			}
+			return
+		}
 		if g_resize_divider > 0 {
 			move_divider(g_resize_divider, ev.motion.x, l.screen_w)
 			return
 		}
-		// Swap to the resize cursor while hovering a divider, default
-		// otherwise. SetCursor is cheap and SDL no-ops when unchanged.
-		if g_cursor_resize != nil {
-			if divider_at_x(ev.motion.x, l) > 0 {
-				_ = sdl.SetCursor(g_cursor_resize)
-			} else {
-				_ = sdl.SetCursor(g_cursor_default)
-			}
+		// Swap to the appropriate resize cursor while hovering any
+		// divider; default otherwise. Vertical dividers (between
+		// horizontal panes) use ↔ ; the horizontal divider above the
+		// terminal uses ↕ . SetCursor is cheap and SDL no-ops when
+		// the cursor doesn't actually change.
+		over_pane_div := divider_at_x(ev.motion.x, l) > 0
+		over_term_div := g_terminal_visible &&
+		                 ev.motion.y >= l.terminal_divider_y &&
+		                 ev.motion.y <  l.terminal_divider_y + l.terminal_divider_h
+		switch {
+		case over_pane_div && g_cursor_resize_h != nil:
+			_ = sdl.SetCursor(g_cursor_resize_h)
+		case over_term_div && g_cursor_resize_v != nil:
+			_ = sdl.SetCursor(g_cursor_resize_v)
+		case g_cursor_default != nil:
+			_ = sdl.SetCursor(g_cursor_default)
 		}
 		target := g_drag_idx
 		if target < 0 || target >= len(g_editors) do target = g_active_idx
@@ -1781,6 +2023,13 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		if g_help_visible {
 			line_h := g_config.font.size + HELP_LINE_GAP
 			help_scroll_by(-ev.wheel.y * line_h * SCROLL_LINES_PER_NOTCH)
+			return
+		}
+		// Wheel over the terminal pane scrolls its scrollback ring,
+		// not the editor underneath. Wheel-up = older content.
+		if g_terminal_visible &&
+		   point_in_rect({ev.wheel.mouse_x, ev.wheel.mouse_y}, l.terminal_rect) {
+			terminal_scroll_by(ev.wheel.y * SCROLL_LINES_PER_NOTCH)
 			return
 		}
 		idx := pane_at_x(ev.wheel.mouse_x, l)
@@ -1861,6 +2110,12 @@ main :: proc() {
 
 	ttf.SetFontHinting(g_font, g_config.font.hinting)
 
+	// Open the Nerd Font once at the same size for the terminal pane.
+	// If it fails (shouldn't), the terminal will silently fall back to
+	// `g_font` via the nil-check in draw_text.
+	g_terminal_font = open_terminal_font(g_config.font.size * g_density)
+	defer if g_terminal_font != nil do ttf.CloseFont(g_terminal_font)
+
 	// Measure char width once. Monospace assumption.
 	{
 		w: c.int
@@ -1873,8 +2128,10 @@ main :: proc() {
 	defer { _ = sdl.StopTextInput(g_window) }
 
 	g_cursor_default = sdl.GetDefaultCursor()
-	g_cursor_resize  = sdl.CreateSystemCursor(.EW_RESIZE)
-	defer if g_cursor_resize != nil do sdl.DestroyCursor(g_cursor_resize)
+	g_cursor_resize_h = sdl.CreateSystemCursor(.EW_RESIZE)
+	g_cursor_resize_v = sdl.CreateSystemCursor(.NS_RESIZE)
+	defer if g_cursor_resize_h != nil do sdl.DestroyCursor(g_cursor_resize_h)
+	defer if g_cursor_resize_v != nil do sdl.DestroyCursor(g_cursor_resize_v)
 
 	// Initial pane (welcome text or CLI-arg file).
 	append(&g_editors, editor_make())
@@ -1909,6 +2166,10 @@ main :: proc() {
 		last_ticks = now
 		active_editor().blink_timer += dt
 		if active_editor().blink_timer > 1 do active_editor().blink_timer = 0
+		if g_terminal != nil {
+			g_terminal.blink_timer += dt
+			if g_terminal.blink_timer > 1 do g_terminal.blink_timer = 0
+		}
 
 		l := compute_layout()
 		prev_cursor := active_editor().cursor
@@ -1920,6 +2181,12 @@ main :: proc() {
 			process_event(ev, l, &running)
 			for sdl.PollEvent(&ev) do process_event(ev, l, &running)
 		}
+		// `g_swallow_text_input` is a one-batch guard for chord follow-ups
+		// (Ctrl+W h, etc.) — any TEXT_INPUT it cares about lives in the
+		// drain we just finished. Clearing here keeps it from leaking
+		// into the next iteration and eating the user's first real
+		// keystroke after a chord that didn't actually queue a rune.
+		g_swallow_text_input = false
 
 		flush_pending_dialogs(active_editor())
 		// Layout may have shifted (open/close pane, resize), so recompute.
