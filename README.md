@@ -64,7 +64,11 @@ apart from system SDL3 / SDL3_ttf / libvterm.
 
 ### Dependencies
 
-- A recent [Odin compiler](https://odin-lang.org/docs/install/).
+- An [Odin compiler](https://odin-lang.org/docs/install/) from
+  **`dev-2026-04`** or newer. The `core:os` package was overhauled in
+  that release (`os.Handle` → `^os.File`, `File_Info.is_dir` → `.type`,
+  `write_entire_file` now returns an `Error`, etc.); Bragi uses the new
+  API and will not build against earlier compilers.
 - **SDL3** and **SDL3_ttf** for window / renderer / text.
 - **libvterm** for the embedded terminal pane (Unix only — see Windows
   notes below).

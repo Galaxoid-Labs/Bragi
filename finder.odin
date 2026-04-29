@@ -76,7 +76,8 @@ default_finder_dir :: proc() -> string {
 		home := os.get_env("HOME", context.temp_allocator)
 		if len(home) > 0 do return home
 	}
-	return os.get_current_directory(context.temp_allocator)
+	cwd, _ := os.get_working_directory(context.temp_allocator)
+	return cwd
 }
 
 finder_hide :: proc() {
@@ -150,7 +151,7 @@ finder_list_dir :: proc() {
 	for entry in entries {
 		if strings.has_prefix(entry.name, ".") do continue
 		name: string
-		if entry.is_dir {
+		if entry.type == .Directory {
 			name = strings.clone(fmt.aprintf("%s/", entry.name, allocator = context.temp_allocator))
 			append(&dirs, Finder_Entry{name = name, is_dir = true})
 		} else {

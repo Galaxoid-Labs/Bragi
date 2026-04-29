@@ -119,7 +119,7 @@ editor_clear :: proc(ed: ^Editor) {
 // / nearly all common binary formats. False positives on text files with
 // embedded NULs are extremely rare.
 @(private="file")
-peek_is_binary :: proc(fd: os.Handle) -> bool {
+peek_is_binary :: proc(fd: ^os.File) -> bool {
 	buf: [8192]u8
 	n, _ := os.read_at(fd, buf[:], 0)
 	for i in 0 ..< n {
@@ -263,7 +263,7 @@ editor_save_file :: proc(ed: ^Editor) -> bool {
 		bytes = expand_lf_to_crlf(bytes, context.temp_allocator)
 	}
 
-	if !os.write_entire_file(ed.file_path, bytes) do return false
+	if write_err := os.write_entire_file(ed.file_path, bytes); write_err != nil do return false
 	ed.dirty = false
 	ed.eol_mixed = false // file is now uniform after this write
 	return true
