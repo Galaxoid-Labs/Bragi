@@ -1005,22 +1005,6 @@ vim_execute_command :: proc(ed: ^Editor, raw: string) {
 		terminal_close()
 	}
 
-	if strings.has_prefix(cmd, "e ") {
-		path := strings.trim_space(cmd[2:])
-		if len(path) > 0 {
-			prewarm_path(path)
-			open_file_smart(path)
-		}
-	}
-
-	if strings.has_prefix(cmd, "r ") {
-		path := strings.trim_space(cmd[2:])
-		if len(path) > 0 {
-			prewarm_path(path)
-			replace_active_pane_with_file(path)
-		}
-	}
-
 	// :s/…/…/ and :%s/…/…/ — substitute. Tried last so other commands
 	// (like the bare line numbers above) win where there's overlap.
 	if strings.has_prefix(cmd, "s/") || strings.has_prefix(cmd, "%s/") {

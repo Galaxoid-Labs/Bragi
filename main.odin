@@ -1680,34 +1680,6 @@ open_file_smart :: proc(path: string) {
 	open_file_in_new_pane(path)
 }
 
-// Pre-warm the OS's inode + permission cache for `path` by listing its
-// parent directory. Mirrors what the file finder does implicitly via
-// read_dir, which is why finder-opened files feel instant while typed
-// `:e <abs_path>` (cold path) used to take a noticeable beat on first
-// access. Cheap and idempotent — does nothing if the dir can't be read.
-prewarm_path :: proc(path: string) {
-	idx := strings.last_index_byte(path, '/')
-	if idx <= 0 do return
-	dir := path[:idx]
-	fd, err := os.open(dir)
-	if err != nil do return
-	defer os.close(fd)
-	// Discard the listing; we only care about the side-effect of macOS
-	// resolving and caching every entry's inode in this directory.
-	_, _ = os.read_dir(fd, -1, context.temp_allocator)
-}
-
-// Always replace the active pane's content with `path` regardless of its
-// current state. Used by :r to swap files inside one column without
-// spawning a new pane. Dirty changes in the active pane are dropped — the
-// caller is expected to have saved or discarded already.
-replace_active_pane_with_file :: proc(path: string) {
-	ed := active_editor()
-	if ed.dirty do fmt.eprintln("warning: discarding unsaved changes to load", path)
-	// editor_load_file already sets a status message on failure.
-	if editor_load_file(ed, path) do warn_if_mixed_eol(ed)
-}
-
 // Drop the active pane unconditionally. The last pane is replaced with a
 // fresh welcome buffer rather than removed, so the editor never has zero
 // panes — pressing Cmd/Ctrl+W on a file goes back to the welcome screen,

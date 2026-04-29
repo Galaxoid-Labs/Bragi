@@ -288,8 +288,6 @@ u  /  Ctrl+Shift+Z  undo / redo
 n N                 next / prev match (wraps)
 :noh                clear search
 
-:e <path>           open file (replaces blank pane, else splits)
-:r <path>           replace active pane with file
 :w  :q  :wq  :q!    save / quit / save+quit / force-quit
 :42                 jump to line 42
 :syntax <name>      switch tokenizer

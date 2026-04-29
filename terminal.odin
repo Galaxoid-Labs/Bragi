@@ -96,6 +96,40 @@ g_terminal_active:        bool // keyboard focus is on the terminal
 g_terminal_height_ratio:  f32 = 0.30 // fraction of screen_h for the terminal strip
 g_terminal_resizing:      bool // mid-drag of the horizontal divider
 
+// Mirror of compute_layout's terminal-strip math, computed directly off
+// the live window without needing a Layout struct. Used by terminal_open
+// so the shell spawns at its real final grid size and we don't need a
+// SIGWINCH-driven redraw immediately after the first prompt prints.
+//
+// Returns ok=false if any of the inputs aren't ready yet (window not
+// created, font metrics not measured); caller falls back to whatever
+// rows/cols was passed in.
+@(private="file")
+terminal_target_grid_from_window :: proc() -> (rows, cols: int, ok: bool) {
+	if g_window == nil || g_line_height <= 0 || g_char_width <= 0 do return 0, 0, false
+
+	wi, hi: c.int
+	sdl.GetWindowSize(g_window, &wi, &hi)
+	window_w := f32(wi)
+	window_h := f32(hi)
+	if window_w <= 0 || window_h <= 0 do return 0, 0, false
+
+	// Same constants as compute_layout: status bar height, divider
+	// thickness, and the editor-zone floor. Keep these in sync if
+	// compute_layout's layout math changes.
+	status_h  := 2 * g_config.font.size + 4 * STATUS_PAD_Y
+	divider_h := f32(4)
+	content_h := window_h - status_h
+	if content_h <= 0 do return 0, 0, false
+
+	t_h := clamp(content_h * g_terminal_height_ratio, 60, content_h - divider_h - 100)
+
+	rows = max(1, int(t_h / g_line_height))
+	cols = max(1, int((window_w - SB_THICKNESS) / g_char_width))
+	ok   = true
+	return
+}
+
 // Recompute the cell grid size from the terminal's rect (in logical pixels)
 // and tell libvterm + the PTY about it. Idempotent.
 terminal_fit_to_rect :: proc(rect: sdl.FRect) {
@@ -128,15 +162,30 @@ TERMINAL_EVENT :: i32(0x42524754) // "BRGT" tag
 // Opens a new terminal pane sized to `rows` × `cols`. Returns false if
 // libvterm or the PTY couldn't be created. Idempotent — already-open
 // terminals are reported as success.
+//
+// `rows` / `cols` are placeholders the caller passes (typically 24×80);
+// we override them with the actual final grid size derived from the
+// current window before spawning the shell. Spawning at 24×80 then
+// SIGWINCHing on the next frame breaks zsh's cursor tracking — first
+// `ls` flickers and wipes — and complex prompts (p10k / starship) can
+// get permanently confused. Computing the right size up front side-
+// steps the whole resize-during-prompt race.
 terminal_open :: proc(rows, cols: int) -> bool {
 	if g_terminal != nil do return true
 
+	final_rows := rows
+	final_cols := cols
+	if tr, tc, ok := terminal_target_grid_from_window(); ok {
+		final_rows = tr
+		final_cols = tc
+	}
+
 	t := new(Terminal)
-	t.rows = rows
-	t.cols = cols
+	t.rows = final_rows
+	t.cols = final_cols
 	t.input_mutex = sdl.CreateMutex()
 
-	t.vt = vterm_new(c.int(rows), c.int(cols))
+	t.vt = vterm_new(c.int(final_rows), c.int(final_cols))
 	if t.vt == nil {
 		sdl.DestroyMutex(t.input_mutex)
 		free(t)
@@ -156,11 +205,33 @@ terminal_open :: proc(rows, cols: int) -> bool {
 		vterm_screen_reset(t.screen, 1)
 	}
 
-	// Spawn the user's shell. We hand it the bare minimum environment
-	// for now; richer TERM / LANG handling can come later.
+	// Spawn the user's shell as a login shell.
+	//
+	// Why login (`-l`)? When Bragi is launched from Finder / a .desktop
+	// entry, the GUI environment is stripped — no PATH augmentations,
+	// often no `SHELL` variable at all. Terminal.app, iTerm2, kitty
+	// etc. all spawn `$SHELL -l` so that ~/.zprofile (zsh) /
+	// ~/.bash_profile (bash) run and set up PATH, prompt, etc. Without
+	// it the embedded terminal feels broken on first open: ugly prompt,
+	// missing aliases, brew binaries not on PATH.
+	//
+	// Fallback shell when `SHELL` is empty: pick the platform default
+	// (zsh on macOS 10.15+, bash on Linux) rather than `/bin/sh`,
+	// which on macOS is bash in POSIX mode and ignores most rc files.
 	shell := os.get_env("SHELL", context.temp_allocator)
-	if len(shell) == 0 do shell = "/bin/sh"
-	pty, ok := pty_spawn([]string{shell}, cols, rows)
+	if len(shell) == 0 {
+		when ODIN_OS == .Darwin {
+			shell = "/bin/zsh"
+		} else {
+			shell = "/bin/bash"
+		}
+	}
+	// Start the shell in $HOME so a fresh pane behaves like a new tab
+	// in Terminal.app / iTerm2 — landing in `/` (the GUI-launch cwd)
+	// would otherwise leave the prompt outside any project / git repo
+	// and force the user to `cd ~` every time.
+	home := os.get_env("HOME", context.temp_allocator)
+	pty, ok := pty_spawn([]string{shell, "-l"}, final_cols, final_rows, home)
 	if !ok {
 		vterm_free(t.vt)
 		sdl.DestroyMutex(t.input_mutex)

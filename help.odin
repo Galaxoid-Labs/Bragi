@@ -85,8 +85,6 @@ HELP_LINES :: [?]string{
 	"── Files & panes ──",
 	"Cmd/Ctrl+F      directory navigator (Enter dives into a dir / opens a file)",
 	"              Backspace or `..` goes up · type to fuzzy-filter the listing",
-	":e <path>     open file (replaces blank pane, else splits)",
-	":r <path>     replace active pane with file (drops unsaved changes)",
 	":w  :q  :wq   save / close pane / save+close",
 	":q!           force-close pane (last pane → quit)",
 	":42           jump to line 42",

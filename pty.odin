@@ -21,16 +21,28 @@ PTY :: struct {
 // `argv` is the program + args to exec in the child. NULL-terminated
 // internally. `cols` / `rows` set the initial terminal size; the child
 // sees these via the `TIOCSWINSZ` ioctl that forkpty takes care of.
-pty_spawn :: proc(argv: []string, cols, rows: int) -> (pty: PTY, ok: bool) {
+// `cwd` (optional) is a directory the child chdirs into before exec,
+// matching what every native terminal emulator does (start new shells
+// in $HOME rather than in the launcher's cwd, which is `/` for GUI
+// launches on macOS).
+pty_spawn :: proc(argv: []string, cols, rows: int, cwd: string = "") -> (pty: PTY, ok: bool) {
 	when ODIN_OS == .Darwin || ODIN_OS == .Linux {
 		// Build a NULL-terminated argv for execvp. Strings are cloned
 		// into temp_allocator since the cstrings need to outlive the
-		// fork; the kernel snapshots them at exec time.
+		// fork; the kernel snapshots them at exec time. Same trick for
+		// the cwd cstring — clone before fork so the child reads from
+		// already-allocated memory and we don't need an allocator in
+		// the post-fork child path.
 		cargs := make([]cstring, len(argv) + 1, context.temp_allocator)
 		for s, i in argv {
 			cargs[i] = strings.clone_to_cstring(s, context.temp_allocator)
 		}
 		cargs[len(argv)] = nil
+
+		cwd_cstr: cstring = nil
+		if len(cwd) > 0 {
+			cwd_cstr = strings.clone_to_cstring(cwd, context.temp_allocator)
+		}
 
 		ws := winsize{
 			ws_row    = u16(rows),
@@ -45,12 +57,28 @@ pty_spawn :: proc(argv: []string, cols, rows: int) -> (pty: PTY, ok: bool) {
 			return {}, false
 		}
 		if pid == 0 {
-			// Child. Make sure TERM is set — when Bragi is launched from
-			// a .desktop entry (no parent terminal), TERM is unset and
-			// `clear` / curses apps abort with "TERM environment variable
-			// not set." libvterm emulates xterm-256color.
+			// Child. chdir BEFORE setting env / exec'ing — failure is
+			// silently ignored (we'd rather still launch the shell
+			// from `/` than abort the whole pane).
+			if cwd_cstr != nil do _ = chdir(cwd_cstr)
+			// Make sure TERM is set — when Bragi is launched from
+			// a .desktop entry / Finder (no parent terminal), TERM is
+			// unset and `clear` / curses apps abort with "TERM
+			// environment variable not set." libvterm emulates
+			// xterm-256color.
 			_ = setenv("TERM", "xterm-256color", 1)
 			_ = setenv("COLORTERM", "truecolor", 1)
+			// Locale matters even more than it looks. macOS's GUI
+			// launchd doesn't propagate LANG / LC_*, so child shells
+			// fall back to the "C" locale, where wcwidth() returns -1
+			// for every non-ASCII character — every powerline / nerd-
+			// font glyph in the prompt. zsh then mis-counts its
+			// prompt's visual width and corrupts the redraw on every
+			// command, leaving the user staring at scattered
+			// characters in column 0. Set a UTF-8 locale only if the
+			// inherited env doesn't already have one (overwrite=0).
+			_ = setenv("LANG",     "en_US.UTF-8", 0)
+			_ = setenv("LC_CTYPE", "en_US.UTF-8", 0)
 			// Replace ourselves with the requested program. If execvp
 			// fails, _exit (not exit) so we don't run the parent's
 			// atexit handlers / SDL cleanup in the fork copy.
@@ -169,6 +197,7 @@ when ODIN_OS == .Darwin || ODIN_OS == .Linux {
 		fcntl  :: proc(fd: c.int, cmd: c.int, #c_vararg args: ..any) -> c.int ---
 		kill   :: proc(pid: c.int, sig: c.int) -> c.int ---
 		setenv :: proc(name: cstring, value: cstring, overwrite: c.int) -> c.int ---
+		chdir  :: proc(path: cstring) -> c.int ---
 
 		// Bypasses atexit handlers — what we want in the post-fork
 		// child path so we don't run the parent's cleanup twice.
