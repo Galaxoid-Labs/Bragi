@@ -1970,8 +1970,15 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 			g_resize_divider = -1
 			return
 		}
-		target := g_drag_idx >= 0 && g_drag_idx < len(g_editors) ? g_drag_idx : pane_at_x(ev.button.x, l)
-		handle_mouse_button(&g_editors[target], ev.button, l.panes[target])
+		// Clamp against `l.panes`, NOT `g_editors`. A native-dialog
+		// callback (Cmd+O) can grow g_editors synchronously from inside
+		// SDL's event pump, so the layout we computed at the top of
+		// this iteration is stale until the next one. `l.panes[target]`
+		// must always be in bounds for the layout we're using.
+		target := g_drag_idx >= 0 && g_drag_idx < len(l.panes) ? g_drag_idx : pane_at_x(ev.button.x, l)
+		if target >= 0 && target < len(l.panes) {
+			handle_mouse_button(&g_editors[target], ev.button, l.panes[target])
+		}
 		g_drag_idx = -1
 	case .MOUSE_MOTION:
 		// In-flight scrollbar drag wins over everything else; route the
@@ -2015,8 +2022,12 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		case g_cursor_default != nil:
 			_ = sdl.SetCursor(g_cursor_default)
 		}
+		// See MOUSE_BUTTON_UP above: clamp against `l.panes`. If a
+		// dialog callback grew g_editors mid-drain we'd otherwise
+		// land on a pane index the current layout doesn't have.
 		target := g_drag_idx
-		if target < 0 || target >= len(g_editors) do target = g_active_idx
+		if target < 0 || target >= len(l.panes) do target = g_active_idx
+		if target < 0 || target >= len(l.panes) do return
 		handle_mouse_motion(&g_editors[target], ev.motion, l.panes[target])
 	case .MOUSE_WHEEL:
 		if finder_handle_wheel(ev.wheel) do return
