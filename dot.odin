@@ -23,6 +23,15 @@ g_dot_last: [dynamic]rune
 // try to re-record the runes they're replaying.
 g_dot_replaying: bool
 
+// Release the dot-buffer's backing arrays. Called from main()'s
+// shutdown defer chain — they grow to the largest insert / op+motion
+// session and the OS would reclaim on exit, but freeing them keeps
+// `leaks`-style audits clean.
+dot_destroy :: proc() {
+	delete(g_dot_buf)
+	delete(g_dot_last)
+}
+
 @(private="file")
 commit_dot :: proc() {
 	clear(&g_dot_last)

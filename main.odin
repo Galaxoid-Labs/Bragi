@@ -1705,7 +1705,12 @@ should_replace_active :: proc() -> bool {
 // the file into existence at the right spot. The buffer starts non-
 // dirty so navigating away without edits doesn't prompt.
 bragi_open_config :: proc() {
-	path := config_path(context.allocator)
+	// Temp-alloc the resolved path. Both branches below either pass it
+	// to open_file_smart (which clones internally via editor_load_file)
+	// or clone it explicitly into ed.file_path — neither needs to own
+	// the string, and using the regular allocator here was leaking it
+	// on every :config invocation.
+	path := config_path(context.temp_allocator)
 	if len(path) == 0 {
 		set_status_message("E: could not resolve config path", is_error = true)
 		return
@@ -2184,9 +2189,19 @@ main :: proc() {
 	append(&g_pane_ratios, f32(1))
 	g_active_idx = 0
 	defer {
+		// Tear down every owned global so a `leaks`-style audit on
+		// process exit comes back clean. The OS reclaims everything
+		// regardless — these are for cleanliness, not correctness.
+		// Order matters: terminal first (needs the reader thread to
+		// be joined before its mutex / scrollback dies), then panes,
+		// then ancillary singletons.
+		if g_terminal != nil do terminal_close()
 		for &e in g_editors do editor_destroy(&e)
 		delete(g_editors)
 		delete(g_pane_ratios)
+		finder_destroy()
+		dot_destroy()
+		clear_status_message()
 	}
 	active_editor().mode = .Normal
 

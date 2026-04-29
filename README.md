@@ -393,6 +393,18 @@ Things that aren't done yet but are tracked in CLAUDE.md:
 - Terminal mouse forwarding (so tmux / htop / vim get mouse events
   inside the terminal pane).
 - Comment toggle (`gc` / `Ctrl+/`), language-aware.
+- **Shell-friendly CLI invocation** (`bragi`, `bragi .`, `bragi src/`).
+  Today `./Bragi <file>` works inside the source tree; `Bragi.app/...`
+  works inside the bundle; on Linux the package install drops a
+  `bragi` binary on `$PATH`. Two pieces would polish this on macOS:
+  (1) a shim at `/usr/local/bin/bragi` (a one-line `exec` script
+  pointing at the installed `Bragi.app/Contents/MacOS/bragi`, drop-
+  ped via a "Shell → Install `bragi` Command" menu action à la VS
+  Code's `code` command), and (2) directory-argument handling in
+  `main()` — if the CLI arg is a directory, open the file finder
+  rooted there instead of trying to load it as a file. Both small;
+  would make `bragi .` from any terminal work the same as
+  Cmd+F-then-navigate.
 
 ## Architecture
 

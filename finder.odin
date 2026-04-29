@@ -91,6 +91,20 @@ free_entries :: proc() {
 	clear(&g_finder_entries)
 }
 
+// Final teardown — releases every owned allocation the finder accumulates
+// over its lifetime. Called from main()'s shutdown defer; not used at
+// runtime (finder_hide leaves things populated for fast re-show).
+finder_destroy :: proc() {
+	free_entries()
+	delete(g_finder_entries)
+	delete(g_finder_results)
+	delete(g_finder_query)
+	if len(g_finder_dir) > 0 {
+		delete(g_finder_dir)
+		g_finder_dir = ""
+	}
+}
+
 // Replace g_finder_dir with `new_dir` (taking ownership) and re-list.
 @(private="file")
 finder_navigate :: proc(new_dir: string) {
@@ -114,12 +128,17 @@ parent_dir :: proc(dir: string) -> string {
 	return strings.clone(trimmed[:idx])
 }
 
+// Returns a temp-allocated string. The header comment used to claim
+// this without enforcing it — defaulting to the regular allocator was
+// silently leaking on every directory navigate / file open. Both call
+// sites already treat the result as temp-owned, so honouring that
+// here is the right fix.
 @(private="file")
 path_join :: proc(a, b: string) -> string {
 	if strings.has_suffix(a, "/") {
-		return fmt.aprintf("%s%s", a, b)
+		return fmt.aprintf("%s%s", a, b, allocator = context.temp_allocator)
 	}
-	return fmt.aprintf("%s/%s", a, b)
+	return fmt.aprintf("%s/%s", a, b, allocator = context.temp_allocator)
 }
 
 // List g_finder_dir. Prepends `..` unless we're at the root. Hidden
