@@ -4,10 +4,14 @@ import "core:strconv"
 import "core:strings"
 import sdl "vendor:sdl3"
 
-Mode :: enum { Insert, Normal, Command, Search }
+Mode :: enum { Insert, Normal, Command, Search, Visual, Visual_Line }
 
 Vim_Operator :: enum { None, Delete, Change, Yank }
 Vim_Prefix   :: enum { None, G }
+
+vim_in_visual :: proc(ed: ^Editor) -> bool {
+	return ed.mode == .Visual || ed.mode == .Visual_Line
+}
 
 vim_reset_state :: proc(ed: ^Editor) {
 	ed.vim_count = 0
@@ -23,8 +27,47 @@ vim_enter_insert :: proc(ed: ^Editor) {
 
 vim_enter_normal :: proc(ed: ^Editor) {
 	commit_pending(ed)
+	// Exiting visual collapses the selection so the regular caret returns.
+	if vim_in_visual(ed) do ed.anchor = ed.cursor
 	ed.mode = .Normal
 	vim_reset_state(ed)
+}
+
+vim_enter_visual :: proc(ed: ^Editor) {
+	commit_pending(ed)
+	ed.mode = .Visual
+	ed.anchor = ed.cursor
+	vim_reset_state(ed)
+}
+
+vim_enter_visual_line :: proc(ed: ^Editor) {
+	commit_pending(ed)
+	ed.mode = .Visual_Line
+	ed.anchor = ed.cursor
+	vim_reset_state(ed)
+}
+
+// The selection range as the user sees it. In Visual it's inclusive of the
+// cursor's rune (so just-entered visual mode highlights one char); in
+// Visual_Line it expands to full lines including the trailing newline.
+// In every other mode it falls through to the plain cursor/anchor range.
+visible_selection_range :: proc(ed: ^Editor) -> (lo, hi: int) {
+	lo, hi = editor_selection_range(ed)
+	n := gap_buffer_len(&ed.buffer)
+	switch ed.mode {
+	case .Visual:
+		if hi == lo && lo < n {
+			hi = lo + utf8_lead_size(gap_buffer_byte_at(&ed.buffer, lo))
+		} else if hi < n {
+			hi += utf8_lead_size(gap_buffer_byte_at(&ed.buffer, hi))
+		}
+	case .Visual_Line:
+		lo = editor_line_start(ed, lo)
+		hi = editor_line_end(ed, hi)
+		if hi < n do hi += 1
+	case .Insert, .Normal, .Command, .Search:
+	}
+	return
 }
 
 // Character classes for word motions. Vim distinguishes word chars (\w),
@@ -122,17 +165,21 @@ vim_goto_last_line :: proc(ed: ^Editor) {
 }
 
 vim_apply_motion :: proc(ed: ^Editor, motion: rune, count: int) {
+	// In Visual modes we extend the selection; without `extend=true`, the
+	// editor's "collapse selection on right-arrow" behaviour would stop
+	// the cursor at the existing selection edge instead of advancing.
+	extend := vim_in_visual(ed)
 	for _ in 0 ..< count {
 		switch motion {
-		case 'h': editor_move_left(ed, false)
-		case 'l': editor_move_right(ed, false)
-		case 'j': editor_move_down(ed, false)
-		case 'k': editor_move_up(ed, false)
+		case 'h': vim_move_left_in_line(ed, extend)
+		case 'l': vim_move_right_in_line(ed, extend)
+		case 'j': editor_move_down(ed, extend)
+		case 'k': editor_move_up(ed, extend)
 		case 'w': vim_word_forward(ed)
 		case 'b': vim_word_backward(ed)
 		case 'e': vim_word_end(ed)
-		case '0': editor_move_home(ed, false)
-		case '$': editor_move_end(ed, false)
+		case '0': editor_move_home(ed, extend)
+		case '$': editor_move_end(ed, extend)
 		case '^': vim_first_nonblank(ed)
 		}
 	}
@@ -221,8 +268,121 @@ clipboard_paste_into :: proc(ed: ^Editor) {
 	editor_insert_string(ed, string(cstring(raw)))
 }
 
+// Visual-mode FSM. Operators (`d`/`c`/`y`) act on the visible selection
+// immediately and exit visual; motions move the cursor while preserving
+// the anchor. `v` / `V` toggle: pressing the same one exits, pressing the
+// other switches charwise ↔ linewise.
+vim_handle_visual_char :: proc(ed: ^Editor, c: rune) {
+	// Count accumulation works the same as in Normal.
+	if c >= '1' && c <= '9' {
+		ed.vim_count = ed.vim_count * 10 + int(c - '0')
+		return
+	}
+	if c == '0' && ed.vim_count > 0 {
+		ed.vim_count = ed.vim_count * 10
+		return
+	}
+
+	// gg follow-up (preserves anchor).
+	if ed.vim_prefix == .G {
+		ed.vim_prefix = .None
+		if c == 'g' {
+			explicit := ed.vim_count
+			ed.vim_count = 0
+			saved := ed.anchor
+			vim_goto_line(ed, explicit > 0 ? explicit - 1 : 0)
+			ed.anchor = saved
+		} else {
+			ed.vim_count = 0
+		}
+		return
+	}
+
+	switch c {
+	case 'd':
+		lo, hi := visible_selection_range(ed)
+		vim_apply_op_range(ed, .Delete, lo, hi)
+		vim_enter_normal(ed)
+	case 'c':
+		lo, hi := visible_selection_range(ed)
+		vim_apply_op_range(ed, .Change, lo, hi)
+		// vim_apply_op_range enters Insert mode for Change.
+	case 'y':
+		lo, hi := visible_selection_range(ed)
+		vim_apply_op_range(ed, .Yank, lo, hi)
+		vim_enter_normal(ed)
+	case 'v':
+		if ed.mode == .Visual {
+			vim_enter_normal(ed)
+		} else {
+			ed.mode = .Visual
+			vim_reset_state(ed)
+		}
+	case 'V':
+		if ed.mode == .Visual_Line {
+			vim_enter_normal(ed)
+		} else {
+			ed.mode = .Visual_Line
+			vim_reset_state(ed)
+		}
+	case 'g':
+		ed.vim_prefix = .G
+	case 'G':
+		explicit := ed.vim_count
+		ed.vim_count = 0
+		saved := ed.anchor
+		if explicit > 0 do vim_goto_line(ed, explicit - 1)
+		else            do vim_goto_last_line(ed)
+		ed.anchor = saved
+	case 'h', 'l', 'j', 'k', 'w', 'b', 'e', '0', '$', '^':
+		count := max(1, ed.vim_count)
+		ed.vim_count = 0
+		saved := ed.anchor
+		vim_apply_motion(ed, c, count)
+		ed.anchor = saved
+	}
+}
+
+// Vim's `h` doesn't cross to the previous line — being at the start of a
+// line is a no-op. Same constraint applies to LEFT in Normal / Visual.
+vim_move_left_in_line :: proc(ed: ^Editor, extend: bool) {
+	if ed.cursor <= 0 do return
+	if gap_buffer_byte_at(&ed.buffer, ed.cursor - 1) == '\n' do return
+	editor_move_left(ed, extend)
+}
+
+// Vim's `l` doesn't cross to the next line. Stops at the last printable
+// char of the line (the byte before the newline, or before EOF).
+vim_move_right_in_line :: proc(ed: ^Editor, extend: bool) {
+	n := gap_buffer_len(&ed.buffer)
+	if ed.cursor >= n do return
+	if gap_buffer_byte_at(&ed.buffer, ed.cursor) == '\n' do return
+	next := editor_step_forward(ed, ed.cursor)
+	if next >= n do return
+	if gap_buffer_byte_at(&ed.buffer, next) == '\n' do return
+	editor_move_right(ed, extend)
+}
+
 // The main FSM. Called once per character produced in Normal mode.
 vim_handle_char :: proc(ed: ^Editor, c: rune) {
+	// Visual modes have their own dispatch — operators apply to the
+	// selection immediately rather than entering operator-pending state.
+	if vim_in_visual(ed) {
+		vim_handle_visual_char(ed, c)
+		return
+	}
+
+	// `.` replays the last change. Don't record this call (otherwise the
+	// next dot would replay just the dot, ad infinitum).
+	if c == '.' && ed.vim_op == .None && ed.vim_count == 0 && !g_dot_replaying {
+		dot_replay(ed)
+		return
+	}
+
+	pre_version := ed.buffer.version
+	dot_observe_pre(ed, c)
+	defer dot_observe_post(ed, pre_version)
+
 	// Digit accumulation. '0' is a count digit only when a count is already
 	// being built — otherwise it's the line-start motion.
 	if c >= '1' && c <= '9' {
@@ -370,6 +530,10 @@ vim_handle_char :: proc(ed: ^Editor, c: rune) {
 		vim_paste_after(ed)
 	case 'P':
 		vim_paste_before(ed)
+	case 'v':
+		vim_enter_visual(ed)
+	case 'V':
+		vim_enter_visual_line(ed)
 	case 'u':
 		for _ in 0 ..< count do editor_undo(ed)
 	case ':':

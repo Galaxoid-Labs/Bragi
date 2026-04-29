@@ -551,7 +551,9 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 	switch ed.mode {
 	case .Insert:
 		switch ev.key {
-		case sdl.K_ESCAPE:    vim_enter_normal(ed)
+		case sdl.K_ESCAPE:
+			dot_observe_esc()
+			vim_enter_normal(ed)
 		case sdl.K_RETURN:    editor_smart_newline(ed)
 		case sdl.K_BACKSPACE: editor_backspace(ed)
 		case sdl.K_DELETE:    editor_delete_forward(ed)
@@ -566,10 +568,18 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 	case .Normal:
 		switch ev.key {
 		case sdl.K_ESCAPE: vim_reset_state(ed)
-		case sdl.K_LEFT:   editor_move_left(ed, false)
-		case sdl.K_RIGHT:  editor_move_right(ed, false)
+		case sdl.K_LEFT:   vim_move_left_in_line(ed, false)
+		case sdl.K_RIGHT:  vim_move_right_in_line(ed, false)
 		case sdl.K_UP:     editor_move_up(ed, false)
 		case sdl.K_DOWN:   editor_move_down(ed, false)
+		}
+	case .Visual, .Visual_Line:
+		switch ev.key {
+		case sdl.K_ESCAPE: vim_enter_normal(ed)
+		case sdl.K_LEFT:   vim_move_left_in_line(ed, true)
+		case sdl.K_RIGHT:  vim_move_right_in_line(ed, true)
+		case sdl.K_UP:     editor_move_up(ed, true)
+		case sdl.K_DOWN:   editor_move_down(ed, true)
 		}
 	case .Command, .Search:
 		switch ev.key {
@@ -615,8 +625,13 @@ handle_text_input :: proc(ed: ^Editor, text: cstring) {
 
 	switch ed.mode {
 	case .Insert:
-		for r in s do editor_insert_rune(ed, r)
-	case .Normal:
+		for r in s {
+			dot_observe_insert(r)
+			editor_insert_rune(ed, r)
+		}
+	case .Normal, .Visual, .Visual_Line:
+		// vim_handle_char internally routes Visual modes to their own
+		// dispatcher.
 		for r in s do vim_handle_char(ed, r)
 	case .Command, .Search:
 		// Append raw UTF-8 bytes to the cmd buffer (used by both ":" and "/").
@@ -835,8 +850,8 @@ draw_editor :: proc(ed: ^Editor, p: Pane_Layout, is_active: bool) {
 	total_lines   := editor_total_lines(ed)
 	last_visible = min(last_visible, total_lines - 1)
 
-	sel_lo, sel_hi := editor_selection_range(ed)
-	has_sel := editor_has_selection(ed)
+	sel_lo, sel_hi := visible_selection_range(ed)
+	has_sel := sel_hi > sel_lo
 
 	// Recolor the selection rect when it exactly covers the active search
 	// match — same trigger as the [n/m] readout, so the highlight only
@@ -911,6 +926,32 @@ draw_editor :: proc(ed: ^Editor, p: Pane_Layout, is_active: bool) {
 		line_idx += 1
 	}
 
+	// Search-match highlights: draw a faint rect over every visible match
+	// of ed.search_pattern. The active match (cursor sitting on one) is
+	// already drawn by the selection rect above in `search_match_color`,
+	// so we skip it here to avoid double-painting.
+	if len(ed.search_pattern) > 0 && len(ed.search_match_positions) > 0 {
+		needle_len := len(ed.search_pattern)
+		faint := g_theme.search_match_color
+		faint.a /= 2
+		active_pos := -1
+		if has_sel && sel_hi - sel_lo == needle_len {
+			cur, _ := editor_search_stats(ed, ed.search_pattern)
+			if cur > 0 do active_pos = sel_lo
+		}
+		for pos in ed.search_match_positions {
+			line, col := editor_pos_to_line_col(ed, pos)
+			if line < first_visible do continue
+			if line > last_visible do break // positions are sorted ascending
+			if pos == active_pos do continue
+
+			x := p.text_x + f32(col) * g_char_width  - ed.scroll_x
+			y := p.text_y + f32(line) * g_line_height - ed.scroll_y
+			w := f32(needle_len) * g_char_width
+			fill_rect({x, y, w, g_line_height}, faint)
+		}
+	}
+
 	// Caret. Inactive panes show a hollow outline of the active position
 	// (where the cursor *would* go if focus moved here); the active pane
 	// blinks normally.
@@ -932,7 +973,7 @@ draw_editor :: proc(ed: ^Editor, p: Pane_Layout, is_active: bool) {
 	switch ed.mode {
 	case .Insert:
 		caret_w = 2
-	case .Normal:
+	case .Normal, .Visual, .Visual_Line:
 		caret_w = g_char_width
 		caret_color.a = 160
 	case .Command, .Search:
@@ -1045,7 +1086,14 @@ draw_status_bar :: proc(ed: ^Editor, l: Layout) {
 		return
 	}
 
-	mode_label := ed.mode == .Insert ? " INSERT " : " NORMAL "
+	mode_label: string
+	switch ed.mode {
+	case .Insert:       mode_label = " INSERT "
+	case .Visual:       mode_label = " VISUAL "
+	case .Visual_Line:  mode_label = " V-LINE "
+	case .Normal, .Command, .Search:
+		mode_label = " NORMAL "
+	}
 	line, col := editor_pos_to_line_col(ed, ed.cursor)
 	eol_str := ed.eol_mixed ? fmt.tprintf("MIXED→%s", eol_label(ed.eol)) : eol_label(ed.eol)
 
