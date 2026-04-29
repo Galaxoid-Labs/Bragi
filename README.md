@@ -132,6 +132,133 @@ odin build .
 Produces `./Bragi`. Run it from anywhere; the directory navigator
 defaults to `$HOME` (or `%USERPROFILE%` on Windows).
 
+## Packaging
+
+`deploy.ini` at the repo root carries the metadata (app name, version,
+identifier, copyright, dependency strings, code-signing identity, …)
+that the per-platform packaging scripts read. Edit it once, then run
+the script for the host you're on. Output lands in `dist/<platform>/`.
+
+### macOS — `.app` bundle and `.dmg`
+
+```sh
+./tools/package_macos.sh
+```
+
+Produces `dist/macos/Bragi.app` (drop into `/Applications`) and
+`dist/macos/Bragi-<version>.dmg`. The script:
+
+- Builds `bragi` in release mode (`odin build . -o:speed`).
+- Generates `Bragi.icns` from `icon.png` via `sips` + `iconutil`.
+- Writes `Info.plist` (CFBundle keys, document-type associations,
+  high-DPI flag, minimum macOS version).
+- Bundles every Homebrew-provided dylib (`libSDL3`, `libSDL3_ttf`,
+  `libvterm`, plus their transitive deps) into
+  `Bragi.app/Contents/Frameworks/` and rewrites the binary's load
+  paths via `install_name_tool`. **No Homebrew required on the
+  target machine.**
+- Code-signs the bundle. With `codesign_identity` set in
+  `[macos]` it uses your Developer ID and runs `--options runtime`
+  (notarization-ready); without one it falls back to ad-hoc signing
+  so the binary launches on Apple Silicon.
+- If `notarize_apple_id` / `notarize_password` / `notarize_team_id`
+  are filled in, submits to Apple's notary service and staples the
+  ticket onto both the `.app` and the `.dmg`.
+
+Stage toggles for iteration: `STAGE_BUILD=0`, `STAGE_BUNDLE=0`,
+`STAGE_SIGN=0`, `STAGE_DMG=0`.
+
+All required tools (`sips`, `iconutil`, `plutil`, `codesign`,
+`hdiutil`, `otool`, `install_name_tool`) ship with the Xcode
+Command Line Tools — `xcode-select --install`.
+
+### Linux — `.deb` and `.rpm`
+
+```sh
+./tools/package_linux.sh
+```
+
+Must run on a Linux host. Produces:
+
+- `dist/linux/bragi_<version>_<arch>.deb` (Debian/Ubuntu)
+- `dist/linux/bragi-<version>-1.<rpmarch>.rpm` (Fedora/RHEL)
+
+Each format auto-skips if its build tool isn't installed, so a
+Fedora box without `dpkg-dev` will produce the `.rpm` only (and
+print a friendly "skipped" notice for the `.deb`).
+
+Both packages declare runtime dependencies on the distro's SDL3,
+SDL3_ttf, and libvterm packages — `apt` / `dnf` resolves those at
+install time. (Bundling `.so` files inside Linux packages is fragile
+across glibc / Wayland / X11 versions and discouraged by both
+packaging policies.) The dependency strings are configurable in
+`[linux]` of `deploy.ini` if your target distros use different
+package names.
+
+The script installs to standard FHS paths:
+
+```
+/usr/bin/bragi
+/usr/share/applications/bragi.desktop
+/usr/share/icons/hicolor/<size>/apps/bragi.png
+/usr/share/pixmaps/bragi.png
+/usr/share/doc/bragi/copyright
+```
+
+#### Build-host setup
+
+```sh
+# Fedora 40+
+sudo dnf install -y \
+  gcc clang git curl unzip ImageMagick \
+  SDL3-devel SDL3_ttf-devel libvterm-devel \
+  rpm-build dpkg                  # dpkg only if you also want a .deb
+
+# Debian 13+ / Ubuntu 24.04+
+sudo apt-get install -y \
+  build-essential clang git curl unzip imagemagick \
+  libsdl3-dev libsdl3-ttf-dev libvterm-dev \
+  dpkg-dev rpm                    # rpm only if you also want a .rpm
+```
+
+Plus a current Odin compiler:
+
+```sh
+curl -L https://github.com/odin-lang/Odin/releases/latest/download/odin-linux-amd64.zip \
+  -o /tmp/odin.zip
+sudo unzip -o /tmp/odin.zip -d /opt/odin
+sudo ln -sf /opt/odin/odin /usr/local/bin/odin
+```
+
+#### From macOS via Docker
+
+The Linux script refuses to run on macOS (it'd produce a Mach-O
+binary that can't be packaged for Linux). To build Linux packages
+from a Mac, drop into a Debian container that has both `dpkg-deb`
+and `rpmbuild`:
+
+```sh
+docker run --rm -it -v "$(pwd):/src" -w /src debian:bookworm bash -c '
+  apt-get update && apt-get install -y \
+    build-essential clang git curl unzip \
+    libsdl3-dev libsdl3-ttf-dev libvterm-dev \
+    dpkg-dev rpm imagemagick &&
+  curl -L https://github.com/odin-lang/Odin/releases/latest/download/odin-linux-amd64.zip \
+    -o /tmp/odin.zip &&
+  unzip /tmp/odin.zip -d /opt/odin && export PATH=/opt/odin:$PATH &&
+  ./tools/package_linux.sh
+'
+```
+
+Stage toggles: `STAGE_BUILD=0`, `STAGE_DEB=0`, `STAGE_RPM=0`.
+
+### Windows
+
+Not yet — the embedded terminal pane needs ConPTY support in
+`pty.odin` first. Editor-only Windows packaging (zip with
+`Bragi.exe` + `SDL3.dll` + `SDL3_ttf.dll`) is doable today; it'll
+land alongside the terminal work.
+
 ## Quick reference
 
 Press `:h` inside the editor for the full cheat sheet. The greatest
