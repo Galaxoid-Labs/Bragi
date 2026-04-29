@@ -144,6 +144,7 @@ config_load :: proc() {
 		load_color(section, "status_path_bg",  &g_config.theme.status_path_bg_color)
 		load_color(section, "status_text",     &g_config.theme.status_text_color)
 		load_color(section, "status_dim",      &g_config.theme.status_dim_color)
+		load_color(section, "status_error",    &g_config.theme.status_error_color)
 	}
 }
 

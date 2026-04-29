@@ -62,6 +62,7 @@ Theme :: struct {
 	status_path_bg_color:  sdl.Color,
 	status_text_color:     sdl.Color,
 	status_dim_color:      sdl.Color,
+	status_error_color:    sdl.Color,
 }
 
 DEFAULT_THEME :: Theme{
@@ -88,6 +89,7 @@ DEFAULT_THEME :: Theme{
 	status_path_bg_color = sdl.Color{ 28,  28,  36, 255},
 	status_text_color    = sdl.Color{200, 200, 210, 255},
 	status_dim_color     = sdl.Color{120, 125, 140, 255},
+	status_error_color   = sdl.Color{220,  90,  90, 255}, // soft red for errors
 }
 
 theme_color :: proc(theme: ^Theme, kind: Token_Kind) -> sdl.Color {
@@ -265,7 +267,27 @@ g_cursor_resize:  ^sdl.Cursor
 g_pending_ctrl_w:     bool
 g_swallow_text_input: bool
 
-DIVIDER_GRAB_PX :: 6.0  // total grab width centerd on the divider line
+// One-shot message shown in the status bar's bottom row, vim-style. Set
+// by file-open errors and similar. Cleared on the next keystroke so it
+// behaves like vim's `:` echoes (stays until you do something).
+g_status_message:       string
+g_status_message_error: bool
+
+set_status_message :: proc(msg: string, is_error: bool = false) {
+	if len(g_status_message) > 0 do delete(g_status_message)
+	g_status_message       = strings.clone(msg)
+	g_status_message_error = is_error
+}
+
+clear_status_message :: proc() {
+	if len(g_status_message) > 0 {
+		delete(g_status_message)
+		g_status_message = ""
+	}
+	g_status_message_error = false
+}
+
+DIVIDER_GRAB_PX :: 6.0  // total grab width centered on the divider line
 MIN_PANE_PX     :: 80.0 // minimum width a pane can be shrunk to
 
 // Returns the index of the divider near `x` (= the index of the pane to
@@ -550,6 +572,11 @@ shift_held    :: proc(mods: sdl.Keymod) -> bool { return mods & sdl.KMOD_SHIFT !
 cmd_or_ctrl   :: proc(mods: sdl.Keymod) -> bool { return mods & (sdl.KMOD_GUI | sdl.KMOD_CTRL) != {} }
 
 handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
+	// Any keystroke dismisses the one-shot status message (file-open
+	// errors, etc.). Doesn't run while modals are up — those have their
+	// own input loops and shouldn't acknowledge buffer-level messages.
+	if !g_finder_visible && !g_help_visible do clear_status_message()
+
 	// Shift+Space toggles the fuzzy file finder. Detecting it before any
 	// modal/mode logic so it works from anywhere.
 	if ev.key == sdl.K_SPACE && ev.mod & sdl.KMOD_SHIFT != {} {
@@ -1188,6 +1215,16 @@ draw_status_bar :: proc(ed: ^Editor, l: Layout) {
 		fill_rect({x, top_y - STATUS_PAD_Y * 0.5, 1.0 / g_density, g_config.font.size + STATUS_PAD_Y}, g_theme.gutter_bg_color)
 	}
 
+	// Transient status message (file-open errors, "binary file", etc.)
+	// pre-empts the bottom row in Normal mode. Cleared by the next
+	// keystroke. Doesn't override Command / Search prompts.
+	if len(g_status_message) > 0 && ed.mode != .Command && ed.mode != .Search {
+		color := g_status_message_error ? g_theme.status_error_color : g_theme.status_text_color
+		cstr  := strings.clone_to_cstring(g_status_message, context.temp_allocator)
+		draw_text(cstr, STATUS_PAD_X, bot_y, color, g_theme.status_bg_color)
+		return
+	}
+
 	// Bottom row: mode + position + search counter, all for the active pane.
 	// In Command / Search modes, the bottom row hosts the input prompt instead.
 	if ed.mode == .Command || ed.mode == .Search {
@@ -1456,11 +1493,11 @@ open_new_pane :: proc() {
 
 // Open `path` in a brand-new pane (focused). Returns false if the load
 // fails — in that case we drop the empty pane we just added so we don't
-// leave a stray column behind.
+// leave a stray column behind. editor_load_file already populates the
+// status bar on failure.
 open_file_in_new_pane :: proc(path: string) -> bool {
 	open_new_pane()
 	if !editor_load_file(active_editor(), path) {
-		fmt.eprintfln("failed to load %s", path)
 		close_active_pane_unconditional()
 		return false
 	}
@@ -1483,14 +1520,28 @@ should_replace_active :: proc() -> bool {
 open_file_smart :: proc(path: string) {
 	if should_replace_active() {
 		ed := active_editor()
-		if editor_load_file(ed, path) {
-			warn_if_mixed_eol(ed)
-		} else {
-			fmt.eprintfln("could not open %s", path)
-		}
+		// editor_load_file populates the status bar on failure.
+		if editor_load_file(ed, path) do warn_if_mixed_eol(ed)
 		return
 	}
 	open_file_in_new_pane(path)
+}
+
+// Pre-warm the OS's inode + permission cache for `path` by listing its
+// parent directory. Mirrors what the file finder does implicitly via
+// read_dir, which is why finder-opened files feel instant while typed
+// `:e <abs_path>` (cold path) used to take a noticeable beat on first
+// access. Cheap and idempotent — does nothing if the dir can't be read.
+prewarm_path :: proc(path: string) {
+	idx := strings.last_index_byte(path, '/')
+	if idx <= 0 do return
+	dir := path[:idx]
+	fd, err := os.open(dir)
+	if err != nil do return
+	defer os.close(fd)
+	// Discard the listing; we only care about the side-effect of macOS
+	// resolving and caching every entry's inode in this directory.
+	_, _ = os.read_dir(fd, -1, context.temp_allocator)
 }
 
 // Always replace the active pane's content with `path` regardless of its
@@ -1500,11 +1551,8 @@ open_file_smart :: proc(path: string) {
 replace_active_pane_with_file :: proc(path: string) {
 	ed := active_editor()
 	if ed.dirty do fmt.eprintln("warning: discarding unsaved changes to load", path)
-	if editor_load_file(ed, path) {
-		warn_if_mixed_eol(ed)
-	} else {
-		fmt.eprintfln("could not open %s", path)
-	}
+	// editor_load_file already sets a status message on failure.
+	if editor_load_file(ed, path) do warn_if_mixed_eol(ed)
 }
 
 // Drop the active pane unconditionally. The last pane is replaced with a

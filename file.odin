@@ -1,5 +1,6 @@
 package bragi
 
+import "core:fmt"
 import "core:os"
 import "core:strings"
 
@@ -113,13 +114,40 @@ editor_clear :: proc(ed: ^Editor) {
 	ed.eol_mixed = false
 }
 
+// Cheap binary-file heuristic: if any of the first 8 KB is a NUL byte,
+// treat the file as binary. Catches PNG / JPEG / ZIP / PDF / executables
+// / nearly all common binary formats. False positives on text files with
+// embedded NULs are extremely rare.
+@(private="file")
+peek_is_binary :: proc(fd: os.Handle) -> bool {
+	buf: [8192]u8
+	n, _ := os.read_at(fd, buf[:], 0)
+	for i in 0 ..< n {
+		if buf[i] == 0 do return true
+	}
+	return false
+}
+
 editor_load_file :: proc(ed: ^Editor, path: string) -> bool {
 	fd, open_err := os.open(path)
-	if open_err != nil do return false
+	if open_err != nil {
+		set_status_message(fmt.tprintf("E: cannot open %s", path), is_error = true)
+		return false
+	}
 	defer os.close(fd)
 
 	size, size_err := os.file_size(fd)
-	if size_err != nil do return false
+	if size_err != nil {
+		set_status_message(fmt.tprintf("E: stat failed for %s", path), is_error = true)
+		return false
+	}
+
+	// Refuse binaries before destroying any existing state. Uses pread,
+	// so the file pointer stays at 0 for the full read below.
+	if size > 0 && peek_is_binary(fd) {
+		set_status_message(fmt.tprintf("E: %s appears to be a binary file", path_basename(path)), is_error = true)
+		return false
+	}
 
 	editor_clear(ed)
 
@@ -134,6 +162,7 @@ editor_load_file :: proc(ed: ^Editor, path: string) -> bool {
 		if read_err != nil || i64(n) != size {
 			ed.buffer.gap_start = 0
 			ed.buffer.gap_end   = len(ed.buffer.data)
+			set_status_message(fmt.tprintf("E: read failed for %s", path), is_error = true)
 			return false
 		}
 		ed.buffer.gap_start = n

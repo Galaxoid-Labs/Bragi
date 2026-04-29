@@ -43,8 +43,11 @@ Finder_Result :: struct {
 
 finder_show :: proc() {
 	if len(g_finder_dir) == 0 {
-		cwd := os.get_current_directory(context.temp_allocator)
-		g_finder_dir = strings.clone(cwd)
+		// Default to the user's home directory rather than the app's cwd.
+		// When Bragi is launched from Finder / Spotlight / a launcher,
+		// cwd is something opaque like `/` — home is what the user
+		// actually wants to navigate from.
+		g_finder_dir = strings.clone(default_finder_dir())
 	}
 	finder_list_dir()
 	clear(&g_finder_query)
@@ -52,6 +55,28 @@ finder_show :: proc() {
 	g_finder_active  = 0
 	g_finder_scroll  = 0
 	g_finder_visible = true
+}
+
+// Resolve the user's home directory. Falls back to the editor's cwd when
+// the relevant env var isn't set (sandboxed contexts, etc.). Returned
+// string lives in the temp allocator — caller clones if it needs to
+// outlast the iteration.
+@(private="file")
+default_finder_dir :: proc() -> string {
+	when ODIN_OS == .Windows {
+		profile := os.get_env("USERPROFILE", context.temp_allocator)
+		if len(profile) > 0 do return profile
+		// Fallback: HOMEDRIVE + HOMEPATH.
+		drive := os.get_env("HOMEDRIVE", context.temp_allocator)
+		path  := os.get_env("HOMEPATH",  context.temp_allocator)
+		if len(drive) > 0 && len(path) > 0 {
+			return fmt.aprintf("%s%s", drive, path, allocator = context.temp_allocator)
+		}
+	} else {
+		home := os.get_env("HOME", context.temp_allocator)
+		if len(home) > 0 do return home
+	}
+	return os.get_current_directory(context.temp_allocator)
 }
 
 finder_hide :: proc() {
