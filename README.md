@@ -204,7 +204,30 @@ The script installs to standard FHS paths:
 /usr/share/icons/hicolor/<size>/apps/bragi.png
 /usr/share/pixmaps/bragi.png
 /usr/share/doc/bragi/copyright
+/usr/share/metainfo/<identifier>.metainfo.xml
 ```
+
+#### Install / uninstall
+
+```sh
+# Debian / Ubuntu
+sudo apt install ./bragi_<version>_<arch>.deb
+sudo apt remove bragi
+
+# Fedora / RHEL
+sudo dnf install ./bragi-<version>-1.<arch>.rpm
+sudo dnf remove bragi
+```
+
+The AppStream metainfo we ship makes Bragi appear in GNOME Software
+and KDE Discover under "Installed", so removal works from there too.
+
+Heads up on Ubuntu: the default **App Center** (24.04+) and
+**Ubuntu Software** (22.04) only list Snaps — they will not show
+deb-installed apps at all, so use `apt remove bragi` from the
+terminal. To get a GUI uninstaller, install upstream GNOME Software
+alongside (`sudo apt install gnome-software gnome-software-plugin-snap`)
+and refresh the AppStream cache (`sudo appstreamcli refresh-cache --force`).
 
 #### Build-host setup
 
