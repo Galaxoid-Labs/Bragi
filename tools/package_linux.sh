@@ -76,6 +76,7 @@ require() {
 # ──────────────────────────────────────────────────────────────────
 APP_NAME="$(ini_get common name)"        ; require "common.name"        "$APP_NAME"
 BIN_NAME="$(ini_get common binary_name)" ; require "common.binary_name" "$BIN_NAME"
+IDENTIFIER="$(ini_get common identifier)"
 VERSION="$(ini_get common version)"      ; require "common.version"     "$VERSION"
 AUTHOR="$(ini_get common author)"        ; require "common.author"      "$AUTHOR"
 COPYRIGHT="$(ini_get common copyright)"  ; require "common.copyright"   "$COPYRIGHT"
@@ -83,6 +84,18 @@ DESCRIPTION="$(ini_get common description)"
 URL="$(ini_get common url)"
 LICENSE_ID="$(ini_get common license)"
 ICON_PNG="$(ini_get common icon_png)"
+
+# Tiny XML-escaper for fields we splice into the AppStream metainfo.
+# Only the five canonical entities; nothing in deploy.ini needs more.
+xml_escape() {
+	local s="$1"
+	s="${s//&/&amp;}"
+	s="${s//</&lt;}"
+	s="${s//>/&gt;}"
+	s="${s//\"/&quot;}"
+	s="${s//\'/&apos;}"
+	printf '%s' "$s"
+}
 
 CATEGORIES="$(ini_get linux categories)"
 MIME_TYPES="$(ini_get linux mime_types)"
@@ -162,6 +175,7 @@ rm -rf "$STAGING"
 mkdir -p "$STAGING/usr/bin"
 mkdir -p "$STAGING/usr/share/applications"
 mkdir -p "$STAGING/usr/share/doc/$BIN_NAME"
+mkdir -p "$STAGING/usr/share/metainfo"
 mkdir -p "$STAGING/usr/share/pixmaps"
 
 # The binary lives directly in /usr/bin. Linux convention; /opt or
@@ -216,6 +230,64 @@ echo "→ writing $BIN_NAME.desktop"
 	echo "StartupNotify=true"
 } > "$STAGING/usr/share/applications/$BIN_NAME.desktop"
 chmod 0644 "$STAGING/usr/share/applications/$BIN_NAME.desktop"
+
+# AppStream metainfo. Without this, GNOME Software / KDE Discover /
+# Plasma Discover do NOT show the package in their "Installed" list,
+# even though apt/dnf/pacman know about it. The .desktop file alone
+# is enough for the OS to put us in the menu, but the GUI app stores
+# index by AppStream component id (reverse-DNS), not by package name.
+#
+# Spec: https://www.freedesktop.org/software/appstream/docs/
+# Validate locally with: appstreamcli validate <file>
+if [[ -n "$IDENTIFIER" ]]; then
+	echo "→ writing $IDENTIFIER.metainfo.xml"
+	metainfo_path="$STAGING/usr/share/metainfo/$IDENTIFIER.metainfo.xml"
+	xe_name="$(xml_escape "$APP_NAME")"
+	xe_desc="$(xml_escape "$DESCRIPTION")"
+	xe_url="$(xml_escape "$URL")"
+	xe_author="$(xml_escape "$AUTHOR")"
+	xe_license="$(xml_escape "$LICENSE_ID")"
+	xe_email="$(xml_escape "$MAINTAINER_EMAIL")"
+	xe_version="$(xml_escape "$VERSION")"
+	# Stable developer id derived from the reverse-DNS identifier
+	# (everything except the trailing app component). E.g.
+	# `com.galaxoidlabs.bragi` → `com.galaxoidlabs`. Falls back to the
+	# full identifier if it has no dots.
+	dev_id="${IDENTIFIER%.*}"
+	[[ "$dev_id" == "$IDENTIFIER" ]] && dev_id="$IDENTIFIER"
+	xe_dev_id="$(xml_escape "$dev_id")"
+	{
+		echo '<?xml version="1.0" encoding="UTF-8"?>'
+		echo "<component type=\"desktop-application\">"
+		echo "  <id>$IDENTIFIER</id>"
+		echo "  <name>$xe_name</name>"
+		echo "  <summary>$xe_desc</summary>"
+		# metadata_license = the license of THIS XML file (CC0 is the
+		# AppStream-recommended default). project_license = SPDX of the
+		# actual project, from deploy.ini.
+		echo "  <metadata_license>CC0-1.0</metadata_license>"
+		echo "  <project_license>$xe_license</project_license>"
+		echo "  <launchable type=\"desktop-id\">$BIN_NAME.desktop</launchable>"
+		[[ -n "$URL" ]] && echo "  <url type=\"homepage\">$xe_url</url>"
+		echo "  <developer id=\"$xe_dev_id\">"
+		echo "    <name>$xe_author</name>"
+		echo "  </developer>"
+		echo "  <description>"
+		echo "    <p>$xe_desc</p>"
+		echo "  </description>"
+		# OARS content rating — required by appstream-glib's strict
+		# validator and by GNOME Software for the "appropriate audience"
+		# UI. Empty rating tag = no concerning content.
+		echo "  <content_rating type=\"oars-1.1\"/>"
+		echo "  <releases>"
+		echo "    <release version=\"$xe_version\" date=\"$(date '+%Y-%m-%d')\"/>"
+		echo "  </releases>"
+		[[ -n "$MAINTAINER_EMAIL" && "$MAINTAINER_EMAIL" != "noreply@example.com" ]] && \
+			echo "  <update_contact>$xe_email</update_contact>"
+		echo "</component>"
+	} > "$metainfo_path"
+	chmod 0644 "$metainfo_path"
+fi
 
 # Copyright file (Debian convention — also picked up by RPM).
 {
@@ -340,6 +412,7 @@ if (( STAGE_RPM && HAS_RPM )); then
 		echo "%license /usr/share/doc/$BIN_NAME/copyright"
 		echo "/usr/bin/$BIN_NAME"
 		echo "/usr/share/applications/$BIN_NAME.desktop"
+		[[ -n "$IDENTIFIER" ]] && echo "/usr/share/metainfo/$IDENTIFIER.metainfo.xml"
 		echo "/usr/share/pixmaps/$BIN_NAME.png"
 		echo "/usr/share/icons/hicolor/*/apps/$BIN_NAME.png"
 		echo
