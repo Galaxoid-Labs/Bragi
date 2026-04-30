@@ -327,7 +327,13 @@ MIN_PANE_PX     :: 80.0 // minimum width a pane can be shrunk to
 
 // Returns the index of the divider near `x` (= the index of the pane to
 // the *right* of the divider, in 1..N-1), or -1 if x isn't over a divider.
-divider_at_x :: proc(x: f32, l: Layout) -> int {
+//
+// `y` is checked against TITLEBAR_H because on macOS the top strip is
+// owned by Cocoa for window-drag hit-testing — we'd just lose any click
+// in there to the OS regardless. Returning -1 for those y values keeps
+// the cursor-swap logic from flickering on titlebar hover too.
+divider_at_x :: proc(x: f32, l: Layout, y: f32 = -1) -> int {
+	if y >= 0 && y < TITLEBAR_H do return -1
 	half: f32 = DIVIDER_GRAB_PX * 0.5
 	for i in 1 ..< len(l.panes) {
 		dx := x - l.panes[i].pane_x
@@ -466,7 +472,11 @@ compute_layout :: proc() -> Layout {
 		gutter_w := f32(digits) * g_char_width + GUTTER_PADDING * 2
 
 		text_x := pane_x + gutter_w
-		text_y := f32(0)
+		// On macOS the window has a transparent title bar that overlays
+		// the editor's first ~28 px (TITLEBAR_H); shift text + gutter
+		// down so line 1 of the buffer doesn't render under the
+		// traffic-light buttons. TITLEBAR_H is 0 on other platforms.
+		text_y := TITLEBAR_H
 		text_w := pane_w - gutter_w - SB_THICKNESS
 		text_h := l.editor_bottom - SB_THICKNESS - text_y
 
@@ -1248,11 +1258,12 @@ draw_scrollbars :: proc(ed: ^Editor, p: Pane_Layout) {
 }
 
 draw_gutter :: proc(ed: ^Editor, p: Pane_Layout) {
-	// Fill the full gutter column, not just the text rect — the strip
-	// below the text area (alongside the horizontal scrollbar track)
-	// needs the gutter bg too, otherwise line numbers that scroll
-	// into that strip render their own bg as a dark patch on top of
-	// the editor bg.
+	// Fill the gutter column from text_y down to the bottom of the
+	// h-scrollbar track. The strip *above* text_y on macOS (the
+	// title-bar reservation) is covered by `draw_titlebar`, so we
+	// don't need to extend up there. Below the text area, this fill
+	// keeps line numbers that scroll under the h-track from
+	// rendering their own bg as a dark patch on top of editor bg.
 	gutter_h := p.h_track.y + p.h_track.h - p.text_y
 	fill_rect({p.pane_x, p.text_y, p.gutter_w, gutter_h}, g_theme.gutter_bg_color)
 
@@ -1295,6 +1306,57 @@ pane_scroll_indicator :: proc(ed: ^Editor, p: Pane_Layout) -> string {
 	cur_line, _ := editor_pos_to_line_col(ed, ed.cursor)
 	pct := cur_line * 100 / max(1, total - 1)
 	return fmt.tprintf("%d%%", pct)
+}
+
+// Width reserved for the macOS traffic-light buttons on the left of
+// the title bar. ~14 px each × 3 buttons + ~12 px between + ~16 px of
+// left padding ≈ 80 px. Used so we don't center the title text into
+// the buttons.
+@(private="file")
+TITLEBAR_TRAFFIC_LIGHT_W :: f32(80)
+
+// Paint the title-bar strip across the top of the window: solid
+// gutter-bg fill behind the traffic lights + active pane's filename
+// centered. Only does anything when TITLEBAR_H > 0 (currently macOS
+// only). On other platforms the proc no-ops because there's no
+// reserved strip to paint.
+//
+// Drawn AFTER the panes / dim / separators so it covers anything that
+// might have rendered into the [0, TITLEBAR_H] strip — most notably
+// gutter line numbers that scroll above text_y mid-frame.
+draw_titlebar :: proc(l: Layout) {
+	if TITLEBAR_H <= 0 do return
+
+	fill_rect({0, 0, l.screen_w, TITLEBAR_H}, g_theme.gutter_bg_color)
+
+	// Active pane's filename + dirty marker. Mirrors the per-pane
+	// path strip in the status bar.
+	ed := active_editor()
+	name  := len(ed.file_path) > 0 ? path_basename(ed.file_path) : "[Untitled]"
+	dirty := ed.dirty ? " *" : ""
+	title := fmt.tprintf("%s%s", name, dirty)
+	cstr  := strings.clone_to_cstring(title, context.temp_allocator)
+
+	w_px: c.int
+	ttf.GetStringSize(g_font, cstr, 0, &w_px, nil)
+	title_w := f32(w_px) / g_density
+
+	// Center across the full width. If the title's so long that the
+	// centered position would intrude on the traffic lights, shift
+	// right so they don't overlap.
+	x := (l.screen_w - title_w) * 0.5
+	if x < TITLEBAR_TRAFFIC_LIGHT_W do x = TITLEBAR_TRAFFIC_LIGHT_W
+
+	// Vertical center: TITLEBAR_H is 28; font.size is ~14. Half the
+	// difference puts the text baseline-ish centered in the strip.
+	y := (TITLEBAR_H - g_config.font.size) * 0.5
+
+	// Clip so very long titles don't bleed off the right edge.
+	clip := sdl.Rect{i32(TITLEBAR_TRAFFIC_LIGHT_W), 0, i32(l.screen_w - TITLEBAR_TRAFFIC_LIGHT_W), i32(TITLEBAR_H)}
+	sdl.SetRenderClipRect(g_renderer, &clip)
+	defer sdl.SetRenderClipRect(g_renderer, nil)
+
+	draw_text(cstr, x, y, g_theme.status_text_color, g_theme.gutter_bg_color)
 }
 
 draw_status_bar :: proc(ed: ^Editor, l: Layout) {
@@ -1842,13 +1904,18 @@ draw_frame :: proc() {
 	editor_focused := !(g_terminal_visible && g_terminal_active)
 	for p, i in l.panes {
 		if editor_focused && i == g_active_idx do continue
-		fill_rect({p.pane_x, 0, p.pane_w, l.editor_bottom}, INACTIVE_DIM)
+		// Dim only the editor zone below the title-bar strip, not the
+		// strip itself — the title bar is unified chrome and shouldn't
+		// dim per inactive pane.
+		fill_rect({p.pane_x, TITLEBAR_H, p.pane_w, l.editor_bottom - TITLEBAR_H}, INACTIVE_DIM)
 	}
 	// Thin vertical separator between panes so the column boundary reads
-	// even when the two adjacent files share a similar look.
+	// even when the two adjacent files share a similar look. Starts
+	// below the title-bar strip — the strip is one unified band, not
+	// per-pane.
 	for i in 1 ..< len(l.panes) {
 		x := l.panes[i].pane_x
-		fill_rect({x, 0, 1.0 / g_density, l.editor_bottom}, g_theme.gutter_bg_color)
+		fill_rect({x, TITLEBAR_H, 1.0 / g_density, l.editor_bottom - TITLEBAR_H}, g_theme.gutter_bg_color)
 	}
 	// Terminal pane (bottom strip) — drawn before status / modals so
 	// they overlay it cleanly. The thin divider above it doubles as
@@ -1864,6 +1931,7 @@ draw_frame :: proc() {
 		if !g_terminal_active do fill_rect(l.terminal_rect, INACTIVE_DIM)
 	}
 
+	draw_titlebar(l)
 	draw_status_bar(active_editor(), l)
 	draw_menu()
 	draw_help(l)
@@ -1981,7 +2049,7 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		// strip overlaps the rightmost few pixels of one pane's
 		// scrollbar and the leftmost few pixels of the next pane's
 		// gutter, but resize wins.
-		if div := divider_at_x(ev.button.x, l); div > 0 {
+		if div := divider_at_x(ev.button.x, l, ev.button.y); div > 0 {
 			g_resize_divider = div
 			return
 		}
@@ -2046,7 +2114,7 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		// horizontal panes) use ↔ ; the horizontal divider above the
 		// terminal uses ↕ . SetCursor is cheap and SDL no-ops when
 		// the cursor doesn't actually change.
-		over_pane_div := divider_at_x(ev.motion.x, l) > 0
+		over_pane_div := divider_at_x(ev.motion.x, l, ev.motion.y) > 0
 		over_term_div := g_terminal_visible &&
 		                 ev.motion.y >= l.terminal_divider_y &&
 		                 ev.motion.y <  l.terminal_divider_y + l.terminal_divider_h
@@ -2136,15 +2204,23 @@ main :: proc() {
 	defer sdl.DestroyRenderer(g_renderer)
 	defer sdl.DestroyWindow(g_window)
 
+	// macOS: turn on the transparent-titlebar look so the editor
+	// content extends up under the traffic-light buttons. No-op on
+	// other platforms (TITLEBAR_H is also 0 there, so the layout math
+	// behaves identically to before).
+	configure_titlebar(g_window)
+
 	g_density = sdl.GetWindowPixelDensity(g_window)
 	fmt.printfln("SDL3 pixel density: %v", g_density)
 	sdl.SetRenderScale(g_renderer, g_density, g_density)
 	sdl.SetRenderDrawBlendMode(g_renderer, sdl.BLENDMODE_BLEND)
-	// VSync off: live-resize on macOS lags badly when present blocks for vblank.
-	// We rely on WaitEventTimeout(250) to keep idle CPU near zero, and the
-	// per-line text cache makes draws cheap, so even uncapped frame rate
-	// during active input is fine.
-	sdl.SetRenderVSync(g_renderer, 0)
+	// VSync on: prevents tearing during window moves and any other
+	// in-flight redraws. The original disable was an SDL2-era macOS
+	// live-resize concern; SDL3's compositor handles that cleanly
+	// now. If live-resize ever feels laggy again, switching this to
+	// `-1` (adaptive) or toggling off in resize_event_watch are both
+	// option escape hatches.
+	sdl.SetRenderVSync(g_renderer, 1)
 
 	defer text_cache_clear()
 
