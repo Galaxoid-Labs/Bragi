@@ -302,8 +302,26 @@ Stage toggles: `STAGE_BUILD=0`, `STAGE_DEB=0`, `STAGE_RPM=0`.
 
 ### Windows
 
-No automated installer / MSIX yet — distribute as a zip with
-`Bragi.exe` alongside `SDL3.dll`, `SDL3_ttf.dll`, and `vterm.dll`.
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\package_windows.ps1
+```
+
+Reads `deploy.ini`, generates `bragi.ico` from `icon.png` (multi-res),
+compiles a `bragi.rc` resource (icon + version-info string table),
+links it into a release `Bragi.exe`, stages the redistributable
+(exe + 3 DLLs + LICENSE) into `dist\windows\staging\`, then writes
+both:
+
+- `dist\windows\Bragi-<version>-Setup.exe` — Inno Setup installer
+- `dist\windows\Bragi-<version>-portable.zip` — extract-and-run bundle
+
+Requires **Inno Setup 6** for the installer (winget:
+`winget install JRSoftware.InnoSetup`); without it the script auto-
+falls back to the zip only. `rc.exe` from the Windows SDK is auto-
+located off any Visual Studio 2022+ install.
+
+Stage toggles: `STAGE_ICON=0`, `STAGE_BUILD=0`, `STAGE_BUNDLE=0`,
+`STAGE_INSTALLER=0`, `STAGE_ZIP=0`.
 
 ## Quick reference
 

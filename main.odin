@@ -2211,7 +2211,6 @@ main :: proc() {
 	configure_titlebar(g_window)
 
 	g_density = sdl.GetWindowPixelDensity(g_window)
-	fmt.printfln("SDL3 pixel density: %v", g_density)
 	sdl.SetRenderScale(g_renderer, g_density, g_density)
 	sdl.SetRenderDrawBlendMode(g_renderer, sdl.BLENDMODE_BLEND)
 	// VSync on: prevents tearing during window moves and any other

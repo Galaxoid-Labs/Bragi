@@ -156,17 +156,13 @@ config_load :: proc() {
 		fmt.eprintln("config: could not resolve prefs path; using defaults")
 		return
 	}
-	if !os.exists(path) {
-		fmt.printfln("config: %s not found, using defaults", path)
-		return
-	}
+	if !os.exists(path) do return
 
 	m, _, ok := ini.load_map_from_path(path, context.temp_allocator)
 	if !ok {
 		fmt.eprintfln("config: failed to load %s, using defaults", path)
 		return
 	}
-	fmt.printfln("config: loaded from %s", path)
 
 	if section, has := m["font"]; has {
 		load_string(section, "path", &g_config.font.path)

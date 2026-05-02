@@ -249,13 +249,16 @@ fractional positions during smooth scroll.
 - **Terminal mouse forwarding** via `vterm_mouse_*`.
 - **Terminal font override** in config (currently hard-wired to the
   embedded Nerd Font).
-- **Windows installer / packaged release** — today the README walks
-  users through a manual `odin build .` + three `Copy-Item` calls to
-  drop SDL3.dll / SDL3_ttf.dll / vterm.dll next to `Bragi.exe`. Bake
-  this into a single artifact (zip with a launcher script, or MSIX,
-  or an NSIS / Inno Setup installer). Mirror what `package.sh` does
-  for macOS .app + .dmg and Linux .deb / .rpm. Likely lives in a new
-  `package.ps1` or extends the existing script with a Windows stage.
+- ~~**Windows installer**~~ — Done. `tools/package_windows.ps1`
+  generates `bragi.ico` from `icon.png` via `tools/png_to_ico.ps1`
+  (no ImageMagick dep — pure System.Drawing + ICONDIR-format writer),
+  compiles a `bragi.rc` (icon + version-info from `deploy.ini`) via
+  `rc.exe`, links the `.res` into Bragi.exe via Odin's
+  `-extra-linker-flags`, then drives Inno Setup 6 (`iscc.exe`) over a
+  generated `setup.iss` to produce `dist/windows/Bragi-<v>-Setup.exe`.
+  Auto-falls back to a portable zip if Inno isn't installed. The
+  `.ps1` files MUST carry a UTF-8 BOM — PS5.1 reads BOM-less files as
+  Windows-1252 and chokes on the `→ / ─ / ✓` chars in our prose.
 
 ## Performance: future upgrade paths
 
