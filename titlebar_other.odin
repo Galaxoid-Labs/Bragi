@@ -1,4 +1,5 @@
 #+build !darwin
+#+build !windows
 package bragi
 
 import sdl "vendor:sdl3"
