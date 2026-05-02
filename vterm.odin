@@ -18,12 +18,13 @@ when ODIN_OS == .Darwin {
 	foreign import vterm_lib { "system:vterm" }
 } else when ODIN_OS == .Linux {
 	foreign import vterm_lib { "system:vterm" }
+} else when ODIN_OS == .Windows {
+	// Windows: link against the vendored libvterm import lib (built from
+	// neovim's libvterm fork via vendor/libvterm/build steps). The matching
+	// vterm.dll must be next to the produced Bragi.exe at runtime — the
+	// Makefile / packaging script copies it alongside SDL3.dll.
+	foreign import vterm_lib { "vendor/libvterm/vterm.lib" }
 }
-// Windows: no foreign import. We provide pure-Odin no-op stubs below so the
-// rest of the codebase compiles. `terminal_open` checks for vterm_new == nil
-// and bails cleanly, so the embedded terminal pane is simply unavailable
-// until pty.odin's CreatePseudoConsole branch + a Windows libvterm build
-// land.
 
 VTerm        :: struct {} // opaque
 VTermState   :: struct {}
@@ -107,53 +108,32 @@ VTermKey :: enum c.int {
 	// Function keys live at 256+; we don't bind them yet.
 }
 
-when ODIN_OS == .Darwin || ODIN_OS == .Linux {
-	@(default_calling_convention = "c")
-	foreign vterm_lib {
-		vterm_new        :: proc(rows: c.int, cols: c.int) -> ^VTerm ---
-		vterm_free       :: proc(vt: ^VTerm) ---
-		vterm_set_size   :: proc(vt: ^VTerm, rows: c.int, cols: c.int) ---
-		vterm_set_utf8   :: proc(vt: ^VTerm, is_utf8: c.int) ---
+@(default_calling_convention = "c")
+foreign vterm_lib {
+	vterm_new        :: proc(rows: c.int, cols: c.int) -> ^VTerm ---
+	vterm_free       :: proc(vt: ^VTerm) ---
+	vterm_set_size   :: proc(vt: ^VTerm, rows: c.int, cols: c.int) ---
+	vterm_set_utf8   :: proc(vt: ^VTerm, is_utf8: c.int) ---
 
-		// Feed bytes from the PTY in; returns bytes consumed.
-		vterm_input_write :: proc(vt: ^VTerm, bytes: cstring, len: c.size_t) -> c.size_t ---
+	// Feed bytes from the PTY in; returns bytes consumed.
+	vterm_input_write :: proc(vt: ^VTerm, bytes: cstring, len: c.size_t) -> c.size_t ---
 
-		// Drain queued output (escape sequences from keyboard / mouse encoding)
-		// that should be written back to the PTY master fd.
-		vterm_output_read :: proc(vt: ^VTerm, buf: [^]u8, len: c.size_t) -> c.size_t ---
+	// Drain queued output (escape sequences from keyboard / mouse encoding)
+	// that should be written back to the PTY master fd.
+	vterm_output_read :: proc(vt: ^VTerm, buf: [^]u8, len: c.size_t) -> c.size_t ---
 
-		vterm_keyboard_unichar :: proc(vt: ^VTerm, c: u32, mod: VTermModifier) ---
-		vterm_keyboard_key     :: proc(vt: ^VTerm, key: VTermKey, mod: VTermModifier) ---
+	vterm_keyboard_unichar :: proc(vt: ^VTerm, c: u32, mod: VTermModifier) ---
+	vterm_keyboard_key     :: proc(vt: ^VTerm, key: VTermKey, mod: VTermModifier) ---
 
-		vterm_obtain_screen :: proc(vt: ^VTerm) -> ^VTermScreen ---
-		vterm_obtain_state  :: proc(vt: ^VTerm) -> ^VTermState ---
+	vterm_obtain_screen :: proc(vt: ^VTerm) -> ^VTermScreen ---
+	vterm_obtain_state  :: proc(vt: ^VTerm) -> ^VTermState ---
 
-		vterm_state_get_cursorpos :: proc(state: ^VTermState, cursorpos: ^VTermPos) ---
+	vterm_state_get_cursorpos :: proc(state: ^VTermState, cursorpos: ^VTermPos) ---
 
-		vterm_screen_reset    :: proc(screen: ^VTermScreen, hard: c.int) ---
-		vterm_screen_get_cell :: proc(screen: ^VTermScreen, pos: VTermPos, cell: ^VTermScreenCell) -> c.int ---
+	vterm_screen_reset    :: proc(screen: ^VTermScreen, hard: c.int) ---
+	vterm_screen_get_cell :: proc(screen: ^VTermScreen, pos: VTermPos, cell: ^VTermScreenCell) -> c.int ---
 
-		vterm_screen_set_callbacks :: proc(screen: ^VTermScreen, cb: ^VTermScreenCallbacks, user: rawptr) ---
-	}
-} else {
-	// Windows stubs. vterm_new returns nil so terminal_open's existing
-	// nil-check fails the open path before any other vterm proc is reached;
-	// the rest of these are reachable only via dead branches but still need
-	// to satisfy the linker.
-	vterm_new                  :: proc "c" (rows: c.int, cols: c.int) -> ^VTerm { return nil }
-	vterm_free                 :: proc "c" (vt: ^VTerm) {}
-	vterm_set_size             :: proc "c" (vt: ^VTerm, rows: c.int, cols: c.int) {}
-	vterm_set_utf8             :: proc "c" (vt: ^VTerm, is_utf8: c.int) {}
-	vterm_input_write          :: proc "c" (vt: ^VTerm, bytes: cstring, len: c.size_t) -> c.size_t { return 0 }
-	vterm_output_read          :: proc "c" (vt: ^VTerm, buf: [^]u8, len: c.size_t) -> c.size_t { return 0 }
-	vterm_keyboard_unichar     :: proc "c" (vt: ^VTerm, c: u32, mod: VTermModifier) {}
-	vterm_keyboard_key         :: proc "c" (vt: ^VTerm, key: VTermKey, mod: VTermModifier) {}
-	vterm_obtain_screen        :: proc "c" (vt: ^VTerm) -> ^VTermScreen { return nil }
-	vterm_obtain_state         :: proc "c" (vt: ^VTerm) -> ^VTermState { return nil }
-	vterm_state_get_cursorpos  :: proc "c" (state: ^VTermState, cursorpos: ^VTermPos) {}
-	vterm_screen_reset         :: proc "c" (screen: ^VTermScreen, hard: c.int) {}
-	vterm_screen_get_cell      :: proc "c" (screen: ^VTermScreen, pos: VTermPos, cell: ^VTermScreenCell) -> c.int { return 0 }
-	vterm_screen_set_callbacks :: proc "c" (screen: ^VTermScreen, cb: ^VTermScreenCallbacks, user: rawptr) {}
+	vterm_screen_set_callbacks :: proc(screen: ^VTermScreen, cb: ^VTermScreenCallbacks, user: rawptr) ---
 }
 
 // libvterm's screen-callbacks struct. We only set `sb_pushline` (called

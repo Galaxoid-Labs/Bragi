@@ -19,10 +19,14 @@ odin build .                  # produces ./Bragi
 
 Requires Odin **dev-2026-04** or newer (`core:os` overhaul). Runtime
 deps: `sdl3`, `sdl3_ttf`, `libvterm` (Homebrew on macOS, distro
-packages on Linux). Windows terminal pane is stubbed in `pty.odin`
-(no `CreatePseudoConsole` yet) and `vterm.odin` (no-op Odin stubs in
-place of the libvterm foreign import); `terminal_open`'s nil-check on
-`vterm_new` keeps the rest of the editor functional on Windows.
+packages on Linux). On Windows, ship `SDL3.dll`, `SDL3_ttf.dll`, and
+`vterm.dll` next to the produced `Bragi.exe`. The Windows libvterm
+build is vendored under `vendor/libvterm/` (built from neovim's
+libvterm fork — vcpkg has no port for it). Re-run
+`vendor/libvterm/build.ps1` to refresh the binaries; that script
+clones the upstream repo into `vendor/libvterm/_src/`, drops in a
+small CMakeLists.txt, builds with MSVC, and copies the resulting
+`vterm.dll` / `vterm.lib` / headers back into `vendor/libvterm/`.
 
 Two TTFs are embedded via `#load`:
 - `FiraCode-Regular.ttf` → editor pane (`g_font`)
@@ -50,8 +54,16 @@ Both have identical advance width so cell math is unchanged.
 - **`finder.odin`** — Cmd/Ctrl+F fuzzy directory navigator.
 - **`dot.odin`** — `.` (repeat last edit) recorder.
 - **`config.odin`** — INI loader, theme + editor settings.
-- **`vterm.odin`** — Foreign bindings for libvterm 0.3.x.
-- **`pty.odin`** — `forkpty` wrapper (libutil), non-blocking master fd.
+- **`vterm.odin`** — Foreign bindings for libvterm 0.3.x. Links
+  `system:vterm` on macOS / Linux and `vendor/libvterm/vterm.lib` on
+  Windows.
+- **`pty.odin`** — Platform-neutral PTY interface. `forkpty` wrapper on
+  Unix; dispatches to the Windows helpers in `pty_windows.odin`.
+- **`pty_windows.odin`** — `#+build windows`. ConPTY (`CreatePseudoConsole`,
+  Win10 1809+) implementation: anonymous pipes + `STARTUPINFOEXW` +
+  `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` to bind child stdio. Lives in
+  its own file because `core:sys/windows` only compiles on Windows
+  builds and Odin disallows `import` inside a `when` block.
 - **`terminal.odin`** — Embedded terminal pane: vterm + PTY + reader
   thread + scrollback ring + scrollbar.
 
@@ -222,12 +234,10 @@ fractional positions during smooth scroll.
 
 ## Roadmap (not started)
 
-- **Windows terminal pane** — `pty.odin` Windows branch needs
-  `CreatePseudoConsole` + `CreateProcess`, and `vterm.odin` needs a
-  real Windows libvterm build wired up in place of the current no-op
-  stubs (foreign-import the DLL/.lib and drop the Windows `else`
-  branch). Shell-side bytes then flow through libvterm exactly the
-  same as Unix.
+- ~~**Windows terminal pane**~~ — Done. ConPTY in `pty_windows.odin`,
+  libvterm vendored under `vendor/libvterm/`. Default Windows shell
+  is `powershell.exe` (overridable via `$SHELL`); cwd is
+  `%USERPROFILE%`. Open with Ctrl+J.
 - **Mouse double/triple-click** in the editor (word / line selection).
 - **Incremental search** — re-find on every keystroke into `cmd_buffer`.
 - **Comment toggle** (`gc`) — language-aware; needs per-`Language`
@@ -239,6 +249,13 @@ fractional positions during smooth scroll.
 - **Terminal mouse forwarding** via `vterm_mouse_*`.
 - **Terminal font override** in config (currently hard-wired to the
   embedded Nerd Font).
+- **Windows installer / packaged release** — today the README walks
+  users through a manual `odin build .` + three `Copy-Item` calls to
+  drop SDL3.dll / SDL3_ttf.dll / vterm.dll next to `Bragi.exe`. Bake
+  this into a single artifact (zip with a launcher script, or MSIX,
+  or an NSIS / Inno Setup installer). Mirror what `package.sh` does
+  for macOS .app + .dmg and Linux .deb / .rpm. Likely lives in a new
+  `package.ps1` or extends the existing script with a Windows stage.
 
 ## Performance: future upgrade paths
 

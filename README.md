@@ -116,13 +116,37 @@ covers it; on a minimal container you may need `glibc-static`).
 
 #### Windows
 
-Ship `SDL3.dll` and `SDL3_ttf.dll` next to the produced binary.
+First-time setup from a fresh clone — build, drop the runtime DLLs
+next to `Bragi.exe`, and launch:
 
-**The terminal pane is not available on Windows yet.** `pty.odin`'s
-Windows branch is stubbed (returns `false` from `pty_spawn`), so
-`Cmd+J` / `:term` will fail to open until ConPTY support
-(`CreatePseudoConsole` + `CreateProcess`) is wired up. Everything else
-— editor, panes, search, syntax, file dialogs — works on Windows.
+```powershell
+$odin = Split-Path -Parent (Get-Command odin).Source
+odin build . -out:Bragi.exe
+Copy-Item "$odin\vendor\sdl3\SDL3.dll"          .
+Copy-Item "$odin\vendor\sdl3\ttf\SDL3_ttf.dll"  .
+Copy-Item .\vendor\libvterm\vterm.dll           .
+.\Bragi.exe
+```
+
+`SDL3.dll` and `SDL3_ttf.dll` come from the Odin install; `vterm.dll`
+is committed under `vendor/libvterm/` (built from neovim's libvterm
+fork — vcpkg has no port for it), so a clone has everything it needs.
+A proper installer / packaged release will fold these copy steps into
+a single artifact later.
+
+To rebuild `vterm.dll` (only needed when bumping libvterm), run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File vendor\libvterm\build.ps1
+```
+
+The script clones the upstream repo, drops in a tiny CMakeLists.txt,
+builds with MSVC, and refreshes `vendor/libvterm/{vterm.dll,vterm.lib,include/}`.
+Requires git, cmake, and Visual Studio 2022+ with the C/C++ workload.
+
+The terminal pane spawns `powershell.exe` by default (override via the
+`SHELL` environment variable) and starts in `%USERPROFILE%`. Ctrl+J
+to open / close, same as on macOS / Linux.
 
 ### Build
 
@@ -278,10 +302,8 @@ Stage toggles: `STAGE_BUILD=0`, `STAGE_DEB=0`, `STAGE_RPM=0`.
 
 ### Windows
 
-Not yet — the embedded terminal pane needs ConPTY support in
-`pty.odin` first. Editor-only Windows packaging (zip with
-`Bragi.exe` + `SDL3.dll` + `SDL3_ttf.dll`) is doable today; it'll
-land alongside the terminal work.
+No automated installer / MSIX yet — distribute as a zip with
+`Bragi.exe` alongside `SDL3.dll`, `SDL3_ttf.dll`, and `vterm.dll`.
 
 ## Quick reference
 
@@ -407,7 +429,6 @@ amazing — see CLAUDE.md for the upgrade paths (mmap-backed open,
 piece-table backing store).
 
 Things that aren't done yet but are tracked in CLAUDE.md:
-- Windows terminal pane (ConPTY support).
 - Incremental search (debounced).
 - Mouse double / triple-click selection in the editor itself.
 - Cmd+W → Save → auto-close (untitled-buffer save flow).

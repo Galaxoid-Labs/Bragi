@@ -10,12 +10,32 @@ import "core:strings"
 //
 // Unix path uses `forkpty(3)` from <util.h> on macOS / <pty.h> on Linux,
 // which wraps the openpt + grantpt + unlockpt + fork + setsid +
-// TIOCSCTTY dance into a single call. Windows requires CreatePseudoConsole
-// and is stubbed out for now.
+// TIOCSCTTY dance into a single call.
+//
+// Windows path uses ConPTY (`CreatePseudoConsole`, Win10 1809+). Unlike
+// forkpty there's no fork model: we make two anonymous pipes and hand
+// the child-side ends to ConPTY, which translates between the Win32
+// console API and the VT byte stream libvterm expects on the other end.
+// `master_in` is what we WriteFile to (child's stdin); `master_out` is
+// what we ReadFile from (child's stdout/stderr). `hpc` owns ConPTY's
+// internal handles — closing it drives the child to exit. The actual
+// implementation lives in `pty_windows.odin` (#+build windows) so this
+// file stays free of the `core:sys/windows` import.
+//
+// Odin doesn't allow `when` inside struct fields, so all platform
+// fields coexist; each platform only touches its own. The unused
+// fields cost ~32 bytes per PTY (one allocation per terminal pane —
+// negligible).
 
 PTY :: struct {
-	master_fd: int, // read child output / write user input via this
-	child_pid: int, // for waitpid + SIGTERM on close
+	// Unix
+	master_fd: int,
+	child_pid: int,
+	// Windows
+	hpc:        rawptr, // HPCON
+	master_in:  rawptr, // HANDLE — we WriteFile here (child's stdin)
+	master_out: rawptr, // HANDLE — child's stdout/stderr (we read)
+	child:      rawptr, // HANDLE — child process (for Wait/Terminate)
 }
 
 // `argv` is the program + args to exec in the child. NULL-terminated
@@ -92,9 +112,7 @@ pty_spawn :: proc(argv: []string, cols, rows: int, cwd: string = "") -> (pty: PT
 
 		return PTY{master_fd = int(master), child_pid = int(pid)}, true
 	} else when ODIN_OS == .Windows {
-		// TODO(windows): CreatePseudoConsole / CreateProcess pair.
-		// Left unimplemented — Bragi terminal currently macOS / Linux only.
-		return {}, false
+		return pty_spawn_windows(argv, cols, rows, cwd)
 	} else {
 		return {}, false
 	}
@@ -106,6 +124,8 @@ pty_resize :: proc(pty: ^PTY, cols, rows: int) {
 	when ODIN_OS == .Darwin || ODIN_OS == .Linux {
 		ws := winsize{ws_row = u16(rows), ws_col = u16(cols)}
 		_ = ioctl(c.int(pty.master_fd), TIOCSWINSZ, &ws)
+	} else when ODIN_OS == .Windows {
+		pty_resize_windows(pty, cols, rows)
 	}
 }
 
@@ -118,6 +138,8 @@ pty_read :: proc(pty: ^PTY, buf: []u8) -> int {
 		if n == 0 do return -2 // EOF
 		// errno-based: EAGAIN means "no data right now."
 		return -1
+	} else when ODIN_OS == .Windows {
+		return pty_read_windows(pty, buf)
 	} else {
 		return -1
 	}
@@ -127,6 +149,8 @@ pty_write :: proc(pty: ^PTY, data: []u8) -> int {
 	when ODIN_OS == .Darwin || ODIN_OS == .Linux {
 		n := unix_write(c.int(pty.master_fd), raw_data(data), c.size_t(len(data)))
 		return int(n)
+	} else when ODIN_OS == .Windows {
+		return pty_write_windows(pty, data)
 	} else {
 		return -1
 	}
@@ -135,13 +159,37 @@ pty_write :: proc(pty: ^PTY, data: []u8) -> int {
 // Close the master fd. Sends SIGHUP to the child via the slave-side
 // hangup, which causes well-behaved shells to exit cleanly. Caller is
 // responsible for waitpid'ing the child afterwards.
+//
+// On Windows this closes the pseudo-console + pipes and forces the
+// child to exit, but does NOT close the child process HANDLE — call
+// `pty_close_child_handle` for that, after joining any monitoring
+// threads (e.g. the child-exit watcher in terminal.odin) that may
+// still be holding the handle.
 pty_close :: proc(pty: ^PTY) {
 	when ODIN_OS == .Darwin || ODIN_OS == .Linux {
 		if pty.master_fd >= 0 do unix_close(c.int(pty.master_fd))
 		pty.master_fd = -1
 		// Best-effort: send SIGTERM in case the shell ignored the HUP.
 		if pty.child_pid > 0 do _ = kill(c.int(pty.child_pid), SIGTERM)
+	} else when ODIN_OS == .Windows {
+		pty_close_windows(pty)
 	}
+}
+
+// Final cleanup of any process handle still held by the PTY. No-op on
+// Unix (the child is reaped by SIGTERM + the OS); on Windows this is
+// where the child process HANDLE gets closed, separate from the rest
+// of pty_close so callers can join handle-using threads first.
+pty_close_child_handle :: proc(pty: ^PTY) {
+	when ODIN_OS == .Windows do pty_close_child_handle_windows(pty)
+}
+
+// Block the calling thread until the spawned child exits. Intended
+// for use from a dedicated watcher thread on Windows where the EOF-
+// on-master-fd trick the Unix reader relies on doesn't fire (ConPTY
+// holds its pipes open until ClosePseudoConsole). No-op on Unix.
+pty_wait_for_child_exit :: proc(pty: ^PTY) {
+	when ODIN_OS == .Windows do pty_wait_for_child_exit_windows(pty)
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -219,3 +267,4 @@ when ODIN_OS == .Darwin || ODIN_OS == .Linux {
 		_ = fcntl(c.int(fd), F_SETFL, flags | O_NONBLOCK)
 	}
 }
+

@@ -44,6 +44,14 @@ Terminal :: struct {
 	reader_thread: ^sdl.Thread,
 	reader_quit:   bool, // set on shutdown to break the reader loop
 
+	// Windows-only: ConPTY keeps its pipes open after the child exits
+	// until we ClosePseudoConsole, so the reader thread's EOF-detect
+	// path doesn't fire on `exit`. The watcher thread blocks on
+	// WaitForSingleObject(child, INFINITE) and posts the exit signal
+	// when it returns. Stays nil on Unix where master-fd EOF is the
+	// signal.
+	watcher_thread: ^sdl.Thread,
+
 	// Scrollback ring (FIFO, capped at TERMINAL_SCROLLBACK_MAX). Filled
 	// from libvterm via the sb_pushline screen callback. `scroll_offset`
 	// is how many lines above "live" the user has scrolled — 0 means
@@ -205,33 +213,49 @@ terminal_open :: proc(rows, cols: int) -> bool {
 		vterm_screen_reset(t.screen, 1)
 	}
 
-	// Spawn the user's shell as a login shell.
+	// Spawn the user's shell.
 	//
-	// Why login (`-l`)? When Bragi is launched from Finder / a .desktop
-	// entry, the GUI environment is stripped — no PATH augmentations,
-	// often no `SHELL` variable at all. Terminal.app, iTerm2, kitty
-	// etc. all spawn `$SHELL -l` so that ~/.zprofile (zsh) /
-	// ~/.bash_profile (bash) run and set up PATH, prompt, etc. Without
-	// it the embedded terminal feels broken on first open: ugly prompt,
-	// missing aliases, brew binaries not on PATH.
-	//
-	// Fallback shell when `SHELL` is empty: pick the platform default
-	// (zsh on macOS 10.15+, bash on Linux) rather than `/bin/sh`,
+	// Unix: login shell (`-l`) so ~/.zprofile / ~/.bash_profile run.
+	// When Bragi is launched from Finder / a .desktop entry, the GUI
+	// environment is stripped — no PATH augmentations, often no `SHELL`
+	// at all. Terminal.app / iTerm2 / kitty all spawn `$SHELL -l` so
+	// rc files set up PATH / prompt / aliases; without it the embedded
+	// terminal feels broken on first open. Fallback shell when `SHELL`
+	// is empty: zsh on macOS 10.15+, bash on Linux — not `/bin/sh`,
 	// which on macOS is bash in POSIX mode and ignores most rc files.
-	shell := os.get_env("SHELL", context.temp_allocator)
-	if len(shell) == 0 {
-		when ODIN_OS == .Darwin {
-			shell = "/bin/zsh"
-		} else {
-			shell = "/bin/bash"
+	// Windows: respect $SHELL (Git Bash / WSL / pwsh users) but
+	// default to powershell.exe — universal on Win10+, and what
+	// Windows Terminal / VS Code / Hyper all default to. cmd.exe via
+	// %COMSPEC% is the system convention but a jarring default for
+	// most developers in 2026, so skip it. The login `-l` flag is
+	// Unix-only.
+	argv: []string
+	when ODIN_OS == .Windows {
+		shell := os.get_env("SHELL", context.temp_allocator)
+		if len(shell) == 0 do shell = "powershell.exe"
+		argv = []string{shell}
+	} else {
+		shell := os.get_env("SHELL", context.temp_allocator)
+		if len(shell) == 0 {
+			when ODIN_OS == .Darwin {
+				shell = "/bin/zsh"
+			} else {
+				shell = "/bin/bash"
+			}
 		}
+		argv = []string{shell, "-l"}
 	}
-	// Start the shell in $HOME so a fresh pane behaves like a new tab
-	// in Terminal.app / iTerm2 — landing in `/` (the GUI-launch cwd)
-	// would otherwise leave the prompt outside any project / git repo
-	// and force the user to `cd ~` every time.
-	home := os.get_env("HOME", context.temp_allocator)
-	pty, ok := pty_spawn([]string{shell, "-l"}, final_cols, final_rows, home)
+	// Start the shell in the user's home so a fresh pane behaves like
+	// a new tab in Terminal.app / iTerm2 / Windows Terminal — landing
+	// in `/` (the GUI-launch cwd) would otherwise leave the prompt
+	// outside any project / git repo and force `cd ~` every time.
+	home: string
+	when ODIN_OS == .Windows {
+		home = os.get_env("USERPROFILE", context.temp_allocator)
+	} else {
+		home = os.get_env("HOME", context.temp_allocator)
+	}
+	pty, ok := pty_spawn(argv, final_cols, final_rows, home)
 	if !ok {
 		vterm_free(t.vt)
 		sdl.DestroyMutex(t.input_mutex)
@@ -244,10 +268,22 @@ terminal_open :: proc(rows, cols: int) -> bool {
 	t.reader_thread = sdl.CreateThread(terminal_reader_thread, "bragi-pty-reader", t)
 	if t.reader_thread == nil {
 		pty_close(&t.pty)
+		pty_close_child_handle(&t.pty)
 		vterm_free(t.vt)
 		sdl.DestroyMutex(t.input_mutex)
 		free(t)
 		return false
+	}
+
+	// Windows: also spin up a child-exit watcher. ConPTY won't surface
+	// child exit through the read pipe (the pipes stay open until we
+	// ClosePseudoConsole), so we rely on this thread's
+	// WaitForSingleObject to detect `exit` / kill / crash and trigger
+	// the same close path the Unix reader's EOF would. Failure to
+	// spawn isn't fatal — the terminal still works, the user just has
+	// to manually close the pane after the shell exits.
+	when ODIN_OS == .Windows {
+		t.watcher_thread = sdl.CreateThread(terminal_watcher_thread, "bragi-pty-watcher", t)
 	}
 
 	g_terminal = t
@@ -260,9 +296,17 @@ terminal_close :: proc() {
 	t := g_terminal
 
 	t.reader_quit = true
-	pty_close(&t.pty) // closing the master fd unblocks the reader's read()
+	// pty_close on Unix closes the master fd (reader's read EOFs); on
+	// Windows it closes the pseudo-console (reader's ReadFile gets
+	// ERROR_BROKEN_PIPE) and TerminateProcess's the child so any
+	// watcher thread blocked on the child handle returns. The Windows
+	// child HANDLE is intentionally still open at this point — the
+	// watcher needs it valid for one more moment.
+	pty_close(&t.pty)
 
-	if t.reader_thread != nil do sdl.WaitThread(t.reader_thread, nil)
+	if t.reader_thread  != nil do sdl.WaitThread(t.reader_thread,  nil)
+	if t.watcher_thread != nil do sdl.WaitThread(t.watcher_thread, nil)
+	pty_close_child_handle(&t.pty)
 
 	if t.vt != nil do vterm_free(t.vt)
 	delete(t.pending_input)
@@ -504,6 +548,26 @@ terminal_reader_thread :: proc "c" (data: rawptr) -> c.int {
 		ev.user.code = TERMINAL_EVENT
 		_ = sdl.PushEvent(&ev)
 	}
+	return 0
+}
+
+// Windows-only child-exit watcher. ConPTY won't surface child exit
+// through the read pipe, so we wait directly on the child process
+// HANDLE; when the user types `exit` (or the shell crashes, or we
+// TerminateProcess in shutdown) the wait returns and we post the
+// same wake-up event the reader's EOF path uses.
+@(private="file")
+terminal_watcher_thread :: proc "c" (data: rawptr) -> c.int {
+	context = runtime.default_context()
+
+	t := cast(^Terminal)data
+	pty_wait_for_child_exit(&t.pty)
+	t.exited = true
+
+	ev: sdl.Event
+	ev.user.type = .USER
+	ev.user.code = TERMINAL_EVENT
+	_ = sdl.PushEvent(&ev)
 	return 0
 }
 
