@@ -2,3 +2,6 @@ Bragi
 dist
 bragi
 .DS_Store
+Bragi.exe
+SDL3.dll
+SDL3_ttf.dll

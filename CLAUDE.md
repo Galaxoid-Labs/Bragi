@@ -19,8 +19,10 @@ odin build .                  # produces ./Bragi
 
 Requires Odin **dev-2026-04** or newer (`core:os` overhaul). Runtime
 deps: `sdl3`, `sdl3_ttf`, `libvterm` (Homebrew on macOS, distro
-packages on Linux). Windows terminal pane is stubbed in `pty.odin`;
-everything else works on Windows.
+packages on Linux). Windows terminal pane is stubbed in `pty.odin`
+(no `CreatePseudoConsole` yet) and `vterm.odin` (no-op Odin stubs in
+place of the libvterm foreign import); `terminal_open`'s nil-check on
+`vterm_new` keeps the rest of the editor functional on Windows.
 
 Two TTFs are embedded via `#load`:
 - `FiraCode-Regular.ttf` → editor pane (`g_font`)
@@ -221,8 +223,11 @@ fractional positions during smooth scroll.
 ## Roadmap (not started)
 
 - **Windows terminal pane** — `pty.odin` Windows branch needs
-  `CreatePseudoConsole` + `CreateProcess`. Shell-side bytes go through
-  libvterm exactly the same as Unix.
+  `CreatePseudoConsole` + `CreateProcess`, and `vterm.odin` needs a
+  real Windows libvterm build wired up in place of the current no-op
+  stubs (foreign-import the DLL/.lib and drop the Windows `else`
+  branch). Shell-side bytes then flow through libvterm exactly the
+  same as Unix.
 - **Mouse double/triple-click** in the editor (word / line selection).
 - **Incremental search** — re-find on every keystroke into `cmd_buffer`.
 - **Comment toggle** (`gc`) — language-aware; needs per-`Language`
