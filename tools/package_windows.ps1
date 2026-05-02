@@ -169,13 +169,14 @@ BEGIN
         BLOCK "040904B0"
         BEGIN
             VALUE "CompanyName",      $(Rc-Quote $Author)
-            VALUE "FileDescription",  $(Rc-Quote $Description)
+            VALUE "FileDescription",  $(Rc-Quote $AppName)
             VALUE "FileVersion",      $(Rc-Quote $Version)
             VALUE "InternalName",     $(Rc-Quote $BinName)
             VALUE "LegalCopyright",   $(Rc-Quote $Copyright)
             VALUE "OriginalFilename", $(Rc-Quote $ExeName)
             VALUE "ProductName",      $(Rc-Quote $AppName)
             VALUE "ProductVersion",   $(Rc-Quote $Version)
+            VALUE "Comments",         $(Rc-Quote $Description)
         END
     END
     BLOCK "VarFileInfo"
