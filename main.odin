@@ -147,7 +147,7 @@ is_welcome_pane :: proc(ed: ^Editor) -> bool {
 	       len(g_editors) == 1 &&
 	       !ed.dirty &&
 	       len(ed.file_path) == 0 &&
-	       gap_buffer_len(&ed.buffer) == 0
+	       piece_buffer_len(&ed.buffer) == 0
 }
 
 draw_welcome :: proc(ed: ^Editor, p: Pane_Layout) {
@@ -625,15 +625,15 @@ draw_tokenized_line :: proc(bytes: []u8, tokens: []Token, x_origin, y: f32) {
 compute_state_at_line :: proc(ed: ^Editor, target_line: int) -> Tokenizer_State {
 	if ed.language == .None do return .Normal
 	state := Tokenizer_State.Normal
-	n := gap_buffer_len(&ed.buffer)
+	n := piece_buffer_len(&ed.buffer)
 	line := 0
 	line_start := 0
 	for line < target_line && line_start < n {
 		line_end := line_start
-		for line_end < n && gap_buffer_byte_at(&ed.buffer, line_end) != '\n' do line_end += 1
+		for line_end < n && piece_buffer_byte_at(&ed.buffer, line_end) != '\n' do line_end += 1
 		line_len := line_end - line_start
 		buf := make([]u8, line_len, context.temp_allocator)
-		for k in 0 ..< line_len do buf[k] = gap_buffer_byte_at(&ed.buffer, line_start + k)
+		for k in 0 ..< line_len do buf[k] = piece_buffer_byte_at(&ed.buffer, line_start + k)
 		_, state = syntax_tokenize(ed.language, buf, state)
 		line_start = line_end + 1
 		line += 1
@@ -1149,12 +1149,12 @@ draw_editor :: proc(ed: ^Editor, p: Pane_Layout, is_active: bool) {
 	// comments that started above the viewport).
 	state := compute_state_at_line(ed, first_visible)
 
-	buf_len := gap_buffer_len(&ed.buffer)
+	buf_len := piece_buffer_len(&ed.buffer)
 	line_idx := first_visible
 	line_start := editor_nth_line_start(ed, first_visible)
 	for line_idx <= last_visible {
 		line_end := line_start
-		for line_end < buf_len && gap_buffer_byte_at(&ed.buffer, line_end) != '\n' {
+		for line_end < buf_len && piece_buffer_byte_at(&ed.buffer, line_end) != '\n' {
 			line_end += 1
 		}
 
@@ -1166,7 +1166,7 @@ draw_editor :: proc(ed: ^Editor, p: Pane_Layout, is_active: bool) {
 			line_len := line_end - line_start
 			buf := make([]u8, line_len, context.temp_allocator)
 			for k in 0 ..< line_len {
-				buf[k] = gap_buffer_byte_at(&ed.buffer, line_start + k)
+				buf[k] = piece_buffer_byte_at(&ed.buffer, line_start + k)
 			}
 			expanded := expand_tabs(buf, context.temp_allocator)
 			expanded_bytes := transmute([]u8)expanded

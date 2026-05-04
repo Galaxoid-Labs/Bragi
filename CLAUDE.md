@@ -40,7 +40,20 @@ Both have identical advance width so cell math is unchanged.
   text cache, native dialogs, pane lifecycle, draw orchestration.
 - **`editor.odin`** — `Editor` struct, cursor / selection, edit
   primitives, auto-close brackets, smart Enter, soft tabs.
-- **`gap_buffer.odin`** — Gap buffer with `version: u64` for cache keys.
+- **`piece_buffer.odin`** — Piece-list backing store for `Editor.buffer`.
+  Immutable `original` (file load) + append-only `added` + ordered
+  list of pieces; far cursor jumps are O(piece-list-edit) instead of
+  O(distance). Sequential-access cache makes consecutive `byte_at`
+  calls O(1) amortized; coalesces on typing runs. Same `version: u64`
+  contract as before for cache keys. `original` is either heap-
+  allocated or an mmap'd region; `_destroy` dispatches on
+  `original_mmap`.
+- **`mmap_posix.odin`** / **`mmap_other.odin`** — POSIX mmap loader
+  used by `editor_load_file`. `MAP_PRIVATE | PROT_READ | PROT_WRITE`
+  so CRLF compaction can run in place via copy-on-write without
+  modifying the file. Pure-LF files (the common case) touch nothing
+  and stay lazy-paged. Windows / other platforms get a stub that
+  returns `ok=false` so the load path falls back to read-into-buffer.
 - **`undo.odin`** — Edit-log undo/redo with adjacent-op merging.
 - **`file.odin`** — Load (direct-into-gap-buffer + EOL detect) / save
   (atomic, EOL expand) / `path_basename` / `digit_count`.
@@ -78,7 +91,7 @@ Both have identical advance width so cell math is unchanged.
 - `snake_case` procs/locals, `Title_Case` types, `SCREAMING_SNAKE`
   package constants.
 - Public procs prefixed by concept: `editor_*`, `vim_*`, `syntax_*`,
-  `gap_buffer_*`, `terminal_*`, `menu_*`, `clipboard_*`, etc.
+  `piece_buffer_*`, `terminal_*`, `menu_*`, `clipboard_*`, etc.
 - File-private helpers use `@(private="file")`.
 - `[]u8` for byte ranges into the buffer; `string` only at API
   boundaries.
@@ -93,7 +106,7 @@ Both have identical advance width so cell math is unchanged.
 ## Buffer caches & mutation rules (load-bearing invariant)
 
 `Editor` carries incrementally-maintained caches keyed off
-`gap_buffer.version`:
+`piece_buffer.version`:
 
 - `line_starts: [dynamic]int` + `line_widths: [dynamic]int` — parallel
   arrays. `editor_pos_to_line_col` (binary search), `editor_nth_line_start`,
@@ -105,9 +118,16 @@ Both have identical advance width so cell math is unchanged.
 
 **Mutation rule**: interactive edit paths (typing, deletion, paste,
 undo, redo) MUST call `editor_buffer_insert` / `editor_buffer_delete`,
-not `gap_buffer_insert` / `gap_buffer_delete` directly. The wrappers
+not `piece_buffer_insert` / `piece_buffer_delete` directly. The wrappers
 do incremental `line_starts` / `line_widths` updates and bump the
 cache version in lock-step.
+
+**Direct-slice scans** (`ensure_line_starts` and similar fast-path
+walkers that need to avoid the per-byte branch through `byte_at`)
+must iterate `piece_buffer_pieces(gb)` and read each piece's bytes
+via `piece_buffer_source(gb, piece)`. The piece-list contract gives
+no contiguous-buffer view — anything assuming "left half / right
+half" of a gap buffer is gone.
 
 Bulk paths (`editor_set_text`, `editor_load_file`) bypass the wrappers
 and rely on `editor_clear` setting cache versions to `max(u64)` —
@@ -281,16 +301,17 @@ fractional positions during smooth scroll.
 
 ## Performance: future upgrade paths
 
-The current load + edit pipeline is snappy up to ~100 MB. Beyond
-that, two structural changes are on the table; neither has been
-started.
+Far cursor jumps no longer pay an O(distance) cost (piece table
+shipped). File opens are kernel-lazy on POSIX (mmap-backed open
+shipped). The remaining structural lever, in order of when it'd
+actually matter:
 
-- **mmap-backed open with copy-on-first-edit** — `mmap` instead of
-  `os.read_full`; build `line_starts` / `line_widths` against the
-  mapped region; copy into a writable gap buffer on first edit.
-  Open becomes near-instant regardless of file size; first-edit cost
-  ≈ memcpy. ~100 lines, the right next step *for load time*.
-- **Piece table (or rope) backing store** — replaces the gap buffer.
-  Insert / delete are O(piece-list-edit), independent of file size;
-  no memmove on far cursor jumps. Big rewrite touching every byte-
-  access path. Right *for sustained editing on gigabyte files*.
+- **Piece *tree* (RB-balanced) instead of piece *list*** — only
+  matters if real workflows hit thousands+ of pieces. Today's flat
+  list does linear scan in `find_piece` (with cache + sequential
+  fast paths covering the common case). At dozens of pieces that's
+  invisible; at tens of thousands a 100 MB scattered search-and-
+  replace would start to drag. Same proc surface
+  (`piece_buffer_*`); the RB tree replaces the `[dynamic]Piece`
+  field internally. ~600+ lines of well-tested tree code — overkill
+  unless we actually see the bottleneck in profiles.

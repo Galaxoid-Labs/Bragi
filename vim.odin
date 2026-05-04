@@ -53,13 +53,13 @@ vim_enter_visual_line :: proc(ed: ^Editor) {
 // In every other mode it falls through to the plain cursor/anchor range.
 visible_selection_range :: proc(ed: ^Editor) -> (lo, hi: int) {
 	lo, hi = editor_selection_range(ed)
-	n := gap_buffer_len(&ed.buffer)
+	n := piece_buffer_len(&ed.buffer)
 	switch ed.mode {
 	case .Visual:
 		if hi == lo && lo < n {
-			hi = lo + utf8_lead_size(gap_buffer_byte_at(&ed.buffer, lo))
+			hi = lo + utf8_lead_size(piece_buffer_byte_at(&ed.buffer, lo))
 		} else if hi < n {
-			hi += utf8_lead_size(gap_buffer_byte_at(&ed.buffer, hi))
+			hi += utf8_lead_size(piece_buffer_byte_at(&ed.buffer, hi))
 		}
 	case .Visual_Line:
 		lo = editor_line_start(ed, lo)
@@ -93,15 +93,15 @@ vim_classify :: proc(c: u8) -> Vim_Char_Class {
 }
 
 vim_word_forward :: proc(ed: ^Editor) {
-	n := gap_buffer_len(&ed.buffer)
+	n := piece_buffer_len(&ed.buffer)
 	if ed.cursor >= n do return
-	start_class := vim_classify(gap_buffer_byte_at(&ed.buffer, ed.cursor))
+	start_class := vim_classify(piece_buffer_byte_at(&ed.buffer, ed.cursor))
 	if start_class != .Space {
-		for ed.cursor < n && vim_classify(gap_buffer_byte_at(&ed.buffer, ed.cursor)) == start_class {
+		for ed.cursor < n && vim_classify(piece_buffer_byte_at(&ed.buffer, ed.cursor)) == start_class {
 			ed.cursor += 1
 		}
 	}
-	for ed.cursor < n && vim_classify(gap_buffer_byte_at(&ed.buffer, ed.cursor)) == .Space {
+	for ed.cursor < n && vim_classify(piece_buffer_byte_at(&ed.buffer, ed.cursor)) == .Space {
 		ed.cursor += 1
 	}
 	ed.anchor = ed.cursor
@@ -111,11 +111,11 @@ vim_word_forward :: proc(ed: ^Editor) {
 vim_word_backward :: proc(ed: ^Editor) {
 	if ed.cursor == 0 do return
 	ed.cursor -= 1
-	for ed.cursor > 0 && vim_classify(gap_buffer_byte_at(&ed.buffer, ed.cursor)) == .Space {
+	for ed.cursor > 0 && vim_classify(piece_buffer_byte_at(&ed.buffer, ed.cursor)) == .Space {
 		ed.cursor -= 1
 	}
-	cls := vim_classify(gap_buffer_byte_at(&ed.buffer, ed.cursor))
-	for ed.cursor > 0 && vim_classify(gap_buffer_byte_at(&ed.buffer, ed.cursor - 1)) == cls {
+	cls := vim_classify(piece_buffer_byte_at(&ed.buffer, ed.cursor))
+	for ed.cursor > 0 && vim_classify(piece_buffer_byte_at(&ed.buffer, ed.cursor - 1)) == cls {
 		ed.cursor -= 1
 	}
 	ed.anchor = ed.cursor
@@ -123,15 +123,15 @@ vim_word_backward :: proc(ed: ^Editor) {
 }
 
 vim_word_end :: proc(ed: ^Editor) {
-	n := gap_buffer_len(&ed.buffer)
+	n := piece_buffer_len(&ed.buffer)
 	if ed.cursor >= n - 1 do return
 	ed.cursor += 1
-	for ed.cursor < n && vim_classify(gap_buffer_byte_at(&ed.buffer, ed.cursor)) == .Space {
+	for ed.cursor < n && vim_classify(piece_buffer_byte_at(&ed.buffer, ed.cursor)) == .Space {
 		ed.cursor += 1
 	}
 	if ed.cursor >= n do return
-	cls := vim_classify(gap_buffer_byte_at(&ed.buffer, ed.cursor))
-	for ed.cursor + 1 < n && vim_classify(gap_buffer_byte_at(&ed.buffer, ed.cursor + 1)) == cls {
+	cls := vim_classify(piece_buffer_byte_at(&ed.buffer, ed.cursor))
+	for ed.cursor + 1 < n && vim_classify(piece_buffer_byte_at(&ed.buffer, ed.cursor + 1)) == cls {
 		ed.cursor += 1
 	}
 	ed.anchor = ed.cursor
@@ -140,10 +140,10 @@ vim_word_end :: proc(ed: ^Editor) {
 
 vim_first_nonblank :: proc(ed: ^Editor) {
 	line_start := editor_line_start(ed, ed.cursor)
-	n := gap_buffer_len(&ed.buffer)
+	n := piece_buffer_len(&ed.buffer)
 	i := line_start
 	for i < n {
-		b := gap_buffer_byte_at(&ed.buffer, i)
+		b := piece_buffer_byte_at(&ed.buffer, i)
 		if b != ' ' && b != '\t' && b != '\n' do break
 		i += 1
 	}
@@ -193,7 +193,7 @@ vim_apply_op_range :: proc(ed: ^Editor, op: Vim_Operator, lo, hi: int) {
 	n := hi - lo
 	bytes := make([]u8, n, context.temp_allocator)
 	for i in 0 ..< n {
-		bytes[i] = gap_buffer_byte_at(&ed.buffer, lo + i)
+		bytes[i] = piece_buffer_byte_at(&ed.buffer, lo + i)
 	}
 	cstr := strings.clone_to_cstring(string(bytes), context.temp_allocator)
 	sdl.SetClipboardText(cstr)
@@ -233,7 +233,7 @@ vim_op_to_eol :: proc(ed: ^Editor, op: Vim_Operator) {
 vim_op_line :: proc(ed: ^Editor, op: Vim_Operator, count: int) {
 	line_start := editor_line_start(ed, ed.cursor)
 	end := editor_line_end(ed, ed.cursor)
-	n := gap_buffer_len(&ed.buffer)
+	n := piece_buffer_len(&ed.buffer)
 	for _ in 1 ..< count {
 		if end >= n do break
 		end += 1
@@ -248,9 +248,9 @@ vim_op_line :: proc(ed: ^Editor, op: Vim_Operator, count: int) {
 }
 
 vim_paste_after :: proc(ed: ^Editor) {
-	n := gap_buffer_len(&ed.buffer)
+	n := piece_buffer_len(&ed.buffer)
 	if ed.cursor < n {
-		b := gap_buffer_byte_at(&ed.buffer, ed.cursor)
+		b := piece_buffer_byte_at(&ed.buffer, ed.cursor)
 		if b != '\n' do editor_move_right(ed, false)
 	}
 	clipboard_paste_into(ed)
@@ -464,7 +464,7 @@ vim_parse_subst :: proc(cmd: string) -> (whole_buffer: bool, pat, repl: string, 
 @(private="file")
 vim_match_here :: proc(ed: ^Editor, pos: int, needle: []u8, ignore_case: bool) -> bool {
 	for j in 0 ..< len(needle) {
-		a := gap_buffer_byte_at(&ed.buffer, pos + j)
+		a := piece_buffer_byte_at(&ed.buffer, pos + j)
 		b := needle[j]
 		if ignore_case {
 			la := a; lb := b
@@ -492,7 +492,7 @@ vim_substitute :: proc(ed: ^Editor, cmd: string) -> bool {
 	lo, hi: int
 	if whole_buffer {
 		lo = 0
-		hi = gap_buffer_len(&ed.buffer)
+		hi = piece_buffer_len(&ed.buffer)
 	} else {
 		lo = editor_line_start(ed, ed.cursor)
 		hi = editor_line_end(ed, ed.cursor)
@@ -546,7 +546,7 @@ vim_substitute :: proc(ed: ^Editor, cmd: string) -> bool {
 		// Snapshot the bytes we're about to delete so undo can put them back.
 		deleted := make([]u8, len(needle), context.temp_allocator)
 		for j in 0 ..< len(needle) {
-			deleted[j] = gap_buffer_byte_at(&ed.buffer, pos + j)
+			deleted[j] = piece_buffer_byte_at(&ed.buffer, pos + j)
 		}
 
 		editor_buffer_delete(ed, pos, len(needle))
@@ -569,9 +569,9 @@ vim_substitute :: proc(ed: ^Editor, cmd: string) -> bool {
 // Vim's `%`: jump from the bracket at cursor to its matching pair, with
 // proper nesting. No-op if cursor isn't on `( [ { ) ] }`.
 vim_bracket_match :: proc(ed: ^Editor) {
-	n := gap_buffer_len(&ed.buffer)
+	n := piece_buffer_len(&ed.buffer)
 	if ed.cursor >= n do return
-	at := gap_buffer_byte_at(&ed.buffer, ed.cursor)
+	at := piece_buffer_byte_at(&ed.buffer, ed.cursor)
 
 	open, close: u8
 	forward: bool
@@ -589,7 +589,7 @@ vim_bracket_match :: proc(ed: ^Editor) {
 	depth := 1
 	if forward {
 		for i := ed.cursor + 1; i < n; i += 1 {
-			b := gap_buffer_byte_at(&ed.buffer, i)
+			b := piece_buffer_byte_at(&ed.buffer, i)
 			if b == open      do depth += 1
 			else if b == close {
 				depth -= 1
@@ -603,7 +603,7 @@ vim_bracket_match :: proc(ed: ^Editor) {
 		}
 	} else {
 		for i := ed.cursor - 1; i >= 0; i -= 1 {
-			b := gap_buffer_byte_at(&ed.buffer, i)
+			b := piece_buffer_byte_at(&ed.buffer, i)
 			if b == close     do depth += 1
 			else if b == open {
 				depth -= 1
@@ -623,8 +623,8 @@ vim_bracket_match :: proc(ed: ^Editor) {
 // otherwise (matching the soft-tab convention used elsewhere).
 vim_indent_line :: proc(ed: ^Editor) {
 	line_start := editor_line_start(ed, ed.cursor)
-	n := gap_buffer_len(&ed.buffer)
-	use_tab := line_start < n && gap_buffer_byte_at(&ed.buffer, line_start) == '\t'
+	n := piece_buffer_len(&ed.buffer)
+	use_tab := line_start < n && piece_buffer_byte_at(&ed.buffer, line_start) == '\t'
 
 	bytes: []u8
 	if use_tab {
@@ -647,10 +647,10 @@ vim_indent_line :: proc(ed: ^Editor) {
 // otherwise we strip up to `tab_size` leading spaces.
 vim_outdent_line :: proc(ed: ^Editor) {
 	line_start := editor_line_start(ed, ed.cursor)
-	n := gap_buffer_len(&ed.buffer)
+	n := piece_buffer_len(&ed.buffer)
 	if line_start >= n do return
 
-	first := gap_buffer_byte_at(&ed.buffer, line_start)
+	first := piece_buffer_byte_at(&ed.buffer, line_start)
 	if first == '\t' {
 		editor_buffer_delete(ed, line_start, 1)
 		if ed.cursor > line_start do ed.cursor -= 1
@@ -662,7 +662,7 @@ vim_outdent_line :: proc(ed: ^Editor) {
 	tab := g_config.editor.tab_size
 	count := 0
 	for i := line_start; i < n && count < tab; i += 1 {
-		if gap_buffer_byte_at(&ed.buffer, i) != ' ' do break
+		if piece_buffer_byte_at(&ed.buffer, i) != ' ' do break
 		count += 1
 	}
 	if count == 0 do return
@@ -706,19 +706,19 @@ vim_outdent_visual :: proc(ed: ^Editor) {
 // line is a no-op. Same constraint applies to LEFT in Normal / Visual.
 vim_move_left_in_line :: proc(ed: ^Editor, extend: bool) {
 	if ed.cursor <= 0 do return
-	if gap_buffer_byte_at(&ed.buffer, ed.cursor - 1) == '\n' do return
+	if piece_buffer_byte_at(&ed.buffer, ed.cursor - 1) == '\n' do return
 	editor_move_left(ed, extend)
 }
 
 // Vim's `l` doesn't cross to the next line. Stops at the last printable
 // char of the line (the byte before the newline, or before EOF).
 vim_move_right_in_line :: proc(ed: ^Editor, extend: bool) {
-	n := gap_buffer_len(&ed.buffer)
+	n := piece_buffer_len(&ed.buffer)
 	if ed.cursor >= n do return
-	if gap_buffer_byte_at(&ed.buffer, ed.cursor) == '\n' do return
+	if piece_buffer_byte_at(&ed.buffer, ed.cursor) == '\n' do return
 	next := editor_step_forward(ed, ed.cursor)
 	if next >= n do return
-	if gap_buffer_byte_at(&ed.buffer, next) == '\n' do return
+	if piece_buffer_byte_at(&ed.buffer, next) == '\n' do return
 	editor_move_right(ed, extend)
 }
 

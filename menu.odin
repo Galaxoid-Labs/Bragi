@@ -149,7 +149,7 @@ menu_action_enabled :: proc(ed: ^Editor, action: Menu_Action) -> bool {
 	case .Paste:
 		return sdl.HasClipboardText()
 	case .Select_All:
-		return gap_buffer_len(&ed.buffer) > 0
+		return piece_buffer_len(&ed.buffer) > 0
 	case .Undo:
 		return len(ed.undo_stack) > 0 || len(ed.pending.ops) > 0
 	case .Redo:

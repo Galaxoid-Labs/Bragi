@@ -81,8 +81,8 @@ expand_lf_to_crlf :: proc(data: []u8, allocator := context.allocator) -> []u8 {
 // Reset the buffer + edit history. Preserves UI state (mode, blink, etc.) so
 // the user's vim-mode position-of-mind isn't disturbed by opening a new file.
 editor_clear :: proc(ed: ^Editor) {
-	gap_buffer_destroy(&ed.buffer)
-	ed.buffer = gap_buffer_make()
+	piece_buffer_destroy(&ed.buffer)
+	ed.buffer = piece_buffer_make()
 
 	// Buffer-version-keyed caches must be invalidated explicitly: the new
 	// buffer's version restarts at 0 and will collide with stale cached
@@ -152,39 +152,74 @@ editor_load_file :: proc(ed: ^Editor, path: string) -> bool {
 	editor_clear(ed)
 
 	if size > 0 {
-		// Pre-size the gap buffer so the file content fits without a grow,
-		// and read straight into its data slice — no intermediate buffer,
-		// no extra memcpy.
-		gap_buffer_destroy(&ed.buffer)
-		ed.buffer = gap_buffer_make(int(size) + GAP_GROW)
+		// Try mmap first (POSIX). On the happy pure-LF path, this
+		// avoids the full read into RAM — the kernel lazy-pages the
+		// file as we touch it. CRLF files end up touching every page
+		// anyway during compaction, so the perf win is most
+		// pronounced for big LF files (which is most of them).
+		//
+		// `MAP_PRIVATE` gives copy-on-write semantics: we can compact
+		// in place without modifying the file on disk, and untouched
+		// pages stay backed by the file. On non-POSIX (Windows),
+		// `mmap_load_file` returns ok=false and we fall through.
+		mmap_data, mmap_addr, mmap_ok := mmap_load_file(fd, int(size))
 
-		n, read_err := os.read_full(fd, ed.buffer.data[:size])
-		if read_err != nil || i64(n) != size {
-			ed.buffer.gap_start = 0
-			ed.buffer.gap_end   = len(ed.buffer.data)
-			set_status_message(fmt.tprintf("E: read failed for %s", path), is_error = true)
-			return false
+		bytes:        []u8 = mmap_data
+		from_mmap:    bool = mmap_ok
+		mmap_full_sz: int  = int(size)
+
+		if !mmap_ok {
+			// Fallback: read the whole file into a freshly-allocated
+			// slice. Same shape as the pre-mmap implementation.
+			bytes = make([]u8, int(size))
+			n, read_err := os.read_full(fd, bytes)
+			if read_err != nil || i64(n) != size {
+				delete(bytes)
+				set_status_message(fmt.tprintf("E: read failed for %s", path), is_error = true)
+				return false
+			}
 		}
-		ed.buffer.gap_start = n
-		ed.buffer.version  += 1
+		n := len(bytes)
 
-		// One pass over the freshly-read bytes: detect EOL and build the
-		// line_starts/line_widths cache eagerly. The first frame after load
-		// then doesn't need to scan the buffer again.
-		eol, mixed := scan_load(ed, ed.buffer.data[:n])
+		// One-pass scan: detects EOL and pre-populates line_starts /
+		// line_widths so the first draw frame doesn't have to rescan.
+		// `scan_load` sets `ed.line_starts_ver = ed.buffer.version` —
+		// 0 here (the empty buffer left by `editor_clear`), which
+		// matches the new piece buffer's version, so the cache stays
+		// valid across the swap below for pure-LF files.
+		eol, mixed := scan_load(ed, bytes[:n])
 		ed.eol = eol
 		ed.eol_mixed = mixed
 
-		// CRLF/mixed files need an in-place compaction. After that the
-		// line_starts/line_widths positions we just built are stale, so we
-		// invalidate them and let the next reader rebuild lazily.
+		final_len := n
 		if eol == .CRLF || mixed {
-			new_len := normalize_crlf_inplace(ed.buffer.data[:n])
-			ed.buffer.gap_start = new_len
-			ed.buffer.version  += 1
+			// CRLF/mixed: compact in place. For mmap'd MAP_PRIVATE
+			// pages this triggers copy-on-write — we lose the
+			// lazy-paging benefit on touched pages but never modify
+			// the file on disk. Drop the partial line caches; their
+			// positions are now stale.
+			final_len = normalize_crlf_inplace(bytes[:n])
 			clear(&ed.line_starts)
 			clear(&ed.line_widths)
 			ed.line_starts_ver = max(u64)
+		}
+
+		if from_mmap {
+			// Hand the mmap to the buffer with `final_len` as the live
+			// slice; the full mapping size stays attached for munmap.
+			piece_buffer_destroy(&ed.buffer)
+			ed.buffer = piece_buffer_make_from_mmap(bytes[:final_len], mmap_addr, mmap_full_sz)
+		} else {
+			// Heap-allocated path. Shrink if compaction trimmed bytes
+			// so the buffer doesn't carry a dead tail.
+			if final_len < n {
+				shrunk := make([]u8, final_len)
+				copy(shrunk, bytes[:final_len])
+				delete(bytes)
+				bytes = shrunk
+			}
+			piece_buffer_destroy(&ed.buffer)
+			ed.buffer = piece_buffer_make_from_bytes(bytes)
 		}
 	} else {
 		ed.eol = default_eol()
@@ -254,7 +289,7 @@ normalize_crlf_inplace :: proc(buf: []u8) -> int {
 
 editor_save_file :: proc(ed: ^Editor) -> bool {
 	if len(ed.file_path) == 0 do return false
-	text := gap_buffer_to_string(&ed.buffer, context.temp_allocator)
+	text := piece_buffer_to_string(&ed.buffer, context.temp_allocator)
 	bytes := transmute([]u8)text
 
 	// Convert from internal LF back to file's EOL style. For LF files this is

@@ -6,7 +6,7 @@ import "core:unicode/utf8"
 Scrollbar_Drag :: enum { None, Vertical, Horizontal }
 
 Editor :: struct {
-	buffer:         Gap_Buffer,
+	buffer:         Piece_Buffer,
 	cursor:         int, // byte offset
 	anchor:         int, // selection anchor
 	desired_col:    int,
@@ -76,11 +76,11 @@ Editor :: struct {
 }
 
 editor_make :: proc() -> Editor {
-	return Editor{buffer = gap_buffer_make()}
+	return Editor{buffer = piece_buffer_make()}
 }
 
 editor_destroy :: proc(ed: ^Editor) {
-	gap_buffer_destroy(&ed.buffer)
+	piece_buffer_destroy(&ed.buffer)
 	undo_group_destroy(&ed.pending)
 	undo_stack_destroy(&ed.undo_stack)
 	undo_stack_destroy(&ed.redo_stack)
@@ -95,7 +95,7 @@ editor_destroy :: proc(ed: ^Editor) {
 
 // Initial buffer setup; bypasses the undo log (no history before this point).
 editor_set_text :: proc(ed: ^Editor, text: string) {
-	gap_buffer_insert(&ed.buffer, 0, transmute([]u8)text)
+	piece_buffer_insert(&ed.buffer, 0, transmute([]u8)text)
 	ed.cursor = 0
 	ed.anchor = 0
 }
@@ -124,23 +124,25 @@ utf8_lead_size :: proc(b: u8) -> int {
 editor_step_back :: proc(ed: ^Editor, pos: int) -> int {
 	if pos <= 0 do return 0
 	i := pos - 1
-	for i > 0 && (gap_buffer_byte_at(&ed.buffer, i) & 0xC0) == 0x80 {
+	for i > 0 && (piece_buffer_byte_at(&ed.buffer, i) & 0xC0) == 0x80 {
 		i -= 1
 	}
 	return i
 }
 
 editor_step_forward :: proc(ed: ^Editor, pos: int) -> int {
-	n := gap_buffer_len(&ed.buffer)
+	n := piece_buffer_len(&ed.buffer)
 	if pos >= n do return n
-	size := utf8_lead_size(gap_buffer_byte_at(&ed.buffer, pos))
+	size := utf8_lead_size(piece_buffer_byte_at(&ed.buffer, pos))
 	return min(n, pos + size)
 }
 
-// Rebuilds the line-start + line-width tables if stale. Walks gb.data directly
-// so the scan hits two contiguous slices rather than going through
-// gap_buffer_byte_at (which is a per-byte branch); on a 100 MB buffer that's
-// the difference between hundreds of milliseconds and tens.
+// Rebuilds the line-start + line-width tables if stale. Walks each
+// piece's underlying slice directly rather than going through
+// piece_buffer_byte_at (which has a piece-lookup branch per byte) —
+// on a 100 MB buffer that's the difference between hundreds of
+// milliseconds and tens. A freshly-loaded file has just one piece;
+// even a heavily-edited file usually stays in the dozens.
 @(private="file")
 ensure_line_starts :: proc(ed: ^Editor) {
 	if ed.line_starts_ver == ed.buffer.version && len(ed.line_starts) > 0 do return
@@ -150,30 +152,23 @@ ensure_line_starts :: proc(ed: ^Editor) {
 	gb := &ed.buffer
 	tab := g_config.editor.tab_size
 	cols := 0
-	for b, i in gb.data[:gb.gap_start] {
-		switch b {
-		case '\n':
-			append(&ed.line_widths, cols)
-			append(&ed.line_starts, i + 1)
-			cols = 0
-		case '\t':
-			cols += tab - (cols % tab)
-		case:
-			if (b & 0xC0) != 0x80 do cols += 1
+	pos := 0
+	for piece in piece_buffer_pieces(gb) {
+		src := piece_buffer_source(gb, piece)
+		bytes := src[piece.start : piece.start + piece.length]
+		for b, i in bytes {
+			switch b {
+			case '\n':
+				append(&ed.line_widths, cols)
+				append(&ed.line_starts, pos + i + 1)
+				cols = 0
+			case '\t':
+				cols += tab - (cols % tab)
+			case:
+				if (b & 0xC0) != 0x80 do cols += 1
+			}
 		}
-	}
-	for b, i in gb.data[gb.gap_end:] {
-		pos := gb.gap_start + i
-		switch b {
-		case '\n':
-			append(&ed.line_widths, cols)
-			append(&ed.line_starts, pos + 1)
-			cols = 0
-		case '\t':
-			cols += tab - (cols % tab)
-		case:
-			if (b & 0xC0) != 0x80 do cols += 1
-		}
+		pos += piece.length
 	}
 	append(&ed.line_widths, cols) // last line (possibly empty)
 	ed.line_starts_ver = ed.buffer.version
@@ -181,7 +176,7 @@ ensure_line_starts :: proc(ed: ^Editor) {
 
 // Walks the bytes of line `line_idx` and returns its column width, honoring
 // tab stops and skipping UTF-8 continuation bytes. Lines are typically short,
-// so the per-byte branch in gap_buffer_byte_at is a non-issue here.
+// so the per-byte branch in piece_buffer_byte_at is a non-issue here.
 @(private="file")
 compute_line_width_for :: proc(ed: ^Editor, line_idx: int) -> int {
 	start := ed.line_starts[line_idx]
@@ -189,12 +184,12 @@ compute_line_width_for :: proc(ed: ^Editor, line_idx: int) -> int {
 	if line_idx + 1 < len(ed.line_starts) {
 		end = ed.line_starts[line_idx + 1] - 1
 	} else {
-		end = gap_buffer_len(&ed.buffer)
+		end = piece_buffer_len(&ed.buffer)
 	}
 	tab := g_config.editor.tab_size
 	cols := 0
 	for i in start ..< end {
-		b := gap_buffer_byte_at(&ed.buffer, i)
+		b := piece_buffer_byte_at(&ed.buffer, i)
 		if b == '\t' {
 			cols += tab - (cols % tab)
 		} else if (b & 0xC0) != 0x80 {
@@ -223,7 +218,7 @@ bisect_first_gt :: proc(line_starts: []int, value: int) -> int {
 editor_buffer_insert :: proc(ed: ^Editor, pos: int, bytes: []u8) {
 	if len(bytes) == 0 do return
 	caches_valid := ed.line_starts_ver == ed.buffer.version && len(ed.line_starts) > 0
-	gap_buffer_insert(&ed.buffer, pos, bytes)
+	piece_buffer_insert(&ed.buffer, pos, bytes)
 	if !caches_valid do return
 
 	bytes_len := len(bytes)
@@ -266,7 +261,7 @@ editor_buffer_insert :: proc(ed: ^Editor, pos: int, bytes: []u8) {
 editor_buffer_delete :: proc(ed: ^Editor, pos: int, count: int) {
 	if count <= 0 do return
 	caches_valid := ed.line_starts_ver == ed.buffer.version && len(ed.line_starts) > 0
-	gap_buffer_delete(&ed.buffer, pos, count)
+	piece_buffer_delete(&ed.buffer, pos, count)
 	if !caches_valid do return
 
 	n := len(ed.line_starts)
@@ -303,7 +298,7 @@ editor_pos_to_line_col :: proc(ed: ^Editor, pos: int) -> (line, col: int) {
 	line = lo - 1
 	if line < 0 do line = 0
 	for i := ed.line_starts[line]; i < pos; {
-		b := gap_buffer_byte_at(&ed.buffer, i)
+		b := piece_buffer_byte_at(&ed.buffer, i)
 		switch b {
 		case '\n': return
 		case '\t':
@@ -319,25 +314,25 @@ editor_pos_to_line_col :: proc(ed: ^Editor, pos: int) -> (line, col: int) {
 
 editor_line_start :: proc(ed: ^Editor, pos: int) -> int {
 	for i := pos - 1; i >= 0; i -= 1 {
-		if gap_buffer_byte_at(&ed.buffer, i) == '\n' do return i + 1
+		if piece_buffer_byte_at(&ed.buffer, i) == '\n' do return i + 1
 	}
 	return 0
 }
 
 editor_line_end :: proc(ed: ^Editor, pos: int) -> int {
-	n := gap_buffer_len(&ed.buffer)
+	n := piece_buffer_len(&ed.buffer)
 	for i := pos; i < n; i += 1 {
-		if gap_buffer_byte_at(&ed.buffer, i) == '\n' do return i
+		if piece_buffer_byte_at(&ed.buffer, i) == '\n' do return i
 	}
 	return n
 }
 
 editor_advance_to_col :: proc(ed: ^Editor, start: int, target_col: int) -> int {
-	n := gap_buffer_len(&ed.buffer)
+	n := piece_buffer_len(&ed.buffer)
 	i := start
 	col := 0
 	for i < n && col < target_col {
-		b := gap_buffer_byte_at(&ed.buffer, i)
+		b := piece_buffer_byte_at(&ed.buffer, i)
 		if b == '\n' do break
 		if b == '\t' {
 			advance := g_config.editor.tab_size - (col % g_config.editor.tab_size)
@@ -370,7 +365,7 @@ editor_max_line_cols :: proc(ed: ^Editor) -> int {
 editor_nth_line_start :: proc(ed: ^Editor, n: int) -> int {
 	if n <= 0 do return 0
 	ensure_line_starts(ed)
-	if n >= len(ed.line_starts) do return gap_buffer_len(&ed.buffer)
+	if n >= len(ed.line_starts) do return piece_buffer_len(&ed.buffer)
 	return ed.line_starts[n]
 }
 
@@ -399,7 +394,7 @@ do_delete_range :: proc(ed: ^Editor, pos, count: int, new_cursor: int) {
 	if count <= 0 do return
 	bytes := make([]u8, count, context.temp_allocator)
 	for i in 0 ..< count {
-		bytes[i] = gap_buffer_byte_at(&ed.buffer, pos + i)
+		bytes[i] = piece_buffer_byte_at(&ed.buffer, pos + i)
 	}
 	editor_buffer_delete(ed, pos, count)
 	record_delete(ed, pos, bytes, new_cursor, new_cursor)
@@ -449,14 +444,14 @@ is_word_byte :: proc(b: u8) -> bool {
 // the codebase's word-class semantics for ASCII identifiers (our
 // supported languages don't use non-ASCII identifier chars).
 editor_word_bounds_at :: proc(ed: ^Editor, pos: int) -> (start, end: int, ok: bool) {
-	n := gap_buffer_len(&ed.buffer)
+	n := piece_buffer_len(&ed.buffer)
 	if pos < 0 || pos >= n do return pos, pos, false
-	if !is_word_byte(gap_buffer_byte_at(&ed.buffer, pos)) do return pos, pos, false
+	if !is_word_byte(piece_buffer_byte_at(&ed.buffer, pos)) do return pos, pos, false
 
 	start = pos
-	for start > 0 && is_word_byte(gap_buffer_byte_at(&ed.buffer, start - 1)) do start -= 1
+	for start > 0 && is_word_byte(piece_buffer_byte_at(&ed.buffer, start - 1)) do start -= 1
 	end = pos
-	for end < n && is_word_byte(gap_buffer_byte_at(&ed.buffer, end)) do end += 1
+	for end < n && is_word_byte(piece_buffer_byte_at(&ed.buffer, end)) do end += 1
 	return start, end, true
 }
 
@@ -475,7 +470,7 @@ editor_line_bounds_at :: proc(ed: ^Editor, pos: int) -> (start, end: int) {
 		// Strip the `\n` that separates this line from the next.
 		end = editor_nth_line_start(ed, line + 1) - 1
 	} else {
-		end = gap_buffer_len(&ed.buffer)
+		end = piece_buffer_len(&ed.buffer)
 	}
 	return
 }
@@ -491,12 +486,12 @@ should_auto_close :: proc(ed: ^Editor, r: rune) -> bool {
 	// Symmetric pairs (' " — open == close): skip if surrounded by word chars.
 	if r == pair {
 		if ed.cursor > 0 {
-			prev := gap_buffer_byte_at(&ed.buffer, ed.cursor - 1)
+			prev := piece_buffer_byte_at(&ed.buffer, ed.cursor - 1)
 			if is_word_byte(prev) do return false
 		}
-		n := gap_buffer_len(&ed.buffer)
+		n := piece_buffer_len(&ed.buffer)
 		if ed.cursor < n {
-			next := gap_buffer_byte_at(&ed.buffer, ed.cursor)
+			next := piece_buffer_byte_at(&ed.buffer, ed.cursor)
 			if is_word_byte(next) do return false
 		}
 	}
@@ -509,8 +504,8 @@ editor_insert_rune :: proc(ed: ^Editor, r: rune) {
 	// Over-type: if the next char is the same close bracket, just step over it
 	// (so typing `)` after a previously auto-inserted `)` doesn't double up).
 	if is_close_bracket(r) && !editor_has_selection(ed) {
-		n := gap_buffer_len(&ed.buffer)
-		if ed.cursor < n && rune(gap_buffer_byte_at(&ed.buffer, ed.cursor)) == r {
+		n := piece_buffer_len(&ed.buffer)
+		if ed.cursor < n && rune(piece_buffer_byte_at(&ed.buffer, ed.cursor)) == r {
 			ed.cursor += 1
 			ed.anchor = ed.cursor
 			ed.pending_kind = .Inserting
@@ -561,23 +556,23 @@ matches_bracket_pair :: proc(open_b, close_b: u8) -> bool {
 editor_smart_newline :: proc(ed: ^Editor) {
 	line_start := editor_line_start(ed, ed.cursor)
 	end := ed.cursor
-	n := gap_buffer_len(&ed.buffer)
+	n := piece_buffer_len(&ed.buffer)
 
 	// Capture the current line's leading whitespace (only the part before the caret).
 	ws_end := line_start
 	for ws_end < end && ws_end < n {
-		b := gap_buffer_byte_at(&ed.buffer, ws_end)
+		b := piece_buffer_byte_at(&ed.buffer, ws_end)
 		if b != ' ' && b != '\t' do break
 		ws_end += 1
 	}
 	ws := make([]u8, ws_end - line_start, context.temp_allocator)
-	for i in 0 ..< len(ws) do ws[i] = gap_buffer_byte_at(&ed.buffer, line_start + i)
+	for i in 0 ..< len(ws) do ws[i] = piece_buffer_byte_at(&ed.buffer, line_start + i)
 
 	// Detect cursor between bracket pair (e.g. {|}, [|], (|)).
 	between_pair := false
 	if ed.cursor > 0 && ed.cursor < n {
-		prev := gap_buffer_byte_at(&ed.buffer, ed.cursor - 1)
-		next := gap_buffer_byte_at(&ed.buffer, ed.cursor)
+		prev := piece_buffer_byte_at(&ed.buffer, ed.cursor - 1)
+		next := piece_buffer_byte_at(&ed.buffer, ed.cursor)
 		between_pair = matches_bracket_pair(prev, next)
 	}
 
@@ -660,7 +655,7 @@ editor_delete_forward :: proc(ed: ^Editor) {
 		return
 	}
 	if ed.pending_kind != .Deleting do commit_pending(ed)
-	n := gap_buffer_len(&ed.buffer)
+	n := piece_buffer_len(&ed.buffer)
 	if ed.cursor >= n do return
 	next := editor_step_forward(ed, ed.cursor)
 	do_delete_range(ed, ed.cursor, next - ed.cursor, ed.cursor)
@@ -713,7 +708,7 @@ editor_move_up :: proc(ed: ^Editor, extend: bool) {
 
 editor_move_down :: proc(ed: ^Editor, extend: bool) {
 	cur_line_end := editor_line_end(ed, ed.cursor)
-	n := gap_buffer_len(&ed.buffer)
+	n := piece_buffer_len(&ed.buffer)
 	if cur_line_end >= n {
 		ed.cursor = n
 	} else {
@@ -775,7 +770,7 @@ editor_pattern_ignore_case :: proc(pattern: string, force: i8) -> bool {
 @(private="file")
 match_at :: proc(ed: ^Editor, pos: int, needle: []u8, ignore_case: bool) -> bool {
 	for j in 0 ..< len(needle) {
-		a := gap_buffer_byte_at(&ed.buffer, pos + j)
+		a := piece_buffer_byte_at(&ed.buffer, pos + j)
 		b := needle[j]
 		if ignore_case {
 			if ascii_tolower(a) != ascii_tolower(b) do return false
@@ -820,7 +815,7 @@ ensure_search_matches :: proc(ed: ^Editor, pattern: string) {
 	}
 	clear(&ed.search_match_positions)
 	needle := transmute([]u8)pattern
-	n := gap_buffer_len(&ed.buffer)
+	n := piece_buffer_len(&ed.buffer)
 	last := n - len(needle)
 	if last >= 0 {
 		for i in 0 ..= last {
@@ -863,7 +858,7 @@ editor_search_stats :: proc(ed: ^Editor, pattern: string) -> (current, total: in
 editor_find_next :: proc(ed: ^Editor, pattern: string, forward: bool) -> bool {
 	needle := transmute([]u8)pattern
 	if len(needle) == 0 do return false
-	n := gap_buffer_len(&ed.buffer)
+	n := piece_buffer_len(&ed.buffer)
 	ic := editor_pattern_ignore_case(pattern, ed.search_force_case)
 
 	idx: int
@@ -890,7 +885,7 @@ editor_find_next :: proc(ed: ^Editor, pattern: string, forward: bool) -> bool {
 editor_select_all :: proc(ed: ^Editor) {
 	commit_pending(ed)
 	ed.anchor = 0
-	ed.cursor = gap_buffer_len(&ed.buffer)
+	ed.cursor = piece_buffer_len(&ed.buffer)
 	_, ed.desired_col = editor_pos_to_line_col(ed, ed.cursor)
 	ed.blink_timer = 0
 }
@@ -901,7 +896,7 @@ editor_selection_text :: proc(ed: ^Editor, allocator := context.allocator) -> st
 	if n == 0 do return ""
 	out := make([]u8, n, allocator)
 	for i in 0 ..< n {
-		out[i] = gap_buffer_byte_at(&ed.buffer, lo + i)
+		out[i] = piece_buffer_byte_at(&ed.buffer, lo + i)
 	}
 	return string(out)
 }

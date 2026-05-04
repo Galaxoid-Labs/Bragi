@@ -34,10 +34,11 @@ apart from system SDL3 / SDL3_ttf / libvterm.
   Windows) opens a centered modal at your home directory. Type to
   filter, Enter to dive into a folder or open a file, Backspace or `..`
   to go up. Mouse double-click works too.
-- **Fast** — incremental line-index + per-line column-width caches,
-  binary-only allocation paths during file load, direct gap-buffer
-  reads. 100 MB plain-text files load in a few hundred milliseconds and
-  edit smoothly.
+- **Fast** — piece-table buffer (far cursor jumps don't memmove),
+  mmap-backed file open on POSIX (kernel lazy-pages the file as you
+  scroll), incremental line-index + per-line column-width caches.
+  Open is near-instant regardless of file size; edits stay snappy
+  on multi-hundred-MB files.
 - **Syntax highlighting** for **Odin**, **C**, **C++**, **Go**, **Jai**,
   **Swift**, **Bash** (and `.sh` / `.zsh`), **INI** (sections, keys,
   hex colors, booleans), plus a **Generic** fallback (strings /
@@ -441,10 +442,12 @@ sb_thumb_hover  = #82828C
 ## Status & roadmap
 
 This is a personal-scratch editor; expect rough edges. The core flow
-(open / edit / save / search / multi-pane) is solid for daily use on
-files up to ~100 MB. Beyond that, performance is acceptable but not
-amazing — see CLAUDE.md for the upgrade paths (mmap-backed open,
-piece-table backing store).
+(open / edit / save / search / multi-pane) is solid for daily use,
+including on multi-hundred-MB files (piece-table buffer + mmap-backed
+open keep load + edit cheap). The remaining structural lever — a
+piece *tree* in place of the current piece *list* — only matters
+once a workflow drives piece counts into the thousands; see
+CLAUDE.md.
 
 Things that aren't done yet but are tracked in CLAUDE.md:
 - Incremental search (debounced).
