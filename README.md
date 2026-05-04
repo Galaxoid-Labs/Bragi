@@ -39,10 +39,10 @@ apart from system SDL3 / SDL3_ttf / libvterm.
   reads. 100 MB plain-text files load in a few hundred milliseconds and
   edit smoothly.
 - **Syntax highlighting** for **Odin**, **C**, **C++**, **Go**, **Jai**,
-  **Swift**, **INI** (sections, keys, hex colors, booleans), plus a
-  **Generic** fallback (strings / numbers / `//` and `/* */` comments)
-  for everything else. Detection by file extension; switch manually
-  with `:syntax <name>`.
+  **Swift**, **Bash** (and `.sh` / `.zsh`), **INI** (sections, keys,
+  hex colors, booleans), plus a **Generic** fallback (strings /
+  numbers / `//` and `/* */` comments) for everything else. Detection
+  by file extension; switch manually with `:syntax <name>`.
 - **Search** — `/foo` / `?foo` (literal, no regex), `n` / `N` to page,
   `[k/m]` match counter in the status bar, faint match highlights for
   every visible occurrence, `\c` / `\C` per-pattern case overrides,

@@ -37,6 +37,7 @@ Language :: enum {
 	Jai,
 	Swift,
 	Ini,
+	Bash,
 }
 
 // Per-language data table that drives `tokenize_with_spec`. New languages
@@ -218,6 +219,33 @@ SWIFT_TYPES := []string{
 SWIFT_CONSTANTS := []string{ "true", "false", "nil" }
 
 // ──────────────────────────────────────────────────────────────────
+// Bash / sh / zsh
+// ──────────────────────────────────────────────────────────────────
+//
+// Shell isn't a C-family language but the spec's primitives line up
+// well enough: line_comment for `#`, both quote styles for strings,
+// keywords for control flow + the most common builtins. Variables
+// like `$var` ride on `directive_prefix = '$'`, which highlights
+// `$` + a word identifier as one Keyword token. Special params
+// (`$1 $@ $#`) don't get highlighted because they're not word
+// identifiers — fine for v1; they're less visually noisy anyway.
+@(private="file")
+BASH_KEYWORDS := []string{
+	// Control flow
+	"if", "then", "else", "elif", "fi",
+	"case", "esac", "in",
+	"for", "while", "until", "do", "done",
+	"select", "function", "return",
+	"break", "continue",
+	// Variable / scope declarators (technically builtins, but they
+	// read as keywords in practice — they introduce names).
+	"local", "declare", "typeset", "readonly", "export", "unset",
+	"shift", "trap",
+}
+@(private="file")
+BASH_CONSTANTS := []string{ "true", "false" }
+
+// ──────────────────────────────────────────────────────────────────
 // Spec table.  Indexed by `Language` so dispatch is O(1).
 // New built-ins go in here; INI-loaded languages would extend this
 // model (e.g. to a `[dynamic]Language_Spec` registry) later.
@@ -345,6 +373,30 @@ g_specs := [Language]Language_Spec{
 		name         = "ini",
 		display_name = "INI",
 		extensions   = []string{".ini", ".cfg", ".conf"},
+	},
+	.Bash    = Language_Spec{
+		// `aliases` covers `:syntax sh` and `:syntax shell`. `.zsh`
+		// shares enough surface with bash that the same highlighting
+		// reads correctly; `.fish` does not (different keywords,
+		// different syntax) so it's intentionally excluded.
+		name         = "bash",
+		display_name = "Bash",
+		aliases      = []string{"sh", "shell", "zsh"},
+		extensions   = []string{".sh", ".bash", ".zsh"},
+		keywords     = BASH_KEYWORDS,
+		constants    = BASH_CONSTANTS,
+		line_comment        = "#",
+		// Both quote styles. Bash's single quotes are *literal* (no
+		// escapes inside) but the tokenizer doesn't care about
+		// escapes within strings beyond skipping a backslash-escaped
+		// quote — visually it's still a string either way.
+		double_quote_string = true,
+		single_quote_char   = true,
+		// `$var` / `${var}` (the latter renders fine because we only
+		// color the `$word` prefix; the rest of `${var}` falls
+		// through as default text). Special params `$1 $@ $#` aren't
+		// caught because they aren't word identifiers — fine for v1.
+		directive_prefix = '$',
 	},
 }
 
