@@ -48,7 +48,9 @@ Both have identical advance width so cell math is unchanged.
   ex commands. Modes: `Insert`, `Normal`, `Visual`, `Visual_Line`,
   `Command`, `Search`.
 - **`syntax.odin`** — Per-language tokenizers (Odin / C / C++ / Go /
-  Jai / Swift / Generic / None).
+  Jai / Swift / Bash / INI / Generic / None). Most go through
+  `tokenize_with_spec`; INI has its own dedicated tokenizer because
+  sections / keys / values don't fit the C-family `Language_Spec`.
 - **`menu.odin`** — Right-click context menu.
 - **`help.odin`** — `:h` / `:help` modal cheat-sheet.
 - **`finder.odin`** — Cmd/Ctrl+F fuzzy directory navigator.
@@ -66,6 +68,10 @@ Both have identical advance width so cell math is unchanged.
   builds and Odin disallows `import` inside a `when` block.
 - **`terminal.odin`** — Embedded terminal pane: vterm + PTY + reader
   thread + scrollback ring + scrollbar.
+- **`titlebar_{darwin,windows,other}.odin`** — Per-platform window
+  chrome. Darwin: transparent titlebar via Cocoa interop, reserves
+  `TITLEBAR_H = 28`. Windows: Mica/Acrylic via `DwmSetWindowAttribute`,
+  keeps the system bar, `TITLEBAR_H = 0`. Other: stub.
 
 ## Conventions
 
@@ -80,6 +86,9 @@ Both have identical advance width so cell math is unchanged.
   calls `free_all(context.temp_allocator)` once per iteration.
 - C-conv callbacks (`proc "c"`) must set
   `context = runtime.default_context()` before calling Odin code.
+- Platform-specific code: `_<platform>.odin` filename (auto-gated)
+  or `#+build` at file top. Keep the *symbol set* identical across
+  platforms (no-op stubs where needed) so call sites stay neutral.
 
 ## Buffer caches & mutation rules (load-bearing invariant)
 
@@ -110,6 +119,12 @@ sentinel that forces full rebuild on next read.
   handles. Both fonts opened at `FONT_SIZE * g_density`.
 - `g_density` — `GetWindowPixelDensity` result.
 - `g_char_width`, `g_line_height` — monospace metrics (logical pixels).
+  `measure_char_width` reads the font's advance via
+  `TTF_GetGlyphMetrics`, NOT the rendered bounding box — at small
+  sizes the box rounds to integer pixels and the cursor visibly
+  drifts off the chars.
+- `TITLEBAR_H` — top-of-editor reservation for traffic lights
+  (28 on macOS, 0 elsewhere). Defined in `titlebar_*.odin`.
 - `g_text_cache` — `(text, fg, bg, font_ptr) → ^sdl.Texture`. Font ptr
   is in the key so editor / terminal don't collide. Cap
   `TEXT_CACHE_MAX = 1024`; on overflow the whole cache is dropped.
@@ -142,11 +157,17 @@ sentinel that forces full rebuild on next read.
   bottom of the editor zone").
 - `g_terminal_height_ratio` is a fraction of `screen_h - status_h`
   (stable across resize).
+- macOS reserves `TITLEBAR_H` at every pane's `text_y`; `draw_titlebar`
+  paints a strip across `[0, TITLEBAR_H]` with the active filename
+  centered. `TITLEBAR_H = 0` elsewhere makes the math identical to the
+  pre-titlebar layout.
 
 ## Input dispatch — non-obvious bits
 
-- `WaitEventTimeout(250 ms)` keeps idle CPU near zero. VSync is off
-  (would make macOS live-resize jerky).
+- `WaitEventTimeout(250 ms)` keeps idle CPU near zero. VSync is on;
+  it was off historically due to SDL2-era macOS live-resize lag,
+  but SDL3 + modern Cocoa handle that cleanly and tearing during
+  window moves was the bigger problem without it.
 - Cmd OR Ctrl (`KMOD_GUI | KMOD_CTRL`) trigger shortcuts so bindings
   work cross-platform.
 - `resize_event_watch` (registered via `AddEventWatch`) fires
@@ -175,6 +196,15 @@ sentinel that forces full rebuild on next read.
 
 - `Terminal` is heap-allocated; `callbacks` (VTermScreenCallbacks)
   lives inline so libvterm's pointer stays valid.
+- The shell spawns at the real final grid size from byte zero
+  (`terminal_target_grid_from_window`). Spawning at 24×80 then
+  SIGWINCH-ing on the next frame breaks zsh's cursor tracking
+  (p10k / starship get permanently confused).
+- `pty_spawn` does `chdir($HOME)` and sets `LANG` / `LC_CTYPE` /
+  `TERM` / `COLORTERM` in the child if missing. GUI launches
+  inherit a stripped env; without this, shells fall back to "C"
+  locale, `wcwidth()` returns -1 for powerline glyphs, and the
+  prompt corrupts on every redraw.
 - Reader thread: blocks on the master fd, appends bytes to
   `pending_input` under `input_mutex`, pushes a `USER` event
   (`code = TERMINAL_EVENT`) to wake the main loop.
@@ -208,7 +238,8 @@ sentinel that forces full rebuild on next read.
 `draw_frame` composes: clear → per-pane (`draw_editor` →
 `draw_gutter` → `draw_scrollbars`) → inactive-pane dim overlays →
 pane separators → terminal strip → terminal-inactive dim →
-`draw_status_bar` → menu → help → finder → present. Order matters
+`draw_titlebar` (covers anything that bled into `[0, TITLEBAR_H]`)
+→ `draw_status_bar` → menu → help → finder → present. Order matters
 for the LCD subpixel AA — selection rects render *over* text so the
 baked BG color stays right.
 
@@ -234,11 +265,6 @@ fractional positions during smooth scroll.
 
 ## Roadmap (not started)
 
-- ~~**Windows terminal pane**~~ — Done. ConPTY in `pty_windows.odin`,
-  libvterm vendored under `vendor/libvterm/`. Default Windows shell
-  is `powershell.exe` (overridable via `$SHELL`); cwd is
-  `%USERPROFILE%`. Open with Ctrl+J.
-- **Mouse double/triple-click** in the editor (word / line selection).
 - **Incremental search** — re-find on every keystroke into `cmd_buffer`.
 - **Comment toggle** (`gc`) — language-aware; needs per-`Language`
   comment metadata.
@@ -249,16 +275,9 @@ fractional positions during smooth scroll.
 - **Terminal mouse forwarding** via `vterm_mouse_*`.
 - **Terminal font override** in config (currently hard-wired to the
   embedded Nerd Font).
-- ~~**Windows installer**~~ — Done. `tools/package_windows.ps1`
-  generates `bragi.ico` from `icon.png` via `tools/png_to_ico.ps1`
-  (no ImageMagick dep — pure System.Drawing + ICONDIR-format writer),
-  compiles a `bragi.rc` (icon + version-info from `deploy.ini`) via
-  `rc.exe`, links the `.res` into Bragi.exe via Odin's
-  `-extra-linker-flags`, then drives Inno Setup 6 (`iscc.exe`) over a
-  generated `setup.iss` to produce `dist/windows/Bragi-<v>-Setup.exe`.
-  Auto-falls back to a portable zip if Inno isn't installed. The
-  `.ps1` files MUST carry a UTF-8 BOM — PS5.1 reads BOM-less files as
-  Windows-1252 and chokes on the `→ / ─ / ✓` chars in our prose.
+- **Shell-friendly CLI invocation** (`bragi .`) — directory arg
+  should drop you into the finder rooted there; macOS needs a PATH
+  shim too.
 
 ## Performance: future upgrade paths
 
