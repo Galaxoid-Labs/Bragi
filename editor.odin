@@ -442,6 +442,44 @@ is_word_byte :: proc(b: u8) -> bool {
 	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_'
 }
 
+// Word range surrounding `pos`. Returns ok=false (and an empty range
+// at `pos`) if `pos` isn't on a word byte — caller can decide what to
+// do (typically: don't change the selection). Used by the editor's
+// double-click-to-select-word path. Byte-based; matches the rest of
+// the codebase's word-class semantics for ASCII identifiers (our
+// supported languages don't use non-ASCII identifier chars).
+editor_word_bounds_at :: proc(ed: ^Editor, pos: int) -> (start, end: int, ok: bool) {
+	n := gap_buffer_len(&ed.buffer)
+	if pos < 0 || pos >= n do return pos, pos, false
+	if !is_word_byte(gap_buffer_byte_at(&ed.buffer, pos)) do return pos, pos, false
+
+	start = pos
+	for start > 0 && is_word_byte(gap_buffer_byte_at(&ed.buffer, start - 1)) do start -= 1
+	end = pos
+	for end < n && is_word_byte(gap_buffer_byte_at(&ed.buffer, end)) do end += 1
+	return start, end, true
+}
+
+// Line range surrounding `pos`. End points at the trailing newline
+// (or the buffer end on the final line) — i.e. the selection covers
+// the line's *content* but stops short of the `\n`. Matches Sublime
+// / TextMate behavior; VS Code includes the newline. Excluding it
+// is what triple-click is for here, since carrying the newline
+// makes the visual selection wrap into the next line and copy-paste
+// drags an extra empty row along.
+editor_line_bounds_at :: proc(ed: ^Editor, pos: int) -> (start, end: int) {
+	line, _ := editor_pos_to_line_col(ed, pos)
+	start = editor_nth_line_start(ed, line)
+	total := editor_total_lines(ed)
+	if line + 1 < total {
+		// Strip the `\n` that separates this line from the next.
+		end = editor_nth_line_start(ed, line + 1) - 1
+	} else {
+		end = gap_buffer_len(&ed.buffer)
+	}
+	return
+}
+
 // Decide whether to auto-insert the closing pair after typing `r`.
 // Quotes (' ") get extra checks so contractions ("don't") and word-adjacent
 // quotes don't get spurious closing chars.

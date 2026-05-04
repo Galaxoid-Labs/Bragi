@@ -967,8 +967,32 @@ handle_mouse_button :: proc(ed: ^Editor, ev: sdl.MouseButtonEvent, p: Pane_Layou
 		ed.cursor = pos
 		mods := sdl.GetModState()
 		if !shift_held(mods) do ed.anchor = pos
+
+		// Multi-click expansion. SDL counts consecutive clicks at the
+		// same location within the system double-click threshold. We
+		// honour 2 (word) and 3 (line); anything higher is treated as
+		// a single click. After expanding, we suppress mouse_drag so
+		// a tiny mouse jitter doesn't immediately undo the expansion
+		// — the user can shift+click afterwards to extend.
+		switch ev.clicks {
+		case 2:
+			if start, end, ok := editor_word_bounds_at(ed, pos); ok {
+				ed.anchor = start
+				ed.cursor = end
+				ed.mouse_drag = false
+			} else {
+				ed.mouse_drag = true
+			}
+		case 3:
+			start, end := editor_line_bounds_at(ed, pos)
+			ed.anchor = start
+			ed.cursor = end
+			ed.mouse_drag = false
+		case:
+			ed.mouse_drag = true
+		}
+
 		_, ed.desired_col = editor_pos_to_line_col(ed, ed.cursor)
-		ed.mouse_drag = true
 		ed.blink_timer = 0
 	}
 }

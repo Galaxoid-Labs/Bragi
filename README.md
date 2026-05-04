@@ -448,7 +448,6 @@ piece-table backing store).
 
 Things that aren't done yet but are tracked in CLAUDE.md:
 - Incremental search (debounced).
-- Mouse double / triple-click selection in the editor itself.
 - Cmd+W → Save → auto-close (untitled-buffer save flow).
 - Python / Markdown / JSON / Zig / TS-JS syntax tokenizers.
 - Glyph atlas (would speed up first-display of large files).
