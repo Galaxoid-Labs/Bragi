@@ -475,4 +475,6 @@ caches and their invariants, and the rendering / input pipelines.
 
 ## License
 
-TBD.
+GPL-3.0-only. See [`LICENSE`](LICENSE) for the full text.
+
+Copyright © 2026 Galaxoid Labs.

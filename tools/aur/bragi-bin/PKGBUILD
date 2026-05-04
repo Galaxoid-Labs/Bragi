@@ -15,7 +15,7 @@ pkgrel=1
 pkgdesc="A small GPU-accelerated, vim-flavoured text/code editor"
 arch=('x86_64')
 url="https://github.com/Galaxoid-Labs/Bragi"
-license=('MIT')
+license=('GPL-3.0-only')
 
 # Runtime deps. SDL3 / SDL3_ttf / libvterm landed in the repos around
 # the same time as Arch's transition to SDL3 (2025). If a user's host

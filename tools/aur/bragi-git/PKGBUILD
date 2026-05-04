@@ -15,7 +15,7 @@ pkgrel=1
 pkgdesc="A small GPU-accelerated, vim-flavoured text/code editor (development snapshot)"
 arch=('x86_64')
 url="https://github.com/Galaxoid-Labs/Bragi"
-license=('MIT')
+license=('GPL-3.0-only')
 
 depends=('sdl3' 'sdl3_ttf' 'libvterm')
 makedepends=('git' 'odin' 'imagemagick')
