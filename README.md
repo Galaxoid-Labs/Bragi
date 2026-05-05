@@ -44,6 +44,12 @@ A small, GPU-accelerated, vim-flavoured text/code editor written in
   close, `Esc` to cancel.
 - **Help screen** with `:h` or `:help` — modal cheat sheet, eight
   categorised tabs (number keys 1-8 to jump, `h`/`l` to step).
+- **Live file-change detection** — open files are watched in
+  real time via the platform-native API (kqueue on macOS, inotify on
+  Linux, `ReadDirectoryChangesW` + IOCP on Windows). Clean buffers
+  reload automatically and preserve the cursor; dirty buffers get a
+  `[disk]` marker in the status bar so you can decide when to
+  reconcile. `:reload` (`:re`) forces a reload from disk.
 - **Native everything** — file dialogs (`Cmd+O`, `Cmd+Shift+S`),
   message boxes (mixed-EOL warning, unsaved-changes prompt), context
   menu on right-click. No browser embedded, no Electron, no Node.
@@ -278,6 +284,7 @@ n N                 next / prev match (wraps)
 :%s/pat/repl/[gi I] substitute (whole buffer)
 :term :terminal     open / focus the terminal pane
 :termclose          close the terminal pane
+:reload :re         reload the current file from disk
 :config             open / create the user config.ini
 :h  :help           open the categorised cheat sheet
 

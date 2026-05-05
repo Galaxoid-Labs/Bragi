@@ -1,5 +1,6 @@
 package bragi
 
+import "core:fmt"
 import "core:strconv"
 import "core:strings"
 import sdl "vendor:sdl3"
@@ -1005,6 +1006,31 @@ vim_execute_command :: proc(ed: ^Editor, raw: string) {
 		terminal_close()
 	case "config":
 		bragi_open_config()
+	case "reload", "re":
+		// Discard buffer changes and reload the file from disk.
+		// Primary use: clear an `external_changed` warning when the
+		// disk version is the one you want to keep. Preserves (line,
+		// col) and scroll across the reload — same behavior as the
+		// silent reload that fires when a clean buffer's file
+		// changes externally.
+		if len(ed.file_path) > 0 {
+			cur_line, cur_col := editor_pos_to_line_col(ed, ed.cursor)
+			prev_scroll_y     := ed.scroll_y
+			prev_scroll_x     := ed.scroll_x
+
+			path := strings.clone(ed.file_path, context.temp_allocator)
+			if editor_load_file(ed, path) {
+				total := editor_total_lines(ed)
+				target_line := clamp(cur_line, 0, max(0, total - 1))
+				ed.cursor = editor_pos_at_line_col(ed, target_line, cur_col)
+				ed.anchor = ed.cursor
+				ed.desired_col = cur_col
+				ed.scroll_y = prev_scroll_y
+				ed.scroll_x = prev_scroll_x
+				ed.external_changed = false
+				set_status_message(fmt.tprintf("reloaded %s from disk", path_basename(path)), .Info)
+			}
+		}
 	}
 
 	// :s/…/…/ and :%s/…/…/ — substitute. Tried last so other commands

@@ -91,6 +91,7 @@ status_bg       = #14141A
 status_path_bg  = #1C1C24
 status_text     = #C8C8D2
 status_dim      = #787D8C
+status_info     = #E5C07B
 status_error    = #DC5A5A
 sb_track        = #282830
 sb_thumb        = #5A5A64
@@ -203,6 +204,7 @@ config_load :: proc() {
 		load_color(section, "status_path_bg",  &g_config.theme.status_path_bg_color)
 		load_color(section, "status_text",     &g_config.theme.status_text_color)
 		load_color(section, "status_dim",      &g_config.theme.status_dim_color)
+		load_color(section, "status_info",     &g_config.theme.status_info_color)
 		load_color(section, "status_error",    &g_config.theme.status_error_color)
 	}
 }

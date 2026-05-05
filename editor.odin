@@ -37,6 +37,16 @@ Editor :: struct {
 	eol:        EOL,
 	eol_mixed:  bool, // transient — set by load_file when input had mixed endings
 
+	// External-change detection. `file_mtime_ns` is the modification
+	// time we observed at the last successful load or save (in
+	// nanoseconds since the Unix epoch). The file watcher fires when
+	// the directory changes; the main loop then re-stats and compares
+	// against this. `external_changed` is set when on-disk mtime
+	// drifted past ours AND the buffer is dirty (so we can't silently
+	// reload). Cleared on `:reload` or successful `:w`.
+	file_mtime_ns:    i64,
+	external_changed: bool,
+
 
 	// Command-line ":..." state (Command mode). Reused for Search mode input.
 	cmd_buffer: [dynamic]u8,

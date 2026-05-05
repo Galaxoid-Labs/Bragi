@@ -76,6 +76,7 @@ Theme :: struct {
 	status_path_bg_color:  sdl.Color,
 	status_text_color:     sdl.Color,
 	status_dim_color:      sdl.Color,
+	status_info_color:     sdl.Color,
 	status_error_color:    sdl.Color,
 }
 
@@ -103,6 +104,7 @@ DEFAULT_THEME :: Theme{
 	status_path_bg_color = sdl.Color{ 28,  28,  36, 255},
 	status_text_color    = sdl.Color{200, 200, 210, 255},
 	status_dim_color     = sdl.Color{120, 125, 140, 255},
+	status_info_color    = sdl.Color{229, 192, 123, 255}, // gold — reload / config / etc.
 	status_error_color   = sdl.Color{220,  90,  90, 255}, // soft red for errors
 }
 
@@ -303,15 +305,20 @@ g_pending_ctrl_w:     bool
 g_swallow_text_input: bool
 
 // One-shot message shown in the status bar's bottom row, vim-style. Set
-// by file-open errors and similar. Cleared on the next keystroke so it
-// behaves like vim's `:` echoes (stays until you do something).
-g_status_message:       string
-g_status_message_error: bool
+// by file-open errors, reload notices, etc. Cleared on the next
+// keystroke so it behaves like vim's `:` echoes (stays until you do
+// something). The kind picks the foreground color: Default = neutral
+// gray, Info = themed accent (reload succeeded, config notes), Error
+// = red.
+Status_Kind :: enum u8 { Default, Info, Error }
 
-set_status_message :: proc(msg: string, is_error: bool = false) {
+g_status_message:      string
+g_status_message_kind: Status_Kind
+
+set_status_message :: proc(msg: string, kind: Status_Kind = .Default) {
 	if len(g_status_message) > 0 do delete(g_status_message)
-	g_status_message       = strings.clone(msg)
-	g_status_message_error = is_error
+	g_status_message      = strings.clone(msg)
+	g_status_message_kind = kind
 }
 
 clear_status_message :: proc() {
@@ -319,7 +326,7 @@ clear_status_message :: proc() {
 		delete(g_status_message)
 		g_status_message = ""
 	}
-	g_status_message_error = false
+	g_status_message_kind = .Default
 }
 
 DIVIDER_GRAB_PX :: 6.0  // total grab width centered on the divider line
@@ -669,7 +676,7 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 		// Default size on first open — gets re-fit to the actual rect
 		// on the next frame via terminal_fit_to_rect.
 		if !terminal_toggle(24, 80) {
-			set_status_message("E: failed to open terminal", is_error = true)
+			set_status_message("E: failed to open terminal", .Error)
 		}
 		return
 	}
@@ -1413,7 +1420,12 @@ draw_status_bar :: proc(ed: ^Editor, l: Layout) {
 		e := &g_editors[i]
 		name  := len(e.file_path) > 0 ? path_basename(e.file_path) : "[untitled]"
 		dirty := e.dirty ? " *" : ""
-		left_text := fmt.tprintf("%s%s", name, dirty)
+		// Persistent marker for "file changed on disk while you were
+		// editing." The one-shot status message at detection time gets
+		// cleared by the user's next keystroke; this stays until they
+		// resolve via `:reload` or `:w`.
+		ext := e.external_changed ? " [disk]" : ""
+		left_text := fmt.tprintf("%s%s%s", name, dirty, ext)
 		left_cstr := strings.clone_to_cstring(left_text, context.temp_allocator)
 		color := i == g_active_idx ? g_theme.status_text_color : g_theme.status_dim_color
 
@@ -1455,8 +1467,13 @@ draw_status_bar :: proc(ed: ^Editor, l: Layout) {
 	// pre-empts the bottom row in Normal mode. Cleared by the next
 	// keystroke. Doesn't override Command / Search prompts.
 	if len(g_status_message) > 0 && ed.mode != .Command && ed.mode != .Search {
-		color := g_status_message_error ? g_theme.status_error_color : g_theme.status_text_color
-		cstr  := strings.clone_to_cstring(g_status_message, context.temp_allocator)
+		color: sdl.Color
+		switch g_status_message_kind {
+		case .Error:   color = g_theme.status_error_color
+		case .Info:    color = g_theme.status_info_color
+		case .Default: color = g_theme.status_text_color
+		}
+		cstr := strings.clone_to_cstring(g_status_message, context.temp_allocator)
 		draw_text(cstr, STATUS_PAD_X, bot_y, color, g_theme.status_bg_color)
 		return
 	}
@@ -1809,7 +1826,7 @@ bragi_open_config :: proc() {
 	// on every :config invocation.
 	path := config_path(context.temp_allocator)
 	if len(path) == 0 {
-		set_status_message("E: could not resolve config path", is_error = true)
+		set_status_message("E: could not resolve config path", .Error)
 		return
 	}
 	if os.exists(path) {
@@ -2035,6 +2052,11 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 			terminal_pump()
 			terminal_flush_output()
 			if g_terminal != nil && g_terminal.exited do terminal_close()
+		}
+		if ev.user.code == FILE_WATCH_EVENT {
+			// Watcher thread saw something change in a directory we
+			// care about. Re-stat every open file, reconcile, surface.
+			editor_check_external_changes()
 		}
 		return
 	case .QUIT:
@@ -2317,6 +2339,15 @@ main :: proc() {
 
 	_ = sdl.AddEventWatch(resize_event_watch, nil)
 	defer sdl.RemoveEventWatch(resize_event_watch, nil)
+
+	// Real-time file-change watcher. Background thread blocks on the
+	// platform-native API (inotify on Linux, kqueue on macOS) and
+	// pushes a USER event when something changes; the dispatch above
+	// handles it. Returns false on platforms without a backend
+	// (currently Windows) — falling back to the pre-watcher behavior
+	// of not noticing external changes.
+	_ = file_watch_init()
+	defer file_watch_shutdown()
 
 	if len(os.args) >= 2 {
 		path := os.args[1]

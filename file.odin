@@ -3,6 +3,7 @@ package bragi
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import "core:time"
 
 // Line ending style. Detected at load time, written back on save so files
 // round-trip exactly when they have a uniform style.
@@ -112,6 +113,8 @@ editor_clear :: proc(ed: ^Editor) {
 	ed.dirty = false
 	ed.eol = default_eol()
 	ed.eol_mixed = false
+	ed.file_mtime_ns = 0
+	ed.external_changed = false
 }
 
 // Cheap binary-file heuristic: if any of the first 8 KB is a NUL byte,
@@ -131,21 +134,21 @@ peek_is_binary :: proc(fd: ^os.File) -> bool {
 editor_load_file :: proc(ed: ^Editor, path: string) -> bool {
 	fd, open_err := os.open(path)
 	if open_err != nil {
-		set_status_message(fmt.tprintf("E: cannot open %s", path), is_error = true)
+		set_status_message(fmt.tprintf("E: cannot open %s", path), .Error)
 		return false
 	}
 	defer os.close(fd)
 
 	size, size_err := os.file_size(fd)
 	if size_err != nil {
-		set_status_message(fmt.tprintf("E: stat failed for %s", path), is_error = true)
+		set_status_message(fmt.tprintf("E: stat failed for %s", path), .Error)
 		return false
 	}
 
 	// Refuse binaries before destroying any existing state. Uses pread,
 	// so the file pointer stays at 0 for the full read below.
 	if size > 0 && peek_is_binary(fd) {
-		set_status_message(fmt.tprintf("E: %s appears to be a binary file", path_basename(path)), is_error = true)
+		set_status_message(fmt.tprintf("E: %s appears to be a binary file", path_basename(path)), .Error)
 		return false
 	}
 
@@ -175,7 +178,7 @@ editor_load_file :: proc(ed: ^Editor, path: string) -> bool {
 			n, read_err := os.read_full(fd, bytes)
 			if read_err != nil || i64(n) != size {
 				delete(bytes)
-				set_status_message(fmt.tprintf("E: read failed for %s", path), is_error = true)
+				set_status_message(fmt.tprintf("E: read failed for %s", path), .Error)
 				return false
 			}
 		}
@@ -230,7 +233,74 @@ editor_load_file :: proc(ed: ^Editor, path: string) -> bool {
 	ed.file_path = strings.clone(path)
 	ed.dirty = false
 	ed.language = language_for_path(path)
+	ed.file_mtime_ns = stat_mtime_ns(path)
+	ed.external_changed = false
+	file_watch_add(ed.file_path)
 	return true
+}
+
+// Stat `path` and return its modification time in nanoseconds since
+// the Unix epoch, or 0 if the path can't be stat'd. Used to detect
+// external file changes — we capture this on every load + successful
+// save and compare on file-watcher events.
+@(private="file")
+stat_mtime_ns :: proc(path: string) -> i64 {
+	info, err := os.stat(path, context.temp_allocator)
+	if err != nil do return 0
+	defer os.file_info_delete(info, context.temp_allocator)
+	return time.time_to_unix_nano(info.modification_time)
+}
+
+// Re-stat every open editor's file_path; if the on-disk mtime drifted
+// past what we captured at load/save, either silently reload (clean
+// buffer) or set the `external_changed` flag (dirty buffer). Called
+// from the main loop on every FILE_WATCH_EVENT and once on focus
+// regained, since file events that fire while the app is in the
+// background can occasionally get coalesced or dropped.
+editor_check_external_changes :: proc() {
+	for &ed in g_editors {
+		if len(ed.file_path) == 0 do continue
+		mt := stat_mtime_ns(ed.file_path)
+		if mt == 0 do continue                        // file gone — leave buffer alone
+		if mt == ed.file_mtime_ns do continue         // unchanged
+
+		if !ed.dirty {
+			// Clean buffer: silently swap in the new bytes. Try to
+			// keep the user where they were — preserve (line, col)
+			// across the reload so scroll position is stable when a
+			// formatter / agent / git only touched bytes elsewhere.
+			// The line is clamped to the new file's total; if the
+			// line went away (e.g. file truncated), we fall back to
+			// the last existing line at column 0.
+			cur_line, cur_col := editor_pos_to_line_col(&ed, ed.cursor)
+			prev_scroll_y     := ed.scroll_y
+			prev_scroll_x     := ed.scroll_x
+
+			path := strings.clone(ed.file_path, context.temp_allocator)
+			if editor_load_file(&ed, path) {
+				total := editor_total_lines(&ed)
+				target_line := clamp(cur_line, 0, max(0, total - 1))
+				ed.cursor = editor_pos_at_line_col(&ed, target_line, cur_col)
+				ed.anchor = ed.cursor
+				ed.desired_col = cur_col
+				ed.scroll_y = prev_scroll_y
+				ed.scroll_x = prev_scroll_x
+				name := path_basename(path)
+				set_status_message(fmt.tprintf("reloaded %s (changed on disk)", name), .Info)
+			}
+		} else {
+			// Dirty buffer: don't touch it. Surface the conflict
+			// in the status bar; user resolves with :reload (drop
+			// changes) or :w (overwrite).
+			ed.external_changed = true
+			ed.file_mtime_ns = mt   // remember the new disk-side mtime
+			name := path_basename(ed.file_path)
+			set_status_message(
+				fmt.tprintf("%s changed on disk — :reload to load, :w to overwrite", name),
+				.Error,
+			)
+		}
+	}
 }
 
 // Single-pass scan over freshly-loaded bytes: counts CRLF vs lone-LF for EOL
@@ -301,6 +371,10 @@ editor_save_file :: proc(ed: ^Editor) -> bool {
 	if write_err := os.write_entire_file(ed.file_path, bytes); write_err != nil do return false
 	ed.dirty = false
 	ed.eol_mixed = false // file is now uniform after this write
+	// Re-capture mtime so the watcher event our own write triggers
+	// doesn't immediately fire as an external change.
+	ed.file_mtime_ns = stat_mtime_ns(ed.file_path)
+	ed.external_changed = false
 	return true
 }
 
