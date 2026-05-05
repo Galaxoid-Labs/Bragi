@@ -311,12 +311,6 @@ is solid for daily use, including on multi-hundred-MB files
 - Piece tree (RB-balanced) — only matters once a workflow drives
   piece counts into the thousands.
 
-## Architecture
-
-If you want to hack on Bragi, start with `CLAUDE.md` — it walks
-through the code layout, the buffer caches and their invariants, and
-the rendering / input pipelines.
-
 ## License
 
 Bragi is **GPL-3.0-only** — see [`LICENSE`](LICENSE) for the full text.
