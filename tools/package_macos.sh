@@ -160,6 +160,17 @@ if (( STAGE_BUNDLE )); then
 	# (Modern macOS will work without it; bundling is conventional.)
 	printf 'APPL????' > "$CONTENTS/PkgInfo"
 
+	# Third-party license notices. Required by every dep we bundle
+	# (libvterm MIT, SDL3 / SDL3_ttf zlib, Fira Code OFL, Nerd Font
+	# OFL, Odin zlib-style). Lives next to the bundle's other
+	# resources.
+	if [[ -d "$REPO_ROOT/licenses" ]]; then
+		cp -R "$REPO_ROOT/licenses" "$RES_DIR/licenses"
+	fi
+	if [[ -f "$REPO_ROOT/THIRD_PARTY_LICENSES.md" ]]; then
+		cp "$REPO_ROOT/THIRD_PARTY_LICENSES.md" "$RES_DIR/THIRD_PARTY_LICENSES.md"
+	fi
+
 	# ──────────────────────────────────────────────────────────
 	# 3. Generate the .icns icon from the source PNG.
 	# ──────────────────────────────────────────────────────────

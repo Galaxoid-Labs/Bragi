@@ -1,16 +1,8 @@
 # Bragi
 
 A small, GPU-accelerated, vim-flavoured text/code editor written in
-[Odin](https://odin-lang.org). Cross-platform via SDL3.
-
-```
-odin build .
-./Bragi                       # opens a welcome screen
-./Bragi path/to/file.go       # opens that file
-```
-
-Single binary, ~1.3 MB (both fonts are embedded). Statically linked
-apart from system SDL3 / SDL3_ttf / libvterm.
+[Odin](https://odin-lang.org). Cross-platform via SDL3. Single binary,
+~1.3 MB (both fonts embedded).
 
 ## Highlights
 
@@ -23,13 +15,12 @@ apart from system SDL3 / SDL3_ttf / libvterm.
   resizable column. `Ctrl+W h` / `Ctrl+W l` (or `Cmd+[` / `Cmd+]`)
   switches focus; drag the boundary to resize.
 - **Embedded terminal** — `Cmd+J` / `Ctrl+J` (or `:term`) toggles a
-  bottom strip running your `$SHELL` against a real PTY. libvterm
-  drives the cell grid; 4096-line scrollback with its own scrollbar
-  matching the editor's chrome; mouse-wheel scrolls history; typing
-  snaps back to live; `clear` wipes scrollback (Ghostty-style); `exit`
-  closes the pane. Powerline / dev glyphs render correctly via an
-  embedded Nerd Font variant of Fira Code. Unix-only for now (Windows
-  ConPTY support is a future task).
+  bottom strip running your shell against a real PTY. libvterm drives
+  the cell grid; 4096-line scrollback with its own scrollbar; mouse-
+  wheel scrolls history; typing snaps back to live; `clear` wipes
+  scrollback (Ghostty-style); `exit` closes the pane. Powerline / dev
+  glyphs render correctly via an embedded Nerd Font variant of Fira
+  Code. Works on macOS, Linux, and Windows (ConPTY).
 - **Fuzzy directory navigator** — Cmd+F (macOS) / Ctrl+F (Linux,
   Windows) opens a centered modal at your home directory. Type to
   filter, Enter to dive into a folder or open a file, Backspace or `..`
@@ -37,8 +28,8 @@ apart from system SDL3 / SDL3_ttf / libvterm.
 - **Fast** — piece-table buffer (far cursor jumps don't memmove),
   mmap-backed file open on POSIX (kernel lazy-pages the file as you
   scroll), incremental line-index + per-line column-width caches.
-  Open is near-instant regardless of file size; edits stay snappy
-  on multi-hundred-MB files.
+  Open is near-instant regardless of file size; edits stay snappy on
+  multi-hundred-MB files.
 - **Syntax highlighting** for **Odin**, **C**, **C++**, **Go**, **Jai**,
   **Swift**, **Bash** (and `.sh` / `.zsh`), **INI** (sections, keys,
   hex colors, booleans), plus a **Generic** fallback (strings /
@@ -46,14 +37,13 @@ apart from system SDL3 / SDL3_ttf / libvterm.
   by file extension; switch manually with `:syntax <name>`.
 - **Search** — `/foo` / `?foo` (literal, no regex), `n` / `N` to page,
   `[k/m]` match counter in the status bar, faint match highlights for
-  every visible occurrence, `\c` / `\C` per-pattern case overrides,
-  `:set ignorecase` / `smartcase` config defaults.
+  every visible occurrence, `\c` / `\C` per-pattern case overrides.
 - **Substitute** — `:s/foo/bar/[gi I]` and `:%s/foo/bar/[gi I]`. One
   undo group regardless of how many replacements happened.
 - **Vim window-prefix** with `Ctrl+W` — `h l` for focus, `c q` to
   close, `Esc` to cancel.
-- **Help screen** with `:h` or `:help` — modal cheat sheet, scrollable
-  with mouse / arrows / `j` `k` / `g` `G`.
+- **Help screen** with `:h` or `:help` — modal cheat sheet, eight
+  categorised tabs (number keys 1-8 to jump, `h`/`l` to step).
 - **Native everything** — file dialogs (`Cmd+O`, `Cmd+Shift+S`),
   message boxes (mixed-EOL warning, unsaved-changes prompt), context
   menu on right-click. No browser embedded, no Electron, no Node.
@@ -62,24 +52,53 @@ apart from system SDL3 / SDL3_ttf / libvterm.
 - **Themeable** — every visible color (chrome + syntax) lives in one
   `Theme` struct loaded from `config.ini`.
 
-## Building
+## Install
+
+The fastest way to run Bragi is to grab a pre-built binary from
+[Releases](https://github.com/Galaxoid-Labs/Bragi/releases/latest):
+
+| Platform | Artifact | How to run |
+|----------|----------|------------|
+| **macOS** | `Bragi-<version>.dmg` | Drag `Bragi.app` to `/Applications`. First launch: right-click → Open (unsigned ad-hoc build). |
+| **Debian / Ubuntu** | `bragi_<version>_amd64.deb` | `sudo apt install ./bragi_<version>_amd64.deb` |
+| **Fedora / RHEL** | `bragi-<version>-1.x86_64.rpm` | `sudo dnf install ./bragi-<version>-1.x86_64.rpm` |
+| **Arch / Manjaro** | AUR (`bragi-bin`) | `yay -S bragi-bin` (or `paru -S bragi-bin`) |
+| **Other Linux** | `bragi-<version>-x86_64-linux.tar.gz` | `sudo tar -xzf … -C /` |
+| **Windows** | `Bragi-<version>-Setup.exe` | Run the installer. |
+| **Windows (no install)** | `Bragi-<version>-portable.zip` | Extract anywhere; run `Bragi.exe`. |
+
+The macOS `.app` and Windows installer bundle SDL3 / SDL3_ttf / libvterm
+internally, so no Homebrew / vcpkg required on the target machine.
+Linux packages declare those as dependencies and the package manager
+pulls them in.
+
+Or build from source — see [Building from source](#building-from-source).
+
+## Building from source
+
+Bragi is a single Odin package. From a fresh clone:
+
+```sh
+odin build . -o:speed
+./Bragi                       # opens a welcome screen
+./Bragi path/to/file.go       # opens that file
+```
+
+`-o:speed` matters — without it the file-load scan is 5–10× slower in
+the unoptimized debug build.
 
 ### Dependencies
 
 - An [Odin compiler](https://odin-lang.org/docs/install/) from
   **`dev-2026-04`** or newer. The `core:os` package was overhauled in
-  that release (`os.Handle` → `^os.File`, `File_Info.is_dir` → `.type`,
-  `write_entire_file` now returns an `Error`, etc.); Bragi uses the new
-  API and will not build against earlier compilers.
-- **SDL3** and **SDL3_ttf** for window / renderer / text.
-- **libvterm** for the embedded terminal pane (Unix only — see Windows
-  notes below).
-- **forkpty** lives in **libutil** on Linux; macOS rolls it into
-  libSystem so no extra package is needed.
+  that release; Bragi uses the new API and won't build against older
+  compilers.
+- **SDL3** + **SDL3_ttf** at runtime.
+- **libvterm** for the embedded terminal pane.
 
 The two embedded TTFs (`FiraCode-Regular.ttf` and
-`FiraCodeNerdFont-Regular.ttf`) are checked in and `#load`-ed at compile
-time. There is no runtime font dependency on either.
+`FiraCodeNerdFont-Regular.ttf`) are checked in and `#load`-ed at
+compile time — no runtime font dependency.
 
 #### macOS
 
@@ -87,15 +106,7 @@ time. There is no runtime font dependency on either.
 brew install sdl3 sdl3_ttf libvterm
 ```
 
-That's it. SDL3 and SDL3_ttf give you the window + LCD-AA text;
-libvterm runs the terminal pane's VT state machine. `forkpty` lives in
-libSystem.
-
-If `odin build` complains about a missing `vterm` symbol at link time,
-make sure your `DYLD_LIBRARY_PATH` (or just your default linker search
-path) covers Homebrew's lib directory — Apple Silicon Macs put it at
-`/opt/homebrew/lib`, Intel Macs at `/usr/local/lib`. Homebrew sets this
-up automatically on a fresh install.
+That's it. `forkpty` lives in libSystem, no extra package.
 
 #### Linux (Debian / Ubuntu)
 
@@ -109,33 +120,22 @@ sudo apt install libsdl3-dev libsdl3-ttf-dev libvterm-dev libutil-dev
 sudo dnf install SDL3-devel SDL3_ttf-devel libvterm-devel libutil-devel
 ```
 
-`libvterm-devel` ships the same `0.3.x` ABI as Homebrew so the Odin
-bindings in `vterm.odin` cover both unchanged. Glibc and musl both
-expose `forkpty(3)` via libutil — `libutil-dev` on debian/ubuntu,
-`glibc-devel`'s linker stubs on fedora (the package list above already
-covers it; on a minimal container you may need `glibc-static`).
-
 #### Windows
 
-First-time setup from a fresh clone — build, drop the runtime DLLs
-next to `Bragi.exe`, and launch:
+`SDL3.dll` + `SDL3_ttf.dll` come with the Odin install; `vterm.dll` is
+vendored under `vendor/libvterm/` (built from neovim's libvterm fork —
+vcpkg has no port for it). A clone has everything it needs:
 
 ```powershell
 $odin = Split-Path -Parent (Get-Command odin).Source
-odin build . -out:Bragi.exe
+odin build . -o:speed -out:Bragi.exe
 Copy-Item "$odin\vendor\sdl3\SDL3.dll"          .
 Copy-Item "$odin\vendor\sdl3\ttf\SDL3_ttf.dll"  .
 Copy-Item .\vendor\libvterm\vterm.dll           .
 .\Bragi.exe
 ```
 
-`SDL3.dll` and `SDL3_ttf.dll` come from the Odin install; `vterm.dll`
-is committed under `vendor/libvterm/` (built from neovim's libvterm
-fork — vcpkg has no port for it), so a clone has everything it needs.
-A proper installer / packaged release will fold these copy steps into
-a single artifact later.
-
-To rebuild `vterm.dll` (only needed when bumping libvterm), run:
+To rebuild `vterm.dll` (only when bumping libvterm):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File vendor\libvterm\build.ps1
@@ -146,24 +146,18 @@ builds with MSVC, and refreshes `vendor/libvterm/{vterm.dll,vterm.lib,include/}`
 Requires git, cmake, and Visual Studio 2022+ with the C/C++ workload.
 
 The terminal pane spawns `powershell.exe` by default (override via the
-`SHELL` environment variable) and starts in `%USERPROFILE%`. Ctrl+J
-to open / close, same as on macOS / Linux.
-
-### Build
-
-```sh
-odin build .
-```
-
-Produces `./Bragi`. Run it from anywhere; the directory navigator
-defaults to `$HOME` (or `%USERPROFILE%` on Windows).
+`SHELL` env var) and starts in `%USERPROFILE%`.
 
 ## Packaging
 
 `deploy.ini` at the repo root carries the metadata (app name, version,
 identifier, copyright, dependency strings, code-signing identity, …)
-that the per-platform packaging scripts read. Edit it once, then run
-the script for the host you're on. Output lands in `dist/<platform>/`.
+that the per-platform packaging scripts read. Edit once; run the
+script for the host you're on. Output lands in `dist/<platform>/`.
+
+Each script also copies `THIRD_PARTY_LICENSES.md` and the verbatim
+upstream license text in `licenses/` into its output bundle, so every
+distribution carries the notices the bundled / linked deps require.
 
 ### macOS — `.app` bundle and `.dmg`
 
@@ -171,34 +165,18 @@ the script for the host you're on. Output lands in `dist/<platform>/`.
 ./tools/package_macos.sh
 ```
 
-Produces `dist/macos/Bragi.app` (drop into `/Applications`) and
-`dist/macos/Bragi-<version>.dmg`. The script:
-
-- Builds `bragi` in release mode (`odin build . -o:speed`).
-- Generates `Bragi.icns` from `icon.png` via `sips` + `iconutil`.
-- Writes `Info.plist` (CFBundle keys, document-type associations,
-  high-DPI flag, minimum macOS version).
-- Bundles every Homebrew-provided dylib (`libSDL3`, `libSDL3_ttf`,
-  `libvterm`, plus their transitive deps) into
-  `Bragi.app/Contents/Frameworks/` and rewrites the binary's load
-  paths via `install_name_tool`. **No Homebrew required on the
-  target machine.**
-- Code-signs the bundle. With `codesign_identity` set in
-  `[macos]` it uses your Developer ID and runs `--options runtime`
-  (notarization-ready); without one it falls back to ad-hoc signing
-  so the binary launches on Apple Silicon.
-- If `notarize_apple_id` / `notarize_password` / `notarize_team_id`
-  are filled in, submits to Apple's notary service and staples the
-  ticket onto both the `.app` and the `.dmg`.
+Produces `dist/macos/Bragi.app` and `dist/macos/Bragi-<version>.dmg`.
+The script bundles all Homebrew dylibs into
+`Bragi.app/Contents/Frameworks/` and rewrites the binary's load paths,
+so the resulting `.app` is fully self-contained — no Homebrew on the
+target. Code-signs with the Developer ID set in `[macos]` (or ad-hoc
+otherwise), and notarizes if Apple ID credentials are filled in.
 
 Stage toggles for iteration: `STAGE_BUILD=0`, `STAGE_BUNDLE=0`,
-`STAGE_SIGN=0`, `STAGE_DMG=0`.
+`STAGE_SIGN=0`, `STAGE_DMG=0`. Required tools all ship with the Xcode
+Command Line Tools (`xcode-select --install`).
 
-All required tools (`sips`, `iconutil`, `plutil`, `codesign`,
-`hdiutil`, `otool`, `install_name_tool`) ship with the Xcode
-Command Line Tools — `xcode-select --install`.
-
-### Linux — `.deb` and `.rpm`
+### Linux — `.deb`, `.rpm`, AUR, generic tarball
 
 ```sh
 ./tools/package_linux.sh
@@ -206,179 +184,41 @@ Command Line Tools — `xcode-select --install`.
 
 Must run on a Linux host. Produces:
 
-- `dist/linux/bragi_<version>_<arch>.deb` (Debian/Ubuntu)
-- `dist/linux/bragi-<version>-1.<rpmarch>.rpm` (Fedora/RHEL)
+- `dist/linux/bragi_<version>_<arch>.deb` (Debian / Ubuntu)
+- `dist/linux/bragi-<version>-1.<arch>.rpm` (Fedora / RHEL)
+- `dist/linux/bragi-<version>-<arch>-linux.tar.gz` (generic FHS tarball
+  used by the AUR `bragi-bin` PKGBUILD)
+- `dist/linux/<pkg>.pkg.tar.zst` (Arch, when `makepkg` is on PATH)
 
-Each format auto-skips if its build tool isn't installed, so a
-Fedora box without `dpkg-dev` will produce the `.rpm` only (and
-print a friendly "skipped" notice for the `.deb`).
+Each format auto-skips when its build tool is missing. Both `.deb` and
+`.rpm` declare the distro's SDL3 / SDL3_ttf / libvterm packages as
+runtime deps; bundling `.so` files is fragile across glibc / Wayland
+/ X11 versions and discouraged by both packaging policies.
 
-Both packages declare runtime dependencies on the distro's SDL3,
-SDL3_ttf, and libvterm packages — `apt` / `dnf` resolves those at
-install time. (Bundling `.so` files inside Linux packages is fragile
-across glibc / Wayland / X11 versions and discouraged by both
-packaging policies.) The dependency strings are configurable in
-`[linux]` of `deploy.ini` if your target distros use different
-package names.
+The script's footer has copy-pasteable host-setup recipes for Fedora,
+Debian/Ubuntu, Arch, and "macOS-via-Docker." See `tools/aur/README.md`
+for the AUR publishing flow.
 
-The script installs to standard FHS paths:
-
-```
-/usr/bin/bragi
-/usr/share/applications/bragi.desktop
-/usr/share/icons/hicolor/<size>/apps/bragi.png
-/usr/share/pixmaps/bragi.png
-/usr/share/doc/bragi/copyright
-/usr/share/metainfo/<identifier>.metainfo.xml
-```
-
-#### Install / uninstall
-
-```sh
-# Debian / Ubuntu
-sudo apt install ./bragi_<version>_<arch>.deb
-sudo apt remove bragi
-
-# Fedora / RHEL
-sudo dnf install ./bragi-<version>-1.<arch>.rpm
-sudo dnf remove bragi
-```
-
-The AppStream metainfo we ship makes Bragi appear in GNOME Software
-and KDE Discover under "Installed", so removal works from there too.
-
-Heads up on Ubuntu: the default **App Center** (24.04+) and
-**Ubuntu Software** (22.04) only list Snaps — they will not show
-deb-installed apps at all, so use `apt remove bragi` from the
-terminal. To get a GUI uninstaller, install upstream GNOME Software
-alongside (`sudo apt install gnome-software gnome-software-plugin-snap`)
-and refresh the AppStream cache (`sudo appstreamcli refresh-cache --force`).
-
-#### Build-host setup
-
-```sh
-# Fedora 40+
-sudo dnf install -y \
-  gcc clang git curl unzip ImageMagick \
-  SDL3-devel SDL3_ttf-devel libvterm-devel \
-  rpm-build dpkg                  # dpkg only if you also want a .deb
-
-# Debian 13+ / Ubuntu 24.04+
-sudo apt-get install -y \
-  build-essential clang git curl unzip imagemagick \
-  libsdl3-dev libsdl3-ttf-dev libvterm-dev \
-  dpkg-dev rpm                    # rpm only if you also want a .rpm
-```
-
-Plus a current Odin compiler:
-
-```sh
-curl -L https://github.com/odin-lang/Odin/releases/latest/download/odin-linux-amd64.zip \
-  -o /tmp/odin.zip
-sudo unzip -o /tmp/odin.zip -d /opt/odin
-sudo ln -sf /opt/odin/odin /usr/local/bin/odin
-```
-
-#### From macOS via Docker
-
-The Linux script refuses to run on macOS (it'd produce a Mach-O
-binary that can't be packaged for Linux). To build Linux packages
-from a Mac, drop into a Debian container that has both `dpkg-deb`
-and `rpmbuild`:
-
-```sh
-docker run --rm -it -v "$(pwd):/src" -w /src debian:bookworm bash -c '
-  apt-get update && apt-get install -y \
-    build-essential clang git curl unzip \
-    libsdl3-dev libsdl3-ttf-dev libvterm-dev \
-    dpkg-dev rpm imagemagick &&
-  curl -L https://github.com/odin-lang/Odin/releases/latest/download/odin-linux-amd64.zip \
-    -o /tmp/odin.zip &&
-  unzip /tmp/odin.zip -d /opt/odin && export PATH=/opt/odin:$PATH &&
-  ./tools/package_linux.sh
-'
-```
-
-Stage toggles: `STAGE_BUILD=0`, `STAGE_DEB=0`, `STAGE_RPM=0`.
-
-### Windows
+### Windows — installer + portable zip
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\package_windows.ps1
 ```
 
-Reads `deploy.ini`, generates `bragi.ico` from `icon.png` (multi-res),
-compiles a `bragi.rc` resource (icon + version-info string table),
-links it into a release `Bragi.exe`, stages the redistributable
-(exe + 3 DLLs + LICENSE) into `dist\windows\staging\`, then writes
-both:
+Produces:
 
 - `dist\windows\Bragi-<version>-Setup.exe` — Inno Setup installer
 - `dist\windows\Bragi-<version>-portable.zip` — extract-and-run bundle
 
-Requires **Inno Setup 6** for the installer (winget:
-`winget install JRSoftware.InnoSetup`); without it the script auto-
-falls back to the zip only. `rc.exe` from the Windows SDK is auto-
-located off any Visual Studio 2022+ install.
+Generates `bragi.ico` from `icon.png`, compiles a `bragi.rc` resource
+(icon + version-info string table) into `Bragi.exe`, and stages the
+redistributable (exe + 3 DLLs + LICENSE + third-party notices).
+Requires **Inno Setup 6** (`winget install JRSoftware.InnoSetup`); the
+script falls back to the zip alone if it's missing. `rc.exe` is
+auto-located off any Visual Studio 2022+ install.
 
 Stage toggles: `STAGE_ICON=0`, `STAGE_BUILD=0`, `STAGE_BUNDLE=0`,
 `STAGE_INSTALLER=0`, `STAGE_ZIP=0`.
-
-## Quick reference
-
-Press `:h` inside the editor for the full cheat sheet. The greatest
-hits:
-
-```
-i  a  I  A  o  O    enter Insert at various positions
-v  V                enter Visual / Visual-Line
-Esc                 return to Normal
-
-h j k l             motion (line-bounded)
-w b e               word forward / back / end
-0 $ ^               line start / end / first non-blank
-gg G  <n>G          first / last / nth line
-Ctrl+D / Ctrl+U     half-page down / up
-zz  zt  zb          centre / top / bottom cursor on screen
-%                   jump to matching bracket
-
-dd yy cc            delete / yank / change line
-dw  3dw  c3w        operator + motion (counts compose)
-D C Y               d$  c$  y$
->> <<               indent / outdent line
-.                   repeat last change
-u  /  Ctrl+Shift+Z  undo / redo
-
-/pattern  ?pattern  search forward / backward (literal)
-n N                 next / prev match (wraps)
-:noh                clear search
-
-:w  :q  :wq  :q!    save / quit / save+quit / force-quit
-:42                 jump to line 42
-:syntax <name>      switch tokenizer
-:s/pat/repl/[gi I]  substitute (current line)
-:%s/pat/repl/[gi I] substitute (whole buffer)
-:term :terminal     open / focus the terminal (Cmd/Ctrl+J toggles)
-:termclose          close the terminal pane
-:config             open the user config.ini (creates a default-seeded
-                    buffer if no config exists yet — saving writes it
-                    to the platform's config dir)
-:h  :help           open this cheat sheet
-
-Cmd/Ctrl+F          open the directory navigator
-Cmd/Ctrl+J          toggle the bottom terminal pane
-Cmd+S               save
-Cmd+Shift+S         save as
-Cmd+O               native open dialog
-Cmd+Z / Cmd+Shift+Z undo / redo
-Cmd+W               close pane (last pane → welcome → quit)
-Ctrl+W h / l        focus pane left / right
-Ctrl+W c / q        close active pane
-Cmd+[ / Cmd+]       focus prev / next pane (single-chord)
-drag pane border    resize adjacent panes
-drag term divider   resize the terminal strip
-wheel over term     scroll the terminal scrollback (4096-line ring)
-```
 
 ## Configuration
 
@@ -390,94 +230,100 @@ Bragi reads `config.ini` from a per-platform location at startup:
 | Linux    | `$XDG_CONFIG_HOME/bragi/config.ini` (defaults to `~/.config/bragi/config.ini`) |
 | Windows  | `%APPDATA%\Bragi\config.ini` |
 
-The file is optional — every field has a sensible default. The
-fastest way to start tweaking is `:config` from inside Bragi: if the
-file already exists it just opens it; if it doesn't, you get a
+The file is optional — every field has a sensible default.
+
+The fastest way to start tweaking is **`:config`** inside Bragi: if
+the file already exists it just opens it; if it doesn't, you get a
 buffer pre-populated with the commented default template, and saving
-writes it to the right path with the right syntax (INI mode is
-auto-detected by the `.ini` extension). Example:
+writes it to the right path. INI mode is auto-detected, so colors,
+sections, and hex values are highlighted as you edit.
 
-```ini
-[font]
-path    =                       # blank → use the embedded Fira Code
-size    = 14
-hinting = normal                # normal / light / light_subpixel / mono / none
+The template covers `[font]`, `[editor]`, and `[theme]`. Every visible
+color in the editor — syntax token colors, gutter, status bar,
+selection, search, scrollbar — is themeable via `[theme]`.
 
-[editor]
-tab_size     = 4
-column_guide = 120              # 0 to disable
-line_spacing = 1.3
-ignorecase   = false
-smartcase    = false
+## Quick reference
 
-[theme]
-# Syntax (any field can be #RRGGBB or #RRGGBBAA)
-default  = #DCDCDC
-keyword  = #C678DD
-type     = #5FC8DA
-constant = #E5C07B
-number   = #D7915A
-string   = #98C379
-comment  = #5F6E82
-function = #61AFEF
+Press `:h` inside the editor for the full categorised cheat sheet.
+The greatest hits:
 
-# Chrome
-bg              = #1E1E26
-cursor          = #F0C850
-selection       = #465F9678
-search_match    = #BE50B478
-gutter_bg       = #18181E
-gutter_text     = #5A5F6E
-gutter_active   = #C8C8D2
-status_bg       = #14141A
-status_path_bg  = #1C1C24
-status_text     = #C8C8D2
-status_dim      = #787D8C
-status_error    = #DC5A5A
-sb_track        = #282830
-sb_thumb        = #5A5A64
-sb_thumb_hover  = #82828C
+```
+i  a  I  A  o  O    Insert at various positions
+v  V                Visual / Visual-Line
+Esc                 return to Normal
+
+h j k l             motion
+w b e               word forward / back / end
+0 $ ^               line start / end / first non-blank
+gg G  <n>G          first / last / nth line
+Ctrl+D / Ctrl+U     half-page down / up
+zz zt zb            centre / top / bottom cursor on screen
+%                   matching bracket
+
+dd yy cc            delete / yank / change line
+dw  3dw  c3w        operator + motion (counts compose)
+D C Y               d$ / c$ / y$
+>> <<               indent / outdent line
+.                   repeat last change
+u  /  Cmd+Shift+Z   undo / redo
+
+/pattern  ?pattern  search forward / backward (literal)
+n N                 next / prev match (wraps)
+:noh                clear search
+
+:w  :q  :wq  :q!    save / quit / save+quit / force-quit
+:42                 jump to line 42
+:syntax <name>      switch tokenizer
+:s/pat/repl/[gi I]  substitute (current line)
+:%s/pat/repl/[gi I] substitute (whole buffer)
+:term :terminal     open / focus the terminal pane
+:termclose          close the terminal pane
+:config             open / create the user config.ini
+:h  :help           open the categorised cheat sheet
+
+Cmd/Ctrl+F          directory navigator
+Cmd/Ctrl+J          toggle the terminal pane
+Cmd+O / S / Shift+S open / save / save as
+Cmd+Z / Shift+Z     undo / redo
+Cmd+W               close pane (last pane → quit on macOS)
+Ctrl+W h / l / c / q   focus / close pane
+Cmd+[ / Cmd+]       focus prev / next pane (single-chord)
+drag pane border    resize adjacent panes
+drag term divider   resize the terminal strip
+wheel over term     scroll the terminal scrollback
 ```
 
-## Status & roadmap
+## Roadmap
 
 This is a personal-scratch editor; expect rough edges. The core flow
-(open / edit / save / search / multi-pane) is solid for daily use,
-including on multi-hundred-MB files (piece-table buffer + mmap-backed
-open keep load + edit cheap). The remaining structural lever — a
-piece *tree* in place of the current piece *list* — only matters
-once a workflow drives piece counts into the thousands; see
-CLAUDE.md.
+is solid for daily use, including on multi-hundred-MB files
+(piece-table buffer + mmap-backed open on POSIX). Tracked in
+`CLAUDE.md`:
 
-Things that aren't done yet but are tracked in CLAUDE.md:
 - Incremental search (debounced).
-- Cmd+W → Save → auto-close (untitled-buffer save flow).
-- Python / Markdown / JSON / Zig / TS-JS syntax tokenizers.
-- Glyph atlas (would speed up first-display of large files).
-- Terminal mouse forwarding (so tmux / htop / vim get mouse events
-  inside the terminal pane).
+- Cmd+W → Save → auto-close on dirty untitled buffers.
+- More tokenizers — Python, Markdown, JSON, Zig, TS/JS.
+- Glyph atlas (faster first-display on big files).
+- Terminal mouse forwarding (so tmux / htop / vim get mouse events).
 - Comment toggle (`gc` / `Ctrl+/`), language-aware.
-- **Shell-friendly CLI invocation** (`bragi`, `bragi .`, `bragi src/`).
-  Today `./Bragi <file>` works inside the source tree; `Bragi.app/...`
-  works inside the bundle; on Linux the package install drops a
-  `bragi` binary on `$PATH`. Two pieces would polish this on macOS:
-  (1) a shim at `/usr/local/bin/bragi` (a one-line `exec` script
-  pointing at the installed `Bragi.app/Contents/MacOS/bragi`, drop-
-  ped via a "Shell → Install `bragi` Command" menu action à la VS
-  Code's `code` command), and (2) directory-argument handling in
-  `main()` — if the CLI arg is a directory, open the file finder
-  rooted there instead of trying to load it as a file. Both small;
-  would make `bragi .` from any terminal work the same as
-  Cmd+F-then-navigate.
+- Shell-friendly CLI invocation (`bragi`, `bragi .`) — needs a
+  `/usr/local/bin/bragi` shim on macOS plus directory-arg handling.
+- Piece tree (RB-balanced) — only matters once a workflow drives
+  piece counts into the thousands.
 
 ## Architecture
 
-If you want to hack on Bragi, start with `CLAUDE.md` — it walks through
-the code layout (single Odin package across ~10 files), the buffer
-caches and their invariants, and the rendering / input pipelines.
+If you want to hack on Bragi, start with `CLAUDE.md` — it walks
+through the code layout, the buffer caches and their invariants, and
+the rendering / input pipelines.
 
 ## License
 
-GPL-3.0-only. See [`LICENSE`](LICENSE) for the full text.
-
+Bragi is **GPL-3.0-only** — see [`LICENSE`](LICENSE) for the full text.
 Copyright © 2026 Galaxoid Labs.
+
+Bundled third-party software (libvterm, SDL3, SDL3_ttf, Fira Code,
+Fira Code Nerd Font, Odin runtime) is distributed under permissive
+licenses; the verbatim notices live in [`licenses/`](licenses/) and
+[`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md), and ride along
+with every distribution Bragi ships.

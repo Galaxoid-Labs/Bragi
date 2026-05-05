@@ -677,12 +677,23 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 	// Finder modal swallows every key while visible.
 	if finder_handle_key(ev) do return
 
-	// Help modal eats every key. Esc dismisses; arrows / page keys / j /
-	// k / g / G scroll its contents.
+	// Help modal eats every key. Esc dismisses; 1-7 jump to a tab,
+	// h / l (or arrows) step tabs, j / k / page / g / G scroll within
+	// the active tab when its content overflows.
 	if g_help_visible {
 		line_h := g_config.font.size + HELP_LINE_GAP
 		switch ev.key {
 		case sdl.K_ESCAPE:                   help_hide()
+		case sdl.K_H, sdl.K_LEFT:            help_step_category(-1)
+		case sdl.K_L, sdl.K_RIGHT:           help_step_category(+1)
+		case sdl.K_1: help_set_category(0)
+		case sdl.K_2: help_set_category(1)
+		case sdl.K_3: help_set_category(2)
+		case sdl.K_4: help_set_category(3)
+		case sdl.K_5: help_set_category(4)
+		case sdl.K_6: help_set_category(5)
+		case sdl.K_7: help_set_category(6)
+		case sdl.K_8: help_set_category(7)
 		case sdl.K_UP, sdl.K_K:              help_scroll_by(-line_h)
 		case sdl.K_DOWN, sdl.K_J:            help_scroll_by( line_h)
 		case sdl.K_PAGEUP:                   help_scroll_by(-line_h * 8)

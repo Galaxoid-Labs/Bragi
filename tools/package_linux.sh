@@ -306,6 +306,17 @@ fi
 } > "$STAGING/usr/share/doc/$BIN_NAME/copyright"
 chmod 0644 "$STAGING/usr/share/doc/$BIN_NAME/copyright"
 
+# Third-party license notices. Required by every bundled / linked dep
+# (libvterm MIT, SDL3 / SDL3_ttf zlib, Fira Code OFL, Nerd Font OFL,
+# Odin zlib-style). Drop them alongside the Debian-style copyright.
+if [[ -d "$REPO_ROOT/licenses" ]]; then
+	mkdir -p "$STAGING/usr/share/doc/$BIN_NAME/licenses"
+	cp "$REPO_ROOT"/licenses/*.txt "$STAGING/usr/share/doc/$BIN_NAME/licenses/"
+fi
+if [[ -f "$REPO_ROOT/THIRD_PARTY_LICENSES.md" ]]; then
+	cp "$REPO_ROOT/THIRD_PARTY_LICENSES.md" "$STAGING/usr/share/doc/$BIN_NAME/THIRD_PARTY_LICENSES.md"
+fi
+
 # ──────────────────────────────────────────────────────────────────
 # 3. Build the .deb.
 # ──────────────────────────────────────────────────────────────────
@@ -409,7 +420,12 @@ if (( STAGE_RPM && HAS_RPM )); then
 		echo "cp -a usr %{buildroot}/"
 		echo
 		echo "%files"
+		# Claim the whole doc dir so it sweeps up `copyright`,
+		# `THIRD_PARTY_LICENSES.md`, and `licenses/*.txt` in one entry.
+		# rpmbuild errors out on "Installed (but unpackaged) file(s)"
+		# if any subpath isn't declared here.
 		echo "%license /usr/share/doc/$BIN_NAME/copyright"
+		echo "/usr/share/doc/$BIN_NAME/"
 		echo "/usr/bin/$BIN_NAME"
 		echo "/usr/share/applications/$BIN_NAME.desktop"
 		[[ -n "$IDENTIFIER" ]] && echo "/usr/share/metainfo/$IDENTIFIER.metainfo.xml"

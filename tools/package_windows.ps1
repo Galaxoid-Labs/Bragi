@@ -244,6 +244,18 @@ if ($StageBundle) {
     if (Test-Path -LiteralPath $licenseSrc) {
         Copy-Item -LiteralPath $licenseSrc -Destination (Join-Path $StagingDir 'LICENSE.txt') -Force
     }
+
+    # Third-party license notices required by every bundled / linked
+    # dep (libvterm MIT, SDL3 / SDL3_ttf zlib, Fira Code OFL, Nerd
+    # Font OFL, Odin zlib-style). Mirrors the macOS / Linux packaging.
+    $licensesDir = Join-Path $RepoRoot 'licenses'
+    if (Test-Path -LiteralPath $licensesDir) {
+        Copy-Item -LiteralPath $licensesDir -Destination (Join-Path $StagingDir 'licenses') -Recurse -Force
+    }
+    $thirdPartyMd = Join-Path $RepoRoot 'THIRD_PARTY_LICENSES.md'
+    if (Test-Path -LiteralPath $thirdPartyMd) {
+        Copy-Item -LiteralPath $thirdPartyMd -Destination (Join-Path $StagingDir 'THIRD_PARTY_LICENSES.md') -Force
+    }
 }
 
 # ──────────────────────────────────────────────────────────────────
