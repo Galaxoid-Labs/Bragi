@@ -31,7 +31,7 @@ conflicts=("$_pkgname" "$_pkgname-git")
 # Source tarball: the FHS-shaped output of tools/package_linux.sh,
 # uploaded as a GitHub release artifact. The `::` rename gives the
 # downloaded file a stable name regardless of any redirect quirks.
-source=("$_pkgname-$pkgver-x86_64-linux.tar.gz::$url/releases/download/v$pkgver/$_pkgname-$pkgver-x86_64-linux.tar.gz")
+source=("$_pkgname-$pkgver-x86_64.tar.gz::$url/releases/download/v$pkgver/$_pkgname-$pkgver-x86_64.tar.gz")
 
 # TODO: replace with the real sha256 of the uploaded tarball before
 # pushing to the AUR. `updpkgsums` does this for you in one step.

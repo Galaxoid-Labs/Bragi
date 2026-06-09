@@ -30,7 +30,7 @@ When you tag a new release (say `v0.2.0`):
    ```
    bragi_0.2.0_amd64.deb
    bragi-0.2.0-1.x86_64.rpm
-   bragi-0.2.0-x86_64-linux.tar.gz   ← the one bragi-bin downloads
+   bragi-0.2.0-x86_64.tar.gz         ← the one bragi-bin downloads
    ```
 
 2. **Push the tag and upload the tarball as a release asset.**
@@ -39,7 +39,7 @@ When you tag a new release (say `v0.2.0`):
    git tag v0.2.0
    git push --tags
    gh release create v0.2.0 \
-     dist/linux/bragi-0.2.0-x86_64-linux.tar.gz \
+     dist/linux/bragi-0.2.0-x86_64.tar.gz \
      dist/linux/bragi_0.2.0_amd64.deb \
      dist/linux/bragi-0.2.0-1.x86_64.rpm \
      dist/macos/Bragi-0.2.0.dmg

@@ -88,7 +88,7 @@ The fastest way to run Bragi is to grab a pre-built binary from
 | **Debian / Ubuntu** | `bragi_<version>_amd64.deb` | `sudo apt install ./bragi_<version>_amd64.deb` |
 | **Fedora / RHEL** | `bragi-<version>-1.x86_64.rpm` | `sudo dnf install ./bragi-<version>-1.x86_64.rpm` |
 | **Arch / Manjaro** | AUR (`bragi-bin`) | `yay -S bragi-bin` (or `paru -S bragi-bin`) |
-| **Other Linux** | `bragi-<version>-x86_64-linux.tar.gz` | `sudo tar -xzf … -C /` |
+| **Other Linux** | `bragi-<version>-x86_64.tar.gz` | `sudo tar -xzf … -C /` |
 | **Windows** | `Bragi-<version>-Setup.exe` | Run the installer. |
 | **Windows (no install)** | `Bragi-<version>-portable.zip` | Extract anywhere; run `Bragi.exe`. |
 
@@ -215,9 +215,9 @@ Must run on a Linux host. Produces:
 
 - `dist/linux/bragi_<version>_<arch>.deb` (Debian / Ubuntu)
 - `dist/linux/bragi-<version>-1.<arch>.rpm` (Fedora / RHEL)
-- `dist/linux/bragi-<version>-<arch>-linux.tar.gz` (generic FHS tarball
+- `dist/linux/bragi-<version>-<arch>.tar.gz` (generic FHS tarball
   used by the AUR `bragi-bin` PKGBUILD)
-- `dist/linux/<pkg>.pkg.tar.zst` (Arch, when `makepkg` is on PATH)
+- `dist/linux/bragi-<version>-<arch>.pkg.tar.zst` (Arch, when `makepkg` is on PATH)
 
 Each format auto-skips when its build tool is missing. Both `.deb` and
 `.rpm` declare the distro's SDL3 / SDL3_ttf / libvterm packages as

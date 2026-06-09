@@ -6,9 +6,12 @@
 # (or in a Linux container — see the comment block at the bottom for
 # a Docker recipe that works from macOS).
 #
-# Outputs:
-#   dist/linux/bragi_<version>_<arch>.deb
-#   dist/linux/bragi-<version>-1.<rpmarch>.rpm
+# Outputs (each format keeps its ecosystem's convention, tidied for
+# consistency — the .deb stays Debian-style, the rest share one arch token):
+#   dist/linux/bragi_<version>_<debarch>.deb          (e.g. _0.2.0_amd64)
+#   dist/linux/bragi-<version>-1.<rpmarch>.rpm         (no .fcNN dist tag)
+#   dist/linux/bragi-<version>-<rpmarch>.tar.gz        (generic FHS tarball)
+#   dist/linux/bragi-<version>-<rpmarch>.pkg.tar.zst   (Arch / pacman)
 #
 # Both packages declare runtime dependencies on the distro's SDL3 /
 # SDL3_ttf / libvterm packages (configurable in deploy.ini's [linux]
@@ -426,7 +429,11 @@ if (( STAGE_RPM && HAS_RPM )); then
 		echo
 		echo "Name:           $BIN_NAME"
 		echo "Version:        $VERSION"
-		echo "Release:        1%{?dist}"
+		# Plain "1" — no %{?dist} tag. We ship a single prebuilt binary via
+		# GitHub releases, not into a per-distro repo, so the .fcNN / .el9
+		# suffix only adds noise (bragi-0.2.0-1.fc44.x86_64.rpm). Bare gives
+		# bragi-0.2.0-1.x86_64.rpm, matching tools/aur/README.md.
+		echo "Release:        1"
 		echo "Summary:        $DESCRIPTION"
 		echo "License:        $LICENSE_ID"
 		[[ -n "$URL" ]] && echo "URL:            $URL"
@@ -494,10 +501,10 @@ fi
 # .tar.gz. Used by tools/aur/bragi-bin/PKGBUILD (the user uploads this
 # tarball as a GitHub release artifact and the AUR PKGBUILD downloads
 # + extracts it). Also a useful fallback for any distro without
-# .deb / .rpm tooling — `tar -xzf bragi-<v>-<arch>-linux.tar.gz -C /`
+# .deb / .rpm tooling — `tar -xzf bragi-<v>-<arch>.tar.gz -C /`
 # installs the same files as the proper packages.
 # ──────────────────────────────────────────────────────────────────
-tar_name="${BIN_NAME}-${VERSION}-${RPM_ARCH}-linux.tar.gz"
+tar_name="${BIN_NAME}-${VERSION}-${RPM_ARCH}.tar.gz"
 tar_path="$DIST_DIR/$tar_name"
 echo "→ building generic tarball"
 tar -C "$STAGING" -czf "$tar_path" .
@@ -567,12 +574,16 @@ PKGEOF
 	# `--noconfirm` keeps it non-interactive.
 	(cd "$ARCH_BUILD" && makepkg -f --skipinteg --noconfirm) >/dev/null
 
-	# Move the produced .pkg.tar.zst out of the build dir, then
-	# clean up. makepkg names it <pkgname>-<pkgver>-<pkgrel>-<arch>.
+	# Move the produced .pkg.tar.zst out of the build dir, then clean up.
+	# makepkg bakes the pkgrel into its own name (<pkgname>-<pkgver>-<pkgrel>-
+	# <arch>); rename on the way out to drop it so the dist/ artifact reads
+	# bragi-<ver>-<arch>.pkg.tar.zst, consistent with the .tar.gz. pacman -U
+	# reads .PKGINFO, not the filename, so this is purely cosmetic.
 	pkg_built=$(find "$ARCH_BUILD" -maxdepth 1 -name "${BIN_NAME}-${VERSION}-1*.pkg.tar.zst" -print -quit)
 	if [[ -n "$pkg_built" ]]; then
-		mv "$pkg_built" "$DIST_DIR/"
-		echo "  → $DIST_DIR/$(basename "$pkg_built")"
+		pkg_dest="$DIST_DIR/${BIN_NAME}-${VERSION}-${RPM_ARCH}.pkg.tar.zst"
+		mv "$pkg_built" "$pkg_dest"
+		echo "  → $pkg_dest"
 	else
 		echo "  warning: makepkg ran but no .pkg.tar.zst was found in $ARCH_BUILD"
 	fi
