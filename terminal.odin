@@ -114,7 +114,7 @@ g_terminal_resizing:      bool // mid-drag of the horizontal divider
 // rows/cols was passed in.
 @(private="file")
 terminal_target_grid_from_window :: proc() -> (rows, cols: int, ok: bool) {
-	if g_window == nil || g_line_height <= 0 || g_char_width <= 0 do return 0, 0, false
+	if g_window == nil || g_term_line_height <= 0 || g_term_char_width <= 0 do return 0, 0, false
 
 	wi, hi: c.int
 	sdl.GetWindowSize(g_window, &wi, &hi)
@@ -132,8 +132,8 @@ terminal_target_grid_from_window :: proc() -> (rows, cols: int, ok: bool) {
 
 	t_h := clamp(content_h * g_terminal_height_ratio, 60, content_h - divider_h - 100)
 
-	rows = max(1, int(t_h / g_line_height))
-	cols = max(1, int((window_w - SB_THICKNESS) / g_char_width))
+	rows = max(1, int(t_h / g_term_line_height))
+	cols = max(1, int((window_w - SB_THICKNESS) / g_term_char_width))
 	ok   = true
 	return
 }
@@ -143,8 +143,8 @@ terminal_target_grid_from_window :: proc() -> (rows, cols: int, ok: bool) {
 terminal_fit_to_rect :: proc(rect: sdl.FRect) {
 	if g_terminal == nil do return
 	text, _ := terminal_split_rect(rect)
-	rows := max(1, int(text.h / g_line_height))
-	cols := max(1, int(text.w / g_char_width))
+	rows := max(1, int(text.h / g_term_line_height))
+	cols := max(1, int(text.w / g_term_char_width))
 	terminal_resize(rows, cols)
 }
 
@@ -720,9 +720,9 @@ terminal_thumb_metrics :: proc(t: ^Terminal, track: sdl.FRect) -> (start, size: 
 	viewport  := rows_f
 	scroll    := f32(sb_count - t.scroll_offset) // 0 = top of history; sb_count = at live tail
 
-	start, size = scrollbar_thumb_metrics(scroll * g_line_height,
-	                                       total_f * g_line_height,
-	                                       viewport * g_line_height,
+	start, size = scrollbar_thumb_metrics(scroll * g_term_line_height,
+	                                       total_f * g_term_line_height,
+	                                       viewport * g_term_line_height,
 	                                       track.h)
 	return start, size, true
 }
@@ -860,7 +860,7 @@ draw_terminal :: proc(rect: sdl.FRect) {
 	fill_rect(text_rect, default_bg)
 
 	for row in 0 ..< t.rows {
-		y := text_rect.y + f32(row) * g_line_height
+		y := text_rect.y + f32(row) * g_term_line_height
 		col := 0
 		for col < t.cols {
 			cell := terminal_cell_at(t, row, col)
@@ -902,11 +902,11 @@ draw_terminal :: proc(rect: sdl.FRect) {
 			run_str := strings.to_string(run_text)
 			if len(run_str) == 0 do continue
 
-			x := text_rect.x + f32(run_start) * g_char_width
-			cell_w := f32(col - run_start) * g_char_width
+			x := text_rect.x + f32(run_start) * g_term_char_width
+			cell_w := f32(col - run_start) * g_term_char_width
 
 			// Background rect for the run if it differs from the default.
-			if bg != default_bg do fill_rect({x, y, cell_w, g_line_height}, bg)
+			if bg != default_bg do fill_rect({x, y, cell_w, g_term_line_height}, bg)
 
 			cstr := strings.clone_to_cstring(run_str, context.temp_allocator)
 			draw_text(cstr, x, y, fg, bg, g_terminal_font)
@@ -922,8 +922,8 @@ draw_terminal :: proc(rect: sdl.FRect) {
 	if t.state != nil && t.scroll_offset == 0 {
 		cur: VTermPos
 		vterm_state_get_cursorpos(t.state, &cur)
-		cx := text_rect.x + f32(cur.col) * g_char_width
-		cy := text_rect.y + f32(int(cur.row)) * g_line_height
+		cx := text_rect.x + f32(cur.col) * g_term_char_width
+		cy := text_rect.y + f32(int(cur.row)) * g_term_line_height
 
 		visible := true
 		color   := g_theme.cursor_color
@@ -932,7 +932,7 @@ draw_terminal :: proc(rect: sdl.FRect) {
 		} else {
 			color.a = 60
 		}
-		if visible do fill_rect({cx, cy, g_char_width, g_line_height}, color)
+		if visible do fill_rect({cx, cy, g_term_char_width, g_term_line_height}, color)
 	}
 
 	// Drop the cell-grid clip before drawing the scrollbar so the

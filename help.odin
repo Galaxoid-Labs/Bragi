@@ -125,11 +125,14 @@ HELP_SEARCH := [?]Help_Entry{
 
 @(private="file")
 HELP_FILES := [?]Help_Entry{
-	{"Cmd/Ctrl+F",    "directory navigator (Enter dives in / opens · `..` or Backspace up)"},
+	{"Cmd/Ctrl+F",    "fuzzy file finder (type to search the project · Up/Down · Enter opens)"},
+	{"Cmd/Ctrl+E",    "toggle file-tree sidebar (j/k/h/l · Enter opens · i = hidden files)"},
+	{"Cmd/Ctrl+Shift+O", "open a folder as the workspace (also :cd <path> · drop a folder)"},
+	{"Cmd/Ctrl +/-",  "zoom editor font in / out  (Cmd/Ctrl 0 resets)"},
 	{":w",            "save"},
-	{":q",            "close pane"},
+	{":q",            "close pane (last file → welcome screen)"},
 	{":wq",           "save + close"},
-	{":q!",           "force-close pane (last pane → quit)"},
+	{":q!",           "force-close pane (last file → welcome; again → quit)"},
 	{":42",           "jump to line 42"},
 	{":syntax X",     "switch tokenizer  (none generic odin c cpp go jai swift bash ini)"},
 	{":config",       "open / create the user config.ini"},

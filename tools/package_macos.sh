@@ -321,6 +321,31 @@ EOF
 
 	# Tell the binary where to find its bundled dylibs at runtime.
 	install_name_tool -add_rpath "@executable_path/../Frameworks" "$MACOS_DIR/$BIN_NAME" 2>/dev/null || true
+
+	# ──────────────────────────────────────────────────────────
+	# 5b. Bundle the vendored fff library. Unlike the Homebrew deps
+	#     above, fff isn't a system/brew dylib — it's referenced via
+	#     `@loader_path/vendor/fff/libfff_c-<arch>-darwin.dylib`
+	#     (the dev-tree layout; see fff.odin / vendor/fff). Copy the
+	#     exact file the binary links into Frameworks/ as libfff_c.dylib
+	#     and rewrite the reference to @rpath so it resolves next to the
+	#     other bundled dylibs.
+	# ──────────────────────────────────────────────────────────
+	fff_ref="$(otool -L "$MACOS_DIR/$BIN_NAME" | awk '/libfff_c/ {print $1; exit}')"
+	if [[ -n "$fff_ref" ]]; then
+		# The reference is @loader_path-relative to the repo; map it back
+		# to the actual file on disk under the repo root.
+		fff_src="$REPO_ROOT/${fff_ref#@loader_path/}"
+		if [[ -f "$fff_src" ]]; then
+			echo "→ bundling fff ($(basename "$fff_src"))"
+			cp "$fff_src" "$FRAMEWORKS_DIR/libfff_c.dylib"
+			chmod +w "$FRAMEWORKS_DIR/libfff_c.dylib"
+			install_name_tool -id "@rpath/libfff_c.dylib" "$FRAMEWORKS_DIR/libfff_c.dylib" 2>/dev/null || true
+			install_name_tool -change "$fff_ref" "@rpath/libfff_c.dylib" "$MACOS_DIR/$BIN_NAME"
+		else
+			echo "  warning: fff library not found at $fff_src — bundle will not run"
+		fi
+	fi
 fi
 
 # ──────────────────────────────────────────────────────────────────

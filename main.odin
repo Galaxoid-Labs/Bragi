@@ -187,18 +187,18 @@ draw_welcome :: proc(ed: ^Editor, p: Pane_Layout) {
 			desc := strings.trim_left(line[len(key):], " ")
 			key_cstr  := strings.clone_to_cstring(key,  context.temp_allocator)
 			desc_cstr := strings.clone_to_cstring(desc, context.temp_allocator)
-			draw_text(key_cstr,  block_x,                                       y, WELCOME_KEY_COLOR,        g_theme.bg_color)
-			draw_text(desc_cstr, block_x + max_key_w + WELCOME_GAP * g_char_width, y, g_theme.status_dim_color, g_theme.bg_color)
+			draw_text(key_cstr,  block_x,                                       y, WELCOME_KEY_COLOR,        g_theme.bg_color, g_editor_font)
+			draw_text(desc_cstr, block_x + max_key_w + WELCOME_GAP * g_char_width, y, g_theme.status_dim_color, g_theme.bg_color, g_editor_font)
 		} else {
 			// Title / subtitle / prose — measured independently and
 			// centered on the pane.
 			full_cstr := strings.clone_to_cstring(line, context.temp_allocator)
 			full_w_px: c.int
-			ttf.GetStringSize(g_font, full_cstr, 0, &full_w_px, nil)
+			ttf.GetStringSize(g_editor_font, full_cstr, 0, &full_w_px, nil)
 			full_w := f32(full_w_px) / g_density
 			x := p.text_x + (p.text_w - full_w) * 0.5
 			color := i == 0 ? WELCOME_TITLE_COLOR : g_theme.status_dim_color
-			draw_text(full_cstr, x, y, color, g_theme.bg_color)
+			draw_text(full_cstr, x, y, color, g_theme.bg_color, g_editor_font)
 		}
 	}
 }
@@ -206,11 +206,15 @@ draw_welcome :: proc(ed: ^Editor, p: Pane_Layout) {
 // Globals — easier than threading through every proc. Set in main, read elsewhere.
 g_renderer:    ^sdl.Renderer
 g_window:      ^sdl.Window
-g_font:           ^ttf.Font
+g_font:           ^ttf.Font // UI / chrome font (status bar, finder, help, menus)
+g_editor_font:    ^ttf.Font // editor document + gutter font (zoomable via Cmd +/-)
+g_editor_font_size: f32     // current editor font size (logical px); Cmd +/-/0 adjust it
 g_terminal_font:  ^ttf.Font // Nerd Font variant used by the terminal pane
 g_density:        f32   // pixel density (1.0 non-retina, 2.0 retina)
-g_char_width:     f32   // logical px per monospace char
-g_line_height: f32   // logical px per line
+g_char_width:     f32   // logical px per monospace char (editor font)
+g_line_height: f32   // logical px per line (editor font)
+g_term_char_width:  f32 // logical px per cell (terminal font; fixed at UI size, NOT zoomed)
+g_term_line_height: f32 // logical px per terminal row
 
 // Text cache: keyed by hash of (text, fg, bg). Avoids re-rasterizing unchanged
 // lines/labels every frame. Capped to keep memory bounded; on overflow we wipe
@@ -274,6 +278,15 @@ Layout :: struct {
 	terminal_rect:           sdl.FRect,
 	terminal_divider_y:      f32,
 	terminal_divider_h:      f32,
+
+	// Left file-tree sidebar. Populated only when g_sidebar_visible;
+	// otherwise sidebar_rect is zero-sized and panes start at x=0. It's
+	// carved from the editor zone (TITLEBAR_H..editor_bottom); the status
+	// bar and terminal stay full-width below it. The divider strip at
+	// `sidebar_divider_x..+w` is the grab handle.
+	sidebar_rect:            sdl.FRect,
+	sidebar_divider_x:       f32,
+	sidebar_divider_w:       f32,
 }
 
 // Multi-pane editor list. Panes are rendered as columns left-to-right
@@ -462,12 +475,26 @@ compute_layout :: proc() -> Layout {
 	}
 	l.editor_bottom = l.status_y
 
+	// Carve a left strip for the file-tree sidebar (editor zone only;
+	// the status bar + terminal stay full-width below it). Panes then
+	// fill [sidebar_right, screen_w].
+	sidebar_right: f32 = 0
+	if g_sidebar_visible {
+		sw := clamp(g_sidebar_width, SIDEBAR_MIN_WIDTH,
+		            max(SIDEBAR_MIN_WIDTH, l.screen_w - SIDEBAR_DIVIDER_W - SIDEBAR_MIN_EDITOR))
+		l.sidebar_rect      = sdl.FRect{0, TITLEBAR_H, sw, l.editor_bottom - TITLEBAR_H}
+		l.sidebar_divider_x = sw
+		l.sidebar_divider_w = SIDEBAR_DIVIDER_W
+		sidebar_right       = sw + SIDEBAR_DIVIDER_W
+	}
+	editor_w := l.screen_w - sidebar_right
+
 	n := max(1, len(g_editors))
 	panes := make([]Pane_Layout, n, context.temp_allocator)
-	x_acc: f32 = 0
+	x_acc: f32 = sidebar_right
 	for i in 0 ..< n {
 		ratio := i < len(g_pane_ratios) ? g_pane_ratios[i] : 1.0 / f32(n)
-		pane_w := ratio * l.screen_w
+		pane_w := ratio * editor_w
 		pane_x := x_acc
 		x_acc += pane_w
 		// Last pane absorbs any rounding remainder so the rightmost
@@ -597,7 +624,7 @@ count_display_cols :: proc(bytes: []u8) -> int {
 draw_segment :: proc(bytes: []u8, x, y: f32, fg, bg: sdl.Color) {
 	if len(bytes) == 0 do return
 	cstr := strings.clone_to_cstring(string(bytes), context.temp_allocator)
-	draw_text(cstr, x, y, fg, bg)
+	draw_text(cstr, x, y, fg, bg, g_editor_font)
 }
 
 // Walk tokens + the gaps between them, drawing each as a separately-colored
@@ -678,6 +705,12 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 		if !terminal_toggle(24, 80) {
 			set_status_message("E: failed to open terminal", .Error)
 		}
+		return
+	}
+
+	// Cmd+E / Ctrl+E — toggle the file-tree sidebar (and focus it).
+	if ev.key == sdl.K_E && ev.mod & (sdl.KMOD_GUI | sdl.KMOD_CTRL) != {} {
+		sidebar_toggle()
 		return
 	}
 
@@ -766,7 +799,10 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 			// Cmd+] → focus right pane.
 			if g_active_idx < len(g_editors) - 1 do g_active_idx += 1
 		case sdl.K_O:
-			open_file_dialog(ed)
+			// Cmd/Ctrl+Shift+O opens a *folder* as the workspace;
+			// plain Cmd/Ctrl+O opens a file.
+			if shift_held(mods) do open_folder_dialog()
+			else                do open_file_dialog(ed)
 		case sdl.K_S:
 			if shift_held(mods) {
 				save_as_dialog(ed)
@@ -778,7 +814,24 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 			if shift_held(mods) do editor_redo(ed)
 			else                do editor_undo(ed)
 		case sdl.K_Y: editor_redo(ed)
+		case sdl.K_EQUALS, sdl.K_KP_PLUS:
+			// Cmd/Ctrl + = (or +) — grow the editor font. = and + share a
+			// key, so we don't require Shift. UI chrome stays fixed.
+			editor_font_zoom(+1)
+		case sdl.K_MINUS, sdl.K_KP_MINUS:
+			editor_font_zoom(-1)
+		case sdl.K_0, sdl.K_KP_0:
+			// Reset the editor font to the configured size.
+			editor_font_reset()
 		}
+		return
+	}
+
+	// Sidebar has keyboard focus → it consumes every non-shortcut key
+	// (nav: j/k/h/l, Enter, Esc, i). Placed after the Cmd/Ctrl block so
+	// global shortcuts (Cmd+S, Cmd+E to toggle, etc.) still work.
+	if g_sidebar_active {
+		sidebar_handle_key(ev)
 		return
 	}
 
@@ -1321,12 +1374,12 @@ draw_gutter :: proc(ed: ^Editor, p: Pane_Layout) {
 		num := fmt.tprintf("%d", line + 1)
 		cstr := strings.clone_to_cstring(num, context.temp_allocator)
 		w: c.int
-		ttf.GetStringSize(g_font, cstr, 0, &w, nil)
+		ttf.GetStringSize(g_editor_font, cstr, 0, &w, nil)
 		w_logical := f32(w) / g_density
 		x := p.pane_x + p.gutter_w - GUTTER_PADDING - w_logical
 		color := g_theme.gutter_text_color
 		if line == cur_line do color = g_theme.gutter_active_color
-		draw_text(cstr, x, y, color, g_theme.gutter_bg_color)
+		draw_text(cstr, x, y, color, g_theme.gutter_bg_color, g_editor_font)
 	}
 }
 
@@ -1556,12 +1609,17 @@ update_window_title :: proc(ed: ^Editor) {
 // ──────────────────────────────────────────────────────────────────
 
 g_pending_open:           bool
+g_pending_open_folder:    bool // Cmd/Ctrl+Shift+O — set the workspace via folder picker
 g_pending_save_as:        bool
 g_pending_raise:          bool // set by dialog callbacks; main loop calls RaiseWindow next iter
 g_pending_quit_after_save: bool // try_quit on an untitled buffer: quit once save-as completes
 
 open_file_dialog :: proc(ed: ^Editor) {
 	g_pending_open = true
+}
+
+open_folder_dialog :: proc() {
+	g_pending_open_folder = true
 }
 
 save_as_dialog :: proc(ed: ^Editor) {
@@ -1576,6 +1634,16 @@ do_open_file_dialog :: proc(ed: ^Editor) {
 @(private="file")
 do_save_as_dialog :: proc(ed: ^Editor) {
 	sdl.ShowSaveFileDialog(save_as_callback, rawptr(ed), g_window, nil, 0, nil)
+}
+
+@(private="file")
+do_open_folder_dialog :: proc() {
+	// Start the picker in the current workspace if there is one.
+	loc: cstring
+	if len(g_workspace_root) > 0 {
+		loc = strings.clone_to_cstring(g_workspace_root, context.temp_allocator)
+	}
+	sdl.ShowOpenFolderDialog(open_folder_callback, nil, g_window, loc, false)
 }
 
 flush_pending_dialogs :: proc(ed: ^Editor) {
@@ -1593,6 +1661,10 @@ flush_pending_dialogs :: proc(ed: ^Editor) {
 		g_pending_open = false
 		do_open_file_dialog(ed)
 	}
+	if g_pending_open_folder {
+		g_pending_open_folder = false
+		do_open_folder_dialog()
+	}
 	if g_pending_save_as {
 		g_pending_save_as = false
 		do_save_as_dialog(ed)
@@ -1608,6 +1680,15 @@ open_file_callback :: proc "c" (userdata: rawptr, filelist: [^]cstring, filter: 
 
 	path := string(filelist[0])
 	open_file_smart(path)
+}
+
+open_folder_callback :: proc "c" (userdata: rawptr, filelist: [^]cstring, filter: c.int) {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	defer { g_pending_raise = true } // restore focus on next main-loop iter
+
+	if filelist == nil || filelist[0] == nil do return // canceled or error
+	set_workspace(string(filelist[0]))
 }
 
 save_as_callback :: proc "c" (userdata: rawptr, filelist: [^]cstring, filter: c.int) {
@@ -1689,20 +1770,70 @@ open_terminal_font :: proc(size_px: f32) -> ^ttf.Font {
 	return f
 }
 
-// Honours g_config.font.path: empty → embedded; non-empty → load that file
-// and fall back to embedded with a warning if it fails. Either way the
-// editor always comes up with a usable font.
-open_configured_font :: proc(size_px: f32) -> ^ttf.Font {
-	if len(g_config.font.path) == 0 do return open_embedded_font(size_px)
+// Open `path` at `size_px`: empty path → embedded FiraCode; non-empty →
+// load that file, falling back to embedded with a warning if it fails.
+// Either way a usable font always comes back.
+open_font_path :: proc(path: string, size_px: f32) -> ^ttf.Font {
+	if len(path) == 0 do return open_embedded_font(size_px)
 
-	cstr := strings.clone_to_cstring(g_config.font.path, context.temp_allocator)
+	cstr := strings.clone_to_cstring(path, context.temp_allocator)
 	if f := ttf.OpenFont(cstr, size_px); f != nil do return f
 
 	fmt.eprintfln(
 		"OpenFont '%s' failed (%s); falling back to bundled FiraCode",
-		g_config.font.path, sdl.GetError(),
+		path, sdl.GetError(),
 	)
 	return open_embedded_font(size_px)
+}
+
+// The UI / chrome font, per g_config.font.path.
+open_configured_font :: proc(size_px: f32) -> ^ttf.Font {
+	return open_font_path(g_config.font.path, size_px)
+}
+
+// Editor font size bounds for the Cmd +/- zoom.
+EDITOR_FONT_MIN :: f32(6)
+EDITOR_FONT_MAX :: f32(72)
+
+// (Re)open g_editor_font at g_editor_font_size and recompute the editor
+// metrics. Closes the previous handle (unless it was aliased to g_font
+// as a fallback) and drops the texture cache so glyphs re-rasterize at
+// the new size. Used by both first-time setup and the live zoom.
+editor_font_reopen :: proc() {
+	if g_editor_font != nil && g_editor_font != g_font {
+		ttf.CloseFont(g_editor_font)
+	}
+	g_editor_font = open_font_path(g_config.editor_font.path, g_editor_font_size * g_density)
+	if g_editor_font == nil {
+		g_editor_font = g_font // last-ditch fallback; never nil at draw time
+	} else {
+		ttf.SetFontHinting(g_editor_font, g_config.editor_font.hinting)
+	}
+	g_char_width  = measure_char_width(g_editor_font)
+	g_line_height = g_editor_font_size * g_config.editor.line_spacing
+	text_cache_clear()
+}
+
+// Clamp + apply a new editor font size. No-op when unchanged.
+editor_font_set_size :: proc(size: f32) {
+	s := clamp(size, EDITOR_FONT_MIN, EDITOR_FONT_MAX)
+	if s == g_editor_font_size do return
+	g_editor_font_size = s
+	editor_font_reopen()
+}
+
+// Cmd +/- step (whole logical px) and Cmd 0 reset target.
+editor_font_zoom  :: proc(delta: f32) { editor_font_set_size(g_editor_font_size + delta) }
+editor_font_reset :: proc()           { editor_font_set_size(g_config.editor_font.size) }
+
+// Terminal cell metrics, derived from g_terminal_font at the fixed UI
+// size (the Nerd Font shares the editor font's advance). Kept separate
+// from g_char_width / g_line_height so editor zoom never resizes the
+// terminal grid (which would SIGWINCH the shell).
+recompute_terminal_metrics :: proc() {
+	f := g_terminal_font != nil ? g_terminal_font : g_font
+	g_term_char_width  = measure_char_width(f)
+	g_term_line_height = g_config.font.size * g_config.editor.line_spacing
 }
 
 Quit_Choice :: enum { Cancel, Save, Discard }
@@ -1862,9 +1993,8 @@ open_file_smart :: proc(path: string) {
 
 // Drop the active pane unconditionally. The last pane is replaced with a
 // fresh welcome buffer rather than removed, so the editor never has zero
-// panes — pressing Cmd/Ctrl+W on a file goes back to the welcome screen,
-// then a second Cmd/Ctrl+W (handled higher up via `should_replace_active`)
-// quits.
+// panes — pressing Cmd/Ctrl+W on a file goes back to the welcome screen
+// and stays there (closing files never quits; that's Cmd+Q / :q).
 close_active_pane_unconditional :: proc() {
 	idx := g_active_idx
 	if len(g_editors) == 1 {
@@ -1882,9 +2012,11 @@ close_active_pane_unconditional :: proc() {
 }
 
 // Cmd+W / Ctrl+W path: prompt-then-close. Returns true if the pane was
-// closed (or replaced with welcome). On a single welcome pane we set
-// `want_quit` instead so the main loop exits — pressing close from
-// welcome means "actually quit the app".
+// closed (or replaced with welcome). Closing the last *file* lands on
+// the welcome screen; pressing close again from that blank welcome pane
+// sets want_quit so the main loop exits — closing the window once you're
+// down to the welcome screen quits the app (matches the macOS red close
+// button). Cmd+Q (.QUIT → try_quit_all) is the other quit path.
 try_close_active_pane :: proc() -> bool {
 	ed := active_editor()
 	if len(g_editors) == 1 && should_replace_active() {
@@ -1953,7 +2085,7 @@ draw_frame :: proc() {
 	// editor's bright treatment too. The terminal itself gets the
 	// same overlay below, after it draws. Drawn before separators so
 	// the dividers stay crisp.
-	editor_focused := !(g_terminal_visible && g_terminal_active)
+	editor_focused := !(g_terminal_visible && g_terminal_active) && !g_sidebar_active
 	for p, i in l.panes {
 		if editor_focused && i == g_active_idx do continue
 		// Dim only the editor zone below the title-bar strip, not the
@@ -1969,6 +2101,9 @@ draw_frame :: proc() {
 		x := l.panes[i].pane_x
 		fill_rect({x, TITLEBAR_H, 1.0 / g_density, l.editor_bottom - TITLEBAR_H}, g_theme.gutter_bg_color)
 	}
+	// File-tree sidebar (left strip) — its own bg/divider/dim, drawn in
+	// the carved-out region the panes leave to their left.
+	draw_sidebar(l)
 	// Terminal pane (bottom strip) — drawn before status / modals so
 	// they overlay it cleanly. The thin divider above it doubles as
 	// the resize-grab strip.
@@ -2005,7 +2140,7 @@ refresh_pixel_density :: proc() {
 	g_density = new_density
 	sdl.SetRenderScale(g_renderer, g_density, g_density)
 
-	// Re-rasterise both fonts at the new physical size and drop cached
+	// Re-rasterise every font at the new physical size and drop cached
 	// textures (they're sized at the previous density).
 	if g_font != nil do ttf.CloseFont(g_font)
 	g_font = open_configured_font(g_config.font.size * g_density)
@@ -2013,10 +2148,11 @@ refresh_pixel_density :: proc() {
 
 	if g_terminal_font != nil do ttf.CloseFont(g_terminal_font)
 	g_terminal_font = open_terminal_font(g_config.font.size * g_density)
+	recompute_terminal_metrics()
 
-	text_cache_clear()
-
-	g_char_width = measure_char_width(g_font)
+	// Reopen the editor font at its current (possibly zoomed) size for the
+	// new density; this recomputes editor metrics and clears the cache.
+	editor_font_reopen()
 }
 
 // SDL fires this synchronously during macOS live-resize (before the main
@@ -2066,11 +2202,14 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		// With multiple panes open, treat it as "close the active pane".
 		// With a single pane, route through `try_close_active_pane`
 		// which: on a file → resets to welcome; already on welcome →
-		// sets want_quit and the loop exits.
+		// no-op. The app only quits via Cmd+Q (.QUIT) or vim :q.
 		try_close_active_pane()
 	case .KEY_DOWN:
 		handle_key_down(active_editor(), ev.key)
 	case .TEXT_INPUT:
+		// Sidebar focus consumes typing (its nav keys arrive via KEY_DOWN);
+		// don't let the runes fall through into the buffer.
+		if g_sidebar_active do return
 		if !cmd_or_ctrl(sdl.GetModState()) do handle_text_input(active_editor(), ev.text.text)
 	case .MOUSE_BUTTON_DOWN:
 		// Finder modal swallows clicks; outside-click dismisses,
@@ -2078,6 +2217,20 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		if finder_handle_button(ev.button, l) do return
 		// Help modal swallows clicks; clicking outside dismisses it.
 		if help_handle_click(ev.button.x, ev.button.y, l) do return
+		// Sidebar-divider drag (vertical). Wins over the pane to its
+		// right; only active when the sidebar shows and the click is in
+		// the divider strip.
+		if g_sidebar_visible &&
+		   ev.button.x >= l.sidebar_divider_x &&
+		   ev.button.x <  l.sidebar_divider_x + l.sidebar_divider_w {
+			g_sidebar_resizing = true
+			return
+		}
+		// Click inside the sidebar → focus it + select/activate the row.
+		if sidebar_handle_button(ev.button, l) {
+			g_terminal_active = false
+			return
+		}
 		// Terminal-divider drag (horizontal). Has to win over the
 		// editor pane area below it, but only when the terminal is
 		// showing and the click is in the divider strip.
@@ -2099,9 +2252,10 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 			g_terminal_active = true
 			return
 		}
-		// Anything else lands in editor territory; if a terminal had
-		// focus, it's losing it now.
+		// Anything else lands in editor territory; if the terminal or
+		// sidebar had focus, it's losing it now.
 		g_terminal_active = false
+		g_sidebar_active  = false
 		// Divider grab takes priority over pane interior — the grab
 		// strip overlaps the rightmost few pixels of one pane's
 		// scrollbar and the leftmost few pixels of the next pane's
@@ -2117,6 +2271,10 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 	case .MOUSE_BUTTON_UP:
 		// Finder swallows the up so it doesn't fall through to a pane.
 		if g_finder_visible do return
+		if g_sidebar_resizing {
+			g_sidebar_resizing = false
+			return
+		}
 		if g_terminal_resizing {
 			g_terminal_resizing = false
 			return
@@ -2149,6 +2307,13 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 			terminal_handle_sb_drag(l.terminal_rect, ev.motion.y)
 			return
 		}
+		if g_sidebar_resizing {
+			// Sidebar width is stored in logical px (resilient to window
+			// resize); clamp so the editor keeps a usable minimum.
+			g_sidebar_width = clamp(ev.motion.x, SIDEBAR_MIN_WIDTH,
+			                        max(SIDEBAR_MIN_WIDTH, l.screen_w - SIDEBAR_DIVIDER_W - SIDEBAR_MIN_EDITOR))
+			return
+		}
 		if g_terminal_resizing {
 			// Convert mouse-y → desired terminal height, then store
 			// as a fraction of the editor+terminal zone (content_h)
@@ -2163,7 +2328,10 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 			return
 		}
 		if g_resize_divider > 0 {
-			move_divider(g_resize_divider, ev.motion.x, l.screen_w)
+			// Pane ratios span the editor region (right of the sidebar),
+			// so convert the cursor to editor-relative coords + width.
+			sb_left := g_sidebar_visible ? l.sidebar_divider_x + l.sidebar_divider_w : 0
+			move_divider(g_resize_divider, ev.motion.x - sb_left, l.screen_w - sb_left)
 			return
 		}
 		// Swap to the appropriate resize cursor while hovering any
@@ -2172,11 +2340,16 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		// terminal uses ↕ . SetCursor is cheap and SDL no-ops when
 		// the cursor doesn't actually change.
 		over_pane_div := divider_at_x(ev.motion.x, l, ev.motion.y) > 0
+		over_side_div := g_sidebar_visible &&
+		                 ev.motion.x >= l.sidebar_divider_x &&
+		                 ev.motion.x <  l.sidebar_divider_x + l.sidebar_divider_w &&
+		                 ev.motion.y >= l.sidebar_rect.y &&
+		                 ev.motion.y <  l.sidebar_rect.y + l.sidebar_rect.h
 		over_term_div := g_terminal_visible &&
 		                 ev.motion.y >= l.terminal_divider_y &&
 		                 ev.motion.y <  l.terminal_divider_y + l.terminal_divider_h
 		switch {
-		case over_pane_div && g_cursor_resize_h != nil:
+		case (over_pane_div || over_side_div) && g_cursor_resize_h != nil:
 			_ = sdl.SetCursor(g_cursor_resize_h)
 		case over_term_div && g_cursor_resize_v != nil:
 			_ = sdl.SetCursor(g_cursor_resize_v)
@@ -2197,6 +2370,11 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 			help_scroll_by(-ev.wheel.y * line_h * SCROLL_LINES_PER_NOTCH)
 			return
 		}
+		// Wheel over the sidebar scrolls the tree.
+		if g_sidebar_visible && point_in_rect({ev.wheel.mouse_x, ev.wheel.mouse_y}, l.sidebar_rect) {
+			sidebar_handle_wheel(ev.wheel)
+			return
+		}
 		// Wheel over the terminal pane scrolls its scrollback ring,
 		// not the editor underneath. Wheel-up = older content.
 		if g_terminal_visible &&
@@ -2210,13 +2388,19 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 	case .DROP_FILE:
 		if ev.drop.data != nil {
 			path := string(ev.drop.data)
-			open_file_smart(path)
+			// Dropping a folder sets the workspace; a file opens normally.
+			if os.is_dir(path) do set_workspace(path)
+			else               do open_file_smart(path)
 		}
 	}
 	// Vim's :q / :q! / :wq set ed.want_quit. Translate that to "close this
-	// pane" — and only actually quit the app when it was the last pane.
+	// pane", mirroring the Cmd/Ctrl+W path: with multiple panes, drop the
+	// active one; on the last pane, closing a *file* returns to the
+	// welcome screen rather than quitting. Only :q on the already-blank
+	// welcome screen quits — a keyboard escape hatch alongside Cmd+Q
+	// (.QUIT → try_quit_all).
 	if active_editor().want_quit {
-		if len(g_editors) > 1 {
+		if len(g_editors) > 1 || !should_replace_active() {
 			active_editor().want_quit = false
 			close_active_pane_unconditional()
 		} else {
@@ -2294,18 +2478,15 @@ main :: proc() {
 	// `g_font` via the nil-check in draw_text.
 	g_terminal_font = open_terminal_font(g_config.font.size * g_density)
 	defer if g_terminal_font != nil do ttf.CloseFont(g_terminal_font)
+	recompute_terminal_metrics()
 
-	// Measure char width once. Monospace assumption.
-	//
-	// Measuring a *single* "M" and dividing by density rounds the
-	// glyph's bounding box to whole physical pixels — at small font
-	// sizes the rounding error is a meaningful fraction of the actual
-	// per-char advance, so the cursor block ends up subtly wider or
-	// narrower than the chars beneath it. Measuring a long run and
-	// averaging averages the rounding away and lands much closer to
-	// the font's true advance width.
-	g_char_width = measure_char_width(g_font)
-	g_line_height = g_config.font.size * g_config.editor.line_spacing
+	// Editor document font — a separate handle so Cmd +/- can zoom it
+	// without touching the UI chrome. Starts at the configured editor
+	// size; editor_font_reopen measures g_char_width (monospace advance —
+	// see measure_char_width) and sets g_line_height.
+	g_editor_font_size = g_config.editor_font.size
+	editor_font_reopen()
+	defer if g_editor_font != nil && g_editor_font != g_font do ttf.CloseFont(g_editor_font)
 
 	_ = sdl.StartTextInput(g_window)
 	defer { _ = sdl.StopTextInput(g_window) }
@@ -2332,6 +2513,8 @@ main :: proc() {
 		delete(g_editors)
 		delete(g_pane_ratios)
 		finder_destroy()
+		sidebar_destroy()
+		workspace_destroy()
 		dot_destroy()
 		clear_status_message()
 	}
@@ -2351,7 +2534,14 @@ main :: proc() {
 
 	if len(os.args) >= 2 {
 		path := os.args[1]
-		if !editor_load_file(active_editor(), path) {
+		if os.is_dir(path) {
+			// `bragi <dir>` opens the directory as the workspace and drops
+			// you straight into the file-tree sidebar (focused). The
+			// welcome screen shows in the editor until you pick a file.
+			g_sidebar_visible = true
+			g_sidebar_active  = true
+			set_workspace(path)
+		} else if !editor_load_file(active_editor(), path) {
 			fmt.eprintfln("could not open %s; starting with welcome screen", path)
 			// Buffer stays empty → welcome overlay renders.
 		} else {

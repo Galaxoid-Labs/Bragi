@@ -184,6 +184,40 @@ cp "$ODIN_OUT" "$STAGING/usr/bin/$BIN_NAME"
 chmod 0755 "$STAGING/usr/bin/$BIN_NAME"
 strip "$STAGING/usr/bin/$BIN_NAME" 2>/dev/null || true
 
+# ──────────────────────────────────────────────────────────────────
+# Bundle the vendored fff library. Unlike SDL3 / SDL3_ttf / libvterm,
+# fff has no distro package — so it's the one .so we DO ship, into a
+# private libdir (/usr/lib/<bin>/) with the binary's RUNPATH pointed at
+# it via patchelf. Everything else still resolves through the distro.
+#
+# NOTE: untested on a real Linux host yet — verify the recorded
+# DT_NEEDED / RUNPATH after a Linux build (patchelf --print-needed
+# --print-rpath usr/bin/<bin>). The dev macOS path is the verified one.
+case "$RPM_ARCH" in
+	x86_64)  FFF_SRC="$REPO_ROOT/vendor/fff/libfff_c-x86_64-linux.so"  ;;
+	aarch64) FFF_SRC="$REPO_ROOT/vendor/fff/libfff_c-aarch64-linux.so" ;;
+	*)       FFF_SRC="" ;;
+esac
+if [[ -n "$FFF_SRC" && -f "$FFF_SRC" ]]; then
+	if command -v patchelf >/dev/null 2>&1; then
+		echo "→ bundling fff ($(basename "$FFF_SRC"))"
+		# The DT_NEEDED the binary records for fff (soname if the .so has
+		# one, else the link path). Ship the .so under that exact name so
+		# the dynamic loader finds it.
+		fff_needed="$(patchelf --print-needed "$STAGING/usr/bin/$BIN_NAME" 2>/dev/null | grep -i 'fff' | head -1 || true)"
+		dest_name="$(basename "${fff_needed:-libfff_c.so}")"
+		mkdir -p "$STAGING/usr/lib/$BIN_NAME"
+		cp "$FFF_SRC" "$STAGING/usr/lib/$BIN_NAME/$dest_name"
+		patchelf --set-soname "$dest_name" "$STAGING/usr/lib/$BIN_NAME/$dest_name" 2>/dev/null || true
+		patchelf --set-rpath "\$ORIGIN/../lib/$BIN_NAME" "$STAGING/usr/bin/$BIN_NAME" 2>/dev/null || true
+	else
+		echo "  warning: patchelf not found — fff NOT bundled; bragi's finder will fail to load it"
+		echo "           (apt install patchelf / dnf install patchelf / pacman -S patchelf)"
+	fi
+else
+	echo "  warning: no vendored fff .so for arch '$RPM_ARCH' — finder will not work"
+fi
+
 # Icon. Generate every hicolor size if ImageMagick is available;
 # otherwise just install the source PNG to pixmaps as a fallback
 # (legacy, but the freedesktop spec still honors it).
@@ -427,6 +461,11 @@ if (( STAGE_RPM && HAS_RPM )); then
 		echo "%license /usr/share/doc/$BIN_NAME/copyright"
 		echo "/usr/share/doc/$BIN_NAME/"
 		echo "/usr/bin/$BIN_NAME"
+		# Private libdir holding the bundled fff .so (only present when
+		# patchelf was available at package time). The %dir glob sweeps it
+		# up; rpmbuild ignores a missing dir gracefully via the if-guard
+		# in staging, but declare it so the .so doesn't trip "unpackaged".
+		[[ -d "$STAGING/usr/lib/$BIN_NAME" ]] && echo "/usr/lib/$BIN_NAME/"
 		echo "/usr/share/applications/$BIN_NAME.desktop"
 		[[ -n "$IDENTIFIER" ]] && echo "/usr/share/metainfo/$IDENTIFIER.metainfo.xml"
 		echo "/usr/share/pixmaps/$BIN_NAME.png"

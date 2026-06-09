@@ -8,6 +8,7 @@ copied into every distribution Bragi ships.
 | Project | License | Verbatim text |
 |---------|---------|---------------|
 | **libvterm** — VT state machine for the embedded terminal pane (linked dynamically; bundled in macOS .app, vendored on Windows). © 2008 Paul Evans. | MIT | [`licenses/libvterm.txt`](licenses/libvterm.txt) |
+| **fff** — fast recursive fuzzy file search powering the finder (linked dynamically; bundled on every platform). © 2025 Dmitriy Kovalenko. | MIT | [`licenses/fff.txt`](licenses/fff.txt) |
 | **SDL3** — windowing, input, GPU rendering (linked dynamically; bundled on macOS, shipped as DLL on Windows). © 1997-2025 Sam Lantinga. | zlib | [`licenses/sdl3.txt`](licenses/sdl3.txt) |
 | **SDL3_ttf** — TTF / FreeType / HarfBuzz glue for text rendering. © 2001-2025 Sam Lantinga. | zlib | [`licenses/sdl3_ttf.txt`](licenses/sdl3_ttf.txt) |
 | **Fira Code** — embedded as `FiraCode-Regular.ttf` (the editor pane's default font). © 2014 The Fira Code Project Authors. | SIL OFL 1.1 | [`licenses/firacode.txt`](licenses/firacode.txt) |

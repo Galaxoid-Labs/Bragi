@@ -240,6 +240,16 @@ if ($StageBundle) {
         Copy-Item -LiteralPath $src -Destination $StagingDir -Force
     }
 
+    # fff runtime DLL. The import lib (vendor\fff\fff_c.lib) records the
+    # DLL name as `fff_c.dll`, so build_import_lib.ps1 also drops a
+    # canonical fff_c.dll next to the arch-specific copies. Ship that.
+    $fffDll = Join-Path $RepoRoot 'vendor\fff\fff_c.dll'
+    if (Test-Path -LiteralPath $fffDll) {
+        Copy-Item -LiteralPath $fffDll -Destination $StagingDir -Force
+    } else {
+        throw "missing $fffDll — run vendor\fff\build_import_lib.ps1 first (it emits fff_c.lib + fff_c.dll)"
+    }
+
     $licenseSrc = Join-Path $RepoRoot 'LICENSE'
     if (Test-Path -LiteralPath $licenseSrc) {
         Copy-Item -LiteralPath $licenseSrc -Destination (Join-Path $StagingDir 'LICENSE.txt') -Force
@@ -338,6 +348,7 @@ Source: "$StagingDir\$ExeName";    DestDir: "{app}"; Flags: ignoreversion
 Source: "$StagingDir\SDL3.dll";    DestDir: "{app}"; Flags: ignoreversion
 Source: "$StagingDir\SDL3_ttf.dll";DestDir: "{app}"; Flags: ignoreversion
 Source: "$StagingDir\vterm.dll";   DestDir: "{app}"; Flags: ignoreversion
+Source: "$StagingDir\fff_c.dll";   DestDir: "{app}"; Flags: ignoreversion
 Source: "$StagingDir\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]

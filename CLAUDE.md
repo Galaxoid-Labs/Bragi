@@ -28,6 +28,15 @@ clones the upstream repo into `vendor/libvterm/_src/`, drops in a
 small CMakeLists.txt, builds with MSVC, and copies the resulting
 `vterm.dll` / `vterm.lib` / headers back into `vendor/libvterm/`.
 
+The fff file-search library (powers the finder) is vendored under
+`vendor/fff/` as prebuilt per-arch `c-lib-*` binaries — it has no
+Homebrew/distro/vcpkg port. Unlike the deps above it's bundled into the
+release on every platform (macOS Frameworks/, Linux `/usr/lib/bragi/`,
+next to `Bragi.exe`). macOS dylibs need an `install_name` rewrite to
+`@loader_path/...`; Windows needs an import lib generated from the DLL.
+Both are documented in `vendor/fff/README.md`. Only the macOS path is
+verified end-to-end so far.
+
 Two TTFs are embedded via `#load`:
 - `FiraCode-Regular.ttf` → editor pane (`g_font`)
 - `FiraCodeNerdFont-Regular.ttf` → terminal pane (`g_terminal_font`)
@@ -66,7 +75,36 @@ Both have identical advance width so cell math is unchanged.
   sections / keys / values don't fit the C-family `Language_Spec`.
 - **`menu.odin`** — Right-click context menu.
 - **`help.odin`** — `:h` / `:help` modal cheat-sheet.
-- **`finder.odin`** — Cmd/Ctrl+F fuzzy directory navigator.
+- **`finder.odin`** — Cmd/Ctrl+F project-wide fuzzy file picker, backed
+  by fff. Flat recursive search (relative paths), NOT a directory
+  browser. Picks an index root from the active file — git root (walk up
+  to nearest `.git`), else the file's dir, else cwd when no file is
+  open. `is_indexable_root` refuses `$HOME` / `/` (fff itself errors on
+  home unless `enable_home_dir_scanning`). The fff instance is created
+  lazily on first open, kept alive with a live watcher, and re-pointed
+  via `fff_restart_index` when the root changes.
+- **`fff.odin`** — Foreign bindings for the fff C library
+  (`vendor/fff/fff.h`). Subset: instance lifecycle, `fff_search` +
+  result accessors, frees. Links the vendored per-arch
+  `libfff_c-*-{darwin,linux}.{dylib,so}` on macOS/Linux and
+  `vendor/fff/fff_c.lib` on Windows. See `vendor/fff/README.md` for the
+  install_name / import-lib fixups.
+- **`fff_test.odin`** — `@(test)` smoke test for the bindings: indexes
+  the repo, searches, reads results back. Run from repo root so the
+  dylib's `@loader_path` id resolves: `odin test . -out:./bragi_test`.
+- **`workspace.odin`** — the single workspace root (`g_workspace_root`).
+  `set_workspace` validates + resolves to absolute, re-points the finder
+  index, and refreshes the sidebar. Set via Open Folder dialog
+  (Cmd/Ctrl+Shift+O), `bragi <dir>`, `:cd`/`:workspace`/`:ws`, or
+  dropping a folder.
+- **`sidebar.odin`** — left file-tree sidebar (NERDTree-style explorer
+  of the workspace). Toggle Cmd/Ctrl+E. Flattened-list tree model
+  (`g_sidebar_entries`) rebuilt from `g_workspace_root` + an expanded-dir
+  path set (`g_sidebar_expanded`); only expanded dirs are `read_dir`'d
+  (lazy). Dotfiles hidden, toggle with `i`. Styled like the finder
+  (MENU_* colors, blue dirs, UI font — does NOT scale with editor zoom).
+  Mouse (click dir=expand, file=open) + keyboard (j/k/h/l, Enter, Esc)
+  when focused.
 - **`dot.odin`** — `.` (repeat last edit) recorder.
 - **`config.odin`** — INI loader, theme + editor settings.
 - **`vterm.odin`** — Foreign bindings for libvterm 0.3.x. Links
@@ -135,14 +173,27 @@ sentinel that forces full rebuild on next read.
 
 ## Important globals
 
-- `g_renderer`, `g_window`, `g_font`, `g_terminal_font` — SDL3 / TTF
-  handles. Both fonts opened at `FONT_SIZE * g_density`.
+- `g_font`, `g_editor_font`, `g_terminal_font` — three TTF handles, all
+  opened at `size * g_density`. `g_font` (config `[font]`) draws the UI
+  chrome: status bar, finder, help, menus. `g_editor_font` (config
+  `[editor_font]`, inherits `[font]`) draws the editor document + gutter
+  and is the only one the user can **zoom** at runtime — Cmd `=`/`-`/`0`
+  → `editor_font_zoom` / `editor_font_reset` → `editor_font_reopen`,
+  which reopens it at `g_editor_font_size`, recomputes the editor
+  metrics, and drops the text cache. `g_terminal_font` is the Nerd Font.
+- `g_renderer`, `g_window` — SDL3 handles.
 - `g_density` — `GetWindowPixelDensity` result.
-- `g_char_width`, `g_line_height` — monospace metrics (logical pixels).
+- `g_char_width`, `g_line_height` — **editor-font** monospace metrics
+  (logical px); they track `g_editor_font` and so change on zoom. Read
+  by editor draw/layout (main.odin) and vim half-page motions.
   `measure_char_width` reads the font's advance via
   `TTF_GetGlyphMetrics`, NOT the rendered bounding box — at small
   sizes the box rounds to integer pixels and the cursor visibly
   drifts off the chars.
+- `g_term_char_width`, `g_term_line_height` — terminal cell metrics,
+  from `g_terminal_font` at the fixed UI size (`recompute_terminal_metrics`).
+  Kept separate from the editor metrics so editor zoom never resizes the
+  terminal grid (which would SIGWINCH the shell).
 - `TITLEBAR_H` — top-of-editor reservation for traffic lights
   (28 on macOS, 0 elsewhere). Defined in `titlebar_*.odin`.
 - `g_text_cache` — `(text, fg, bg, font_ptr) → ^sdl.Texture`. Font ptr
@@ -158,12 +209,15 @@ sentinel that forces full rebuild on next read.
 - **Terminal**: `g_terminal: ^Terminal` (nil when not open),
   `g_terminal_visible`, `g_terminal_active` (keyboard focus),
   `g_terminal_height_ratio`, `g_terminal_resizing`.
+- **Sidebar**: `g_sidebar_visible`, `g_sidebar_active` (keyboard focus),
+  `g_sidebar_width` (logical px), `g_sidebar_resizing` — the terminal
+  pattern rotated to a left strip. Plus `g_workspace_root`.
 - **Vim window-prefix**: `g_pending_ctrl_w` (set after Ctrl+W),
   `g_swallow_text_input` (one-batch guard — see below).
 - **Modals**: `g_help_visible`, `g_help_scroll`; `g_finder_visible`.
-- **Dialogs**: `g_pending_open` / `_save_as` / `_quit_after_save` /
-  `_raise` — flags that defer `sdl.Show*FileDialog` and post-save
-  actions to the next loop iteration.
+- **Dialogs**: `g_pending_open` / `_open_folder` / `_save_as` /
+  `_quit_after_save` / `_raise` — flags that defer `sdl.Show*Dialog`
+  and post-save actions to the next loop iteration.
 
 ## Layout
 
@@ -177,6 +231,12 @@ sentinel that forces full rebuild on next read.
   bottom of the editor zone").
 - `g_terminal_height_ratio` is a fraction of `screen_h - status_h`
   (stable across resize).
+- Sidebar visible: a left strip (`g_sidebar_width` logical px + 4-px
+  divider) is carved from the editor zone only — `compute_layout` shifts
+  the panes to start at its right edge; the status bar and terminal stay
+  full-width below it. `sidebar_rect` spans `TITLEBAR_H..editor_bottom`.
+  Pane ratios then span the *editor region* (right of the sidebar), so
+  `move_divider` is fed editor-relative x + width, not screen-absolute.
 - macOS reserves `TITLEBAR_H` at every pane's `text_y`; `draw_titlebar`
   paints a strip across `[0, TITLEBAR_H]` with the active filename
   centered. `TITLEBAR_H = 0` elsewhere makes the math identical to the

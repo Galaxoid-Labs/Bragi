@@ -1046,4 +1046,20 @@ vim_execute_command :: proc(ed: ^Editor, raw: string) {
 			ed.language = lang
 		}
 	}
+
+	// :cd <path> / :workspace <path> — set the workspace root.
+	{
+		arg_start := -1
+		if      strings.has_prefix(cmd, "workspace ") do arg_start = 10
+		else if strings.has_prefix(cmd, "ws ")        do arg_start = 3
+		else if strings.has_prefix(cmd, "cd ")        do arg_start = 3
+		if arg_start >= 0 {
+			arg := strings.trim_space(cmd[arg_start:])
+			if set_workspace(arg) {
+				set_status_message(fmt.tprintf("workspace: %s", g_workspace_root), .Info)
+			} else {
+				set_status_message(fmt.tprintf("E: not a directory: %s", arg), .Error)
+			}
+		}
+	}
 }

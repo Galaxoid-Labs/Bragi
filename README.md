@@ -11,8 +11,8 @@ A small, GPU-accelerated, vim-flavoured text/code editor written in
   expect: `dw`, `c$`, `5dd`, `>>`, `yy`+`p`, `.`, `%`, `zz`, `Ctrl+D`,
   `Ctrl+U`, `gg` / `G`, etc.
 - **Side-by-side panes** — drag any file onto the window or hit
-  Cmd/Ctrl+F to open a directory navigator. Each new file opens in a
-  resizable column. `Ctrl+W h` / `Ctrl+W l` (or `Cmd+[` / `Cmd+]`)
+  Cmd/Ctrl+F to fuzzy-find a file in your project. Each new file opens
+  in a resizable column. `Ctrl+W h` / `Ctrl+W l` (or `Cmd+[` / `Cmd+]`)
   switches focus; drag the boundary to resize.
 - **Embedded terminal** — `Cmd+J` / `Ctrl+J` (or `:term`) toggles a
   bottom strip running your shell against a real PTY. libvterm drives
@@ -21,10 +21,20 @@ A small, GPU-accelerated, vim-flavoured text/code editor written in
   scrollback (Ghostty-style); `exit` closes the pane. Powerline / dev
   glyphs render correctly via an embedded Nerd Font variant of Fira
   Code. Works on macOS, Linux, and Windows (ConPTY).
-- **Fuzzy directory navigator** — Cmd+F (macOS) / Ctrl+F (Linux,
-  Windows) opens a centered modal at your home directory. Type to
-  filter, Enter to dive into a folder or open a file, Backspace or `..`
-  to go up. Mouse double-click works too.
+- **Fuzzy file finder** — Cmd+F (macOS) / Ctrl+F (Linux, Windows) opens
+  a centered modal that fuzzy-searches every file in your project
+  (powered by [fff](https://github.com/dmtrKovalenko/fff)). The project
+  root is the workspace (below), else the git repo containing the file
+  you're editing — `.gitignore` is respected, so build dirs and
+  `node_modules` stay out. Type to filter, Up/Down to move, Enter to
+  open. Mouse double-click works too.
+- **Workspace + file-tree sidebar** — open a folder (Cmd/Ctrl+Shift+O,
+  `bragi <dir>`, `:cd <path>`, or drop a folder on the window) to set a
+  project root. Cmd/Ctrl+E toggles a left file-tree sidebar (NERDTree
+  style): single-click a folder to expand, double-click a file to open;
+  navigate with `j/k/h/l` + Enter when focused; `i` toggles hidden
+  dotfiles. Folder/file icons come from the embedded Nerd Font. The
+  divider resizes it. The workspace also becomes the finder's root.
 - **Fast** — piece-table buffer (far cursor jumps don't memmove),
   mmap-backed file open on POSIX (kernel lazy-pages the file as you
   scroll), incremental line-index + per-line column-width caches.
@@ -54,7 +64,13 @@ A small, GPU-accelerated, vim-flavoured text/code editor written in
   message boxes (mixed-EOL warning, unsaved-changes prompt), context
   menu on right-click. No browser embedded, no Electron, no Node.
 - **LCD subpixel text rendering** through SDL3_ttf + FreeType. Embedded
-  Fira Code by default; override with any system font via config.
+  Fira Code by default; override with any system font via config. The
+  editor (code) area and the UI chrome can use **separate fonts**
+  (`[font]` vs `[editor_font]`).
+- **Editor zoom** — `Cmd`/`Ctrl` `=` / `-` resize the editor font live
+  (`Cmd`/`Ctrl` `0` resets). Only the document + line numbers scale; the
+  status bar, finder, and menus stay put. Per-session (resets on
+  restart; set a permanent size in `[editor_font]`).
 - **Themeable** — every visible color (chrome + syntax) lives in one
   `Theme` struct loaded from `config.ini`.
 
@@ -244,7 +260,9 @@ buffer pre-populated with the commented default template, and saving
 writes it to the right path. INI mode is auto-detected, so colors,
 sections, and hex values are highlighted as you edit.
 
-The template covers `[font]`, `[editor]`, and `[theme]`. Every visible
+The template covers `[font]`, `[editor_font]`, `[editor]`, and
+`[theme]`. `[editor_font]` overrides the code area's font independently
+of the UI (`[font]`); blank keys inherit `[font]`. Every visible
 color in the editor — syntax token colors, gutter, status bar,
 selection, search, scrollbar — is themeable via `[theme]`.
 
@@ -288,9 +306,12 @@ n N                 next / prev match (wraps)
 :config             open / create the user config.ini
 :h  :help           open the categorised cheat sheet
 
-Cmd/Ctrl+F          directory navigator
+Cmd/Ctrl+F          fuzzy file finder
+Cmd/Ctrl+E          toggle the file-tree sidebar
 Cmd/Ctrl+J          toggle the terminal pane
-Cmd+O / S / Shift+S open / save / save as
+Cmd/Ctrl + = / -    zoom editor font in / out  (Cmd/Ctrl 0 resets)
+Cmd+O / Shift+O     open file / open folder (workspace)
+Cmd+S / Shift+S     save / save as
 Cmd+Z / Shift+Z     undo / redo
 Cmd+W               close pane (last pane → quit on macOS)
 Ctrl+W h / l / c / q   focus / close pane

@@ -11,9 +11,10 @@ import ttf "vendor:sdl3/ttf"
 // User configuration. Defaults match the previously-hardcoded constants;
 // `config_load` parses an INI file and overrides any fields it finds.
 Config :: struct {
-	font:   Font_Config,
-	editor: Editor_Config,
-	theme:  Theme,
+	font:        Font_Config, // UI / chrome font: status bar, finder, help, menus
+	editor_font: Font_Config, // editor document + gutter font; Cmd +/-/0 zoom its size at runtime
+	editor:      Editor_Config,
+	theme:       Theme,
 }
 
 Font_Config :: struct {
@@ -45,12 +46,21 @@ DEFAULT_CONFIG_INI :: `# Bragi configuration. Save this file to
 # Restart Bragi to pick up changes.
 
 [font]
+# The UI / chrome font: status bar, finder, help screen, menus.
 # Path to a TTF / OTF font file. Empty → use the embedded Fira Code.
 path    =
 # Logical font size in pixels.
 size    = 14
 # Hinting mode: normal / light / light_subpixel / mono / none.
 hinting = normal
+
+[editor_font]
+# The editor (code) area's own font, independent of the UI chrome above.
+# Each key inherits its [font] value unless you uncomment and set it
+# here. Cmd + / Cmd - zoom this font live; Cmd 0 resets to this size.
+# path    =
+# size    = 14
+# hinting = normal
 
 [editor]
 # Tab width in columns (also drives soft-tab insert width).
@@ -103,6 +113,13 @@ DEFAULT_CONFIG :: Config{
 		// Empty path means "use the embedded FiraCode TTF in the binary"
 		// (see FIRA_CODE_DATA in main.odin). Set in user config to
 		// override with any system font file.
+		path    = "",
+		size    = 14,
+		hinting = .NORMAL,
+	},
+	// Editor font defaults to the same as the UI font; config_load
+	// re-seeds it from [font] then applies any [editor_font] overrides.
+	editor_font = {
 		path    = "",
 		size    = 14,
 		hinting = .NORMAL,
@@ -169,6 +186,15 @@ config_load :: proc() {
 		load_string(section, "path", &g_config.font.path)
 		load_f32(section,    "size", &g_config.font.size)
 		if v, hv := section["hinting"]; hv do g_config.font.hinting = parse_hinting(v)
+	}
+
+	// Editor font inherits the (possibly just-parsed) UI font, then
+	// [editor_font] overrides any of path / size / hinting it specifies.
+	g_config.editor_font = g_config.font
+	if section, has := m["editor_font"]; has {
+		load_string(section, "path", &g_config.editor_font.path)
+		load_f32(section,    "size", &g_config.editor_font.size)
+		if v, hv := section["hinting"]; hv do g_config.editor_font.hinting = parse_hinting(v)
 	}
 
 	if section, has := m["editor"]; has {
