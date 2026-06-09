@@ -33,6 +33,11 @@ set_workspace :: proc(path: string) -> bool {
 	if len(g_workspace_root) > 0 do delete(g_workspace_root)
 	g_workspace_root = strings.clone(resolved)
 
+	// Opening a folder reveals + focuses the file tree (any entry point:
+	// dialog, CLI, :cd, drop). Set before the rebuild below so it runs.
+	g_sidebar_visible = true
+	g_sidebar_active  = true
+
 	// Re-point the finder's index now so the next Cmd/Ctrl+F is instant,
 	// and refresh the file tree for the new root.
 	finder_set_workspace_root(g_workspace_root)

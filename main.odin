@@ -2535,11 +2535,9 @@ main :: proc() {
 	if len(os.args) >= 2 {
 		path := os.args[1]
 		if os.is_dir(path) {
-			// `bragi <dir>` opens the directory as the workspace and drops
-			// you straight into the file-tree sidebar (focused). The
+			// `bragi <dir>` opens the directory as the workspace; that
+			// reveals + focuses the file tree (see set_workspace). The
 			// welcome screen shows in the editor until you pick a file.
-			g_sidebar_visible = true
-			g_sidebar_active  = true
 			set_workspace(path)
 		} else if !editor_load_file(active_editor(), path) {
 			fmt.eprintfln("could not open %s; starting with welcome screen", path)

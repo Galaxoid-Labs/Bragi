@@ -41,8 +41,8 @@ A small, GPU-accelerated, vim-flavoured text/code editor written in
   Open is near-instant regardless of file size; edits stay snappy on
   multi-hundred-MB files.
 - **Syntax highlighting** for **Odin**, **C**, **C++**, **Go**, **Jai**,
-  **Swift**, **Bash** (and `.sh` / `.zsh`), **INI** (sections, keys,
-  hex colors, booleans), plus a **Generic** fallback (strings /
+  **Swift**, **Rust**, **Bash** (and `.sh` / `.zsh`), **INI** (sections,
+  keys, hex colors, booleans), plus a **Generic** fallback (strings /
   numbers / `//` and `/* */` comments) for everything else. Detection
   by file extension; switch manually with `:syntax <name>`.
 - **Search** — `/foo` / `?foo` (literal, no regex), `n` / `N` to page,

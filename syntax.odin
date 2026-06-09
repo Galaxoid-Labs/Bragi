@@ -36,6 +36,7 @@ Language :: enum {
 	Go,
 	Jai,
 	Swift,
+	Rust,
 	Ini,
 	Bash,
 }
@@ -218,6 +219,30 @@ SWIFT_TYPES := []string{
 @(private="file")
 SWIFT_CONSTANTS := []string{ "true", "false", "nil" }
 
+@(private="file")
+RUST_KEYWORDS := []string{
+	"as", "async", "await", "break", "const", "continue", "crate", "dyn",
+	"else", "enum", "extern", "fn", "for", "if", "impl", "in", "let",
+	"loop", "match", "mod", "move", "mut", "pub", "ref", "return", "self",
+	"static", "struct", "super", "trait", "type", "union", "unsafe", "use",
+	"where", "while", "yield",
+}
+@(private="file")
+RUST_TYPES := []string{
+	// Primitives (lowercase — must be listed; CamelCase types are caught
+	// by capitalized_types).
+	"bool", "char", "str",
+	"i8", "i16", "i32", "i64", "i128", "isize",
+	"u8", "u16", "u32", "u64", "u128", "usize",
+	"f32", "f64",
+	// Ubiquitous std types (also CamelCase, but listed so they highlight
+	// even where the capitalized heuristic is off).
+	"String", "Vec", "Option", "Result", "Box", "Rc", "Arc",
+	"Cell", "RefCell", "HashMap", "HashSet", "BTreeMap", "BTreeSet", "Self",
+}
+@(private="file")
+RUST_CONSTANTS := []string{ "true", "false", "None", "Some", "Ok", "Err" }
+
 // ──────────────────────────────────────────────────────────────────
 // Bash / sh / zsh
 // ──────────────────────────────────────────────────────────────────
@@ -362,6 +387,26 @@ g_specs := [Language]Language_Spec{
 		single_quote_char   = false,
 		directive_prefix    = '@', // attributes: @objc, @MainActor, @escaping, …
 		capitalized_types   = true,
+		detect_function_call = true,
+	},
+	.Rust    = Language_Spec{
+		name        = "rust",
+		display_name = "Rust",
+		aliases     = []string{"rs"},
+		extensions  = []string{".rs"},
+		keywords    = RUST_KEYWORDS,
+		types       = RUST_TYPES,
+		constants   = RUST_CONSTANTS,
+		line_comment        = "//",
+		block_open          = "/*",
+		block_close         = "*/",
+		double_quote_string = true,
+		// Lifetimes (`'a`, `&'static`) share the single-quote sigil with
+		// char literals; enabling single_quote_char would make the 'x'
+		// scanner swallow the rest of the line on every lifetime. Char
+		// literals just fall through as default text instead.
+		single_quote_char   = false,
+		capitalized_types    = true,  // Rust types / enum variants are PascalCase
 		detect_function_call = true,
 	},
 	.Ini     = Language_Spec{

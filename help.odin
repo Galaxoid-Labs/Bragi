@@ -134,7 +134,7 @@ HELP_FILES := [?]Help_Entry{
 	{":wq",           "save + close"},
 	{":q!",           "force-close pane (last file → welcome; again → quit)"},
 	{":42",           "jump to line 42"},
-	{":syntax X",     "switch tokenizer  (none generic odin c cpp go jai swift bash ini)"},
+	{":syntax X",     "switch tokenizer  (none generic odin c cpp go jai swift rust bash ini)"},
 	{":config",       "open / create the user config.ini"},
 	{"",              "Panes"},
 	{"Ctrl+W h / l",  "focus pane left / right"},
