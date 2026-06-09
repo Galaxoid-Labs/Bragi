@@ -272,8 +272,16 @@ sentinel that forces full rebuild on next read.
   Native-dialog callbacks (Cmd+O) can grow `g_editors` synchronously
   from inside SDL's event pump, so the layout `l` we computed at the
   top of the iteration is briefly stale until the next iteration.
-- Ctrl+W is the vim window-prefix. Sets `g_pending_ctrl_w`; the next
-  key is the action (`h` / `l` / `c` / `q` / Esc).
+- Ctrl+W is platform-split (the `case sdl.K_W` in the Cmd/Ctrl block).
+  On **macOS** it's the vim window-prefix: sets `g_pending_ctrl_w`; the
+  next key is the action (`h` / `l` / `c` / `q` / Esc). Cmd+W is the
+  pane close there (via `WINDOW_CLOSE_REQUESTED`). On **Linux / Windows**
+  there's no Cmd key, so Ctrl+W closes the active pane directly
+  (`try_close_active_pane`) — except when the terminal pane has focus,
+  where it's forwarded as the shell's delete-word. Pane focus on those
+  platforms is `Ctrl+[` / `Ctrl+]`. The `MOD` constant (main.odin,
+  `"Cmd"`/`"Ctrl"` by `ODIN_OS`) feeds the help/welcome text so chrome
+  never advertises a key the current OS doesn't use.
 - `SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE = "0"` — without this, Cmd+W
   on macOS fires both `WINDOW_CLOSE_REQUESTED` *and* a cascading
   `QUIT`, which would quit the app right after we closed a pane.

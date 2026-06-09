@@ -124,6 +124,13 @@ theme_color :: proc(theme: ^Theme, kind: Token_Kind) -> sdl.Color {
 
 g_theme: Theme = DEFAULT_THEME
 
+// Label for the platform's primary shortcut modifier, used everywhere we
+// print a chord to the user (welcome screen, help modal). macOS chords use
+// Cmd; Linux / Windows have no Cmd key, so they use Ctrl. The dispatch code
+// accepts either (`cmd_or_ctrl` = GUI | CTRL) — this only affects the text we
+// show so the help never advertises a key the current OS doesn't use.
+MOD :: "Cmd" when ODIN_OS == .Darwin else "Ctrl"
+
 // Lines drawn centered on a fresh / blank-slate pane (see is_welcome_pane).
 // `key   description` rows split on any 3+ space run; the key half is drawn
 // in the help-screen blue, the description half is dim. Empty strings are
@@ -134,7 +141,8 @@ WELCOME_LINES :: [?]string{
 	"a small modal editor",
 	"",
 	"i              start editing",
-	"Cmd/Ctrl+F     open file",
+	MOD + "+F          open file",
+	MOD + "+Shift+O    open folder (workspace)",
 	":h             show help",
 	":q             quit",
 }
@@ -775,10 +783,25 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 		case sdl.K_X: clipboard_cut(ed)
 		case sdl.K_V: clipboard_paste(ed)
 		case sdl.K_W:
-			// Ctrl+W is vim's window-prefix — wait for the follow-up
-			// key (h / l for focus, c / q for close). Cmd+W is left
-			// alone so macOS's standard close-window behavior fires.
-			if mods & sdl.KMOD_CTRL != {} do g_pending_ctrl_w = true
+			when ODIN_OS == .Darwin {
+				// macOS: Cmd+W closes the pane via WINDOW_CLOSE_REQUESTED
+				// (Cocoa synthesizes that event). Ctrl+W is left as vim's
+				// window-prefix — wait for the follow-up key (h / l focus,
+				// c / q close).
+				if mods & sdl.KMOD_CTRL != {} do g_pending_ctrl_w = true
+			} else {
+				// Linux / Windows have no Cmd key, and there's the X11/Win
+				// muscle memory that Ctrl+W closes the current tab. So make
+				// Ctrl+W close the active pane outright. Pane *focus* lives
+				// on Ctrl+[ / Ctrl+] (handled below). One exception: when the
+				// terminal owns focus, Ctrl+W is the shell's delete-word —
+				// forward it to the terminal instead of eating the pane.
+				if g_terminal_active && g_terminal_visible {
+					if handle_terminal_keydown(ev) do g_swallow_text_input = true
+				} else {
+					try_close_active_pane()
+				}
+			}
 		case sdl.K_D:
 			// Ctrl+D — half-page scroll down (vim). Cmd+D is unused
 			// here; only fire on Ctrl-only and only in Normal /
@@ -793,10 +816,13 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 				vim_half_page(ed, -1)
 			}
 		case sdl.K_LEFTBRACKET:
-			// Cmd+[ → focus left pane (single-chord alternative to Ctrl+W h).
+			// Cmd+[ (macOS) / Ctrl+[ (Linux, Windows) → focus left pane.
+			// On macOS this is the single-chord alternative to Ctrl+W h; on
+			// Linux / Windows it's the primary focus key, since Ctrl+W there
+			// closes the pane instead of acting as the vim window-prefix.
 			if g_active_idx > 0 do g_active_idx -= 1
 		case sdl.K_RIGHTBRACKET:
-			// Cmd+] → focus right pane.
+			// Cmd+] / Ctrl+] → focus right pane.
 			if g_active_idx < len(g_editors) - 1 do g_active_idx += 1
 		case sdl.K_O:
 			// Cmd/Ctrl+Shift+O opens a *folder* as the workspace;

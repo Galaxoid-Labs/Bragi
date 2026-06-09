@@ -99,7 +99,7 @@ HELP_EDIT := [?]Help_Entry{
 	{"D C Y",   "d$ / c$ / y$"},
 	{"x X",     "delete char forward / backward"},
 	{"p P",     "paste after / before"},
-	{"u",       "undo  ·  Cmd/Ctrl+Shift+Z to redo"},
+	{"u",       "undo  ·  " + MOD + "+Shift+Z to redo"},
 	{".",       "repeat last change (insert run, op+motion, x, p, …)"},
 	{">> <<",   "indent / outdent current line"},
 	{"",        "Visual mode (after v / V)"},
@@ -123,30 +123,57 @@ HELP_SEARCH := [?]Help_Entry{
 	{":%s/p/r/", "substitute across the whole buffer"},
 }
 
-@(private="file")
-HELP_FILES := [?]Help_Entry{
-	{"Cmd/Ctrl+F",    "fuzzy file finder (type to search the project · Up/Down · Enter opens)"},
-	{"Cmd/Ctrl+E",    "toggle file-tree sidebar (j/k/h/l · Enter opens · i = hidden files)"},
-	{"Cmd/Ctrl+Shift+O", "open a folder as the workspace (also :cd <path> · drop a folder)"},
-	{"Cmd/Ctrl +/-",  "zoom editor font in / out  (Cmd/Ctrl 0 resets)"},
-	{":w",            "save"},
-	{":q",            "close pane (last file → welcome screen)"},
-	{":wq",           "save + close"},
-	{":q!",           "force-close pane (last file → welcome; again → quit)"},
-	{":42",           "jump to line 42"},
-	{":syntax X",     "switch tokenizer  (none generic odin c cpp go jai swift rust bash ini)"},
-	{":config",       "open / create the user config.ini"},
-	{"",              "Panes"},
-	{"Ctrl+W h / l",  "focus pane left / right"},
-	{"Ctrl+W c / q",  "close active pane"},
-	{"Cmd+[ / Cmd+]", "focus prev / next pane (single-chord)"},
-	{"drag border",   "resize adjacent panes"},
-	{"click pane",    "focus that pane"},
+// The file-operation rows differ only by the modifier label (MOD), but the
+// "Panes" rows diverge in *structure*: macOS keeps vim's Ctrl+W window-prefix
+// alongside the OS-level Cmd+W close, while Linux / Windows fold the close onto
+// a plain Ctrl+W and switch focus with Ctrl+[ / Ctrl+]. A `when` element can't
+// sit inside an array literal, so the whole table is selected per-platform.
+when ODIN_OS == .Darwin {
+	@(private="file")
+	HELP_FILES := [?]Help_Entry{
+		{MOD + "+F",       "fuzzy file finder (type to search the project · Up/Down · Enter opens)"},
+		{MOD + "+E",       "toggle file-tree sidebar (j/k/h/l · Enter opens · i = hidden files)"},
+		{MOD + "+Shift+O", "open a folder as the workspace (also :cd <path> · drop a folder)"},
+		{MOD + " +/-",     "zoom editor font in / out  (" + MOD + " 0 resets)"},
+		{":w",            "save"},
+		{":q",            "close pane (last file → welcome screen)"},
+		{":wq",           "save + close"},
+		{":q!",           "force-close pane (last file → welcome; again → quit)"},
+		{":42",           "jump to line 42"},
+		{":syntax X",     "switch tokenizer  (none generic odin c cpp go jai swift rust bash ini)"},
+		{":config",       "open / create the user config.ini"},
+		{"",              "Panes"},
+		{"Ctrl+W h / l",  "focus pane left / right"},
+		{"Ctrl+W c / q",  "close active pane"},
+		{"Cmd+[ / Cmd+]", "focus prev / next pane (single-chord)"},
+		{"drag border",   "resize adjacent panes"},
+		{"click pane",    "focus that pane"},
+	}
+} else {
+	@(private="file")
+	HELP_FILES := [?]Help_Entry{
+		{MOD + "+F",       "fuzzy file finder (type to search the project · Up/Down · Enter opens)"},
+		{MOD + "+E",       "toggle file-tree sidebar (j/k/h/l · Enter opens · i = hidden files)"},
+		{MOD + "+Shift+O", "open a folder as the workspace (also :cd <path> · drop a folder)"},
+		{MOD + " +/-",     "zoom editor font in / out  (" + MOD + " 0 resets)"},
+		{":w",            "save"},
+		{":q",            "close pane (last file → welcome screen)"},
+		{":wq",           "save + close"},
+		{":q!",           "force-close pane (last file → welcome; again → quit)"},
+		{":42",           "jump to line 42"},
+		{":syntax X",     "switch tokenizer  (none generic odin c cpp go jai swift rust bash ini)"},
+		{":config",       "open / create the user config.ini"},
+		{"",                "Panes"},
+		{"Ctrl+W",          "close active pane"},
+		{"Ctrl+[ / Ctrl+]", "focus prev / next pane"},
+		{"drag border",     "resize adjacent panes"},
+		{"click pane",      "focus that pane"},
+	}
 }
 
 @(private="file")
 HELP_TERMINAL := [?]Help_Entry{
-	{"Cmd/Ctrl+J",   "toggle the bottom terminal pane"},
+	{MOD + "+J",     "toggle the bottom terminal pane"},
 	{":term",        "open / focus the terminal"},
 	{":termclose",   "close the terminal pane"},
 	{"wheel",        "over the terminal: scroll the scrollback (4096-line ring)"},
@@ -158,18 +185,18 @@ HELP_TERMINAL := [?]Help_Entry{
 
 @(private="file")
 HELP_CMD := [?]Help_Entry{
-	{"Cmd+O",         "open file (new pane unless current is blank)"},
-	{"Cmd+S",         "save  (falls through to Save As if untitled)"},
-	{"Cmd+Shift+S",   "save as"},
-	{"Cmd+Z",         "undo"},
-	{"Cmd+Shift+Z",   "redo"},
-	{"Cmd+A",         "select all"},
-	{"Cmd+C",         "copy"},
-	{"Cmd+X",         "cut"},
-	{"Cmd+V",         "paste"},
-	{"Cmd+W",         "close pane (last pane on macOS quits)"},
-	{"Cmd+[ / Cmd+]", "focus prev / next pane"},
-	{"Cmd+Q",         "quit (chains the unsaved-changes prompt)"},
+	{MOD + "+O",        "open file (new pane unless current is blank)"},
+	{MOD + "+S",        "save  (falls through to Save As if untitled)"},
+	{MOD + "+Shift+S",  "save as"},
+	{MOD + "+Z",        "undo"},
+	{MOD + "+Shift+Z",  "redo"},
+	{MOD + "+A",        "select all"},
+	{MOD + "+C",        "copy"},
+	{MOD + "+X",        "cut"},
+	{MOD + "+V",        "paste"},
+	{MOD + "+W",        "close pane (welcome screen once the last file is gone)"},
+	{MOD + "+[ / " + MOD + "+]", "focus prev / next pane"},
+	{MOD + "+Q",        "quit (chains the unsaved-changes prompt)"},
 }
 
 @(private="file")
@@ -198,7 +225,7 @@ HELP_CATEGORIES := [?]Help_Category{
 	{"Search",   HELP_SEARCH[:]},
 	{"Files",    HELP_FILES[:]},
 	{"Terminal", HELP_TERMINAL[:]},
-	{"Cmd",      HELP_CMD[:]},
+	{MOD,        HELP_CMD[:]},
 	{"About",    HELP_ABOUT[:]},
 }
 

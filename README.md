@@ -50,8 +50,11 @@ A small, GPU-accelerated, vim-flavoured text/code editor written in
   every visible occurrence, `\c` / `\C` per-pattern case overrides.
 - **Substitute** — `:s/foo/bar/[gi I]` and `:%s/foo/bar/[gi I]`. One
   undo group regardless of how many replacements happened.
-- **Vim window-prefix** with `Ctrl+W` — `h l` for focus, `c q` to
-  close, `Esc` to cancel.
+- **Pane management** — on macOS, `Ctrl+W` is vim's window-prefix
+  (`h l` focus, `c q` close, `Esc` cancel) and `Cmd+W` closes the
+  active pane. On Linux / Windows there's no Cmd key, so `Ctrl+W`
+  closes the active pane directly (X11/Windows tab-close muscle
+  memory) and `Ctrl+[` / `Ctrl+]` switch focus.
 - **Help screen** with `:h` or `:help` — modal cheat sheet, eight
   categorised tabs (number keys 1-8 to jump, `h`/`l` to step).
 - **Live file-change detection** — open files are watched in
@@ -317,9 +320,9 @@ Cmd/Ctrl + = / -    zoom editor font in / out  (Cmd/Ctrl 0 resets)
 Cmd+O / Shift+O     open file / open folder (workspace)
 Cmd+S / Shift+S     save / save as
 Cmd+Z / Shift+Z     undo / redo
-Cmd+W               close pane (last pane → quit on macOS)
-Ctrl+W h / l / c / q   focus / close pane
-Cmd+[ / Cmd+]       focus prev / next pane (single-chord)
+Cmd/Ctrl+W          close pane (macOS: Cmd+W · Linux/Win: Ctrl+W)
+Ctrl+W h/l/c/q      macOS only: vim window-prefix (focus / close)
+Cmd/Ctrl+[ / ]      focus prev / next pane (single-chord)
 drag pane border    resize adjacent panes
 drag term divider   resize the terminal strip
 wheel over term     scroll the terminal scrollback
