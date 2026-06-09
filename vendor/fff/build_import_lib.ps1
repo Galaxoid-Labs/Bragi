@@ -1,4 +1,4 @@
-# build_import_lib.ps1 — generate an MSVC import library (fff_c.lib) for
+﻿# build_import_lib.ps1 — generate an MSVC import library (fff_c.lib) for
 # the vendored fff DLL so Odin can link `system`-style on Windows.
 #
 # The fff release ships only `c-lib-*-pc-windows-msvc.dll` (vendored here
