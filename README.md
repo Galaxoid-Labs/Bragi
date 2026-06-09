@@ -117,6 +117,10 @@ the unoptimized debug build.
   compilers.
 - **SDL3** + **SDL3_ttf** at runtime.
 - **libvterm** for the embedded terminal pane.
+- **[fff](https://github.com/dmtrKovalenko/fff)** powers the fuzzy file
+  finder. No system install needed — the prebuilt `c-lib-*` libraries
+  are vendored under [`vendor/fff/`](vendor/fff/) (one per target) and
+  linked directly; see that directory's README for refresh steps.
 
 The two embedded TTFs (`FiraCode-Regular.ttf` and
 `FiraCodeNerdFont-Regular.ttf`) are checked in and `#load`-ed at
@@ -344,8 +348,14 @@ is solid for daily use, including on multi-hundred-MB files
 Bragi is **GPL-3.0-only** — see [`LICENSE`](LICENSE) for the full text.
 Copyright © 2026 Galaxoid Labs.
 
-Bundled third-party software (libvterm, SDL3, SDL3_ttf, Fira Code,
-Fira Code Nerd Font, Odin runtime) is distributed under permissive
-licenses; the verbatim notices live in [`licenses/`](licenses/) and
+Bundled third-party software (libvterm, SDL3, SDL3_ttf,
+[fff](https://github.com/dmtrKovalenko/fff), Fira Code, Fira Code Nerd
+Font, Odin runtime) is distributed under permissive licenses; the
+verbatim notices live in [`licenses/`](licenses/) and
 [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md), and ride along
 with every distribution Bragi ships.
+
+The fuzzy file finder is powered by **[fff](https://github.com/dmtrKovalenko/fff)**
+by Dmitriy Kovalenko (MIT) — its prebuilt libraries are vendored under
+[`vendor/fff/`](vendor/fff/) and bundled into every release. Thanks to
+the fff project for a fast, accurate file-search engine.

@@ -122,6 +122,7 @@ foreign fff_lib {
 	// directly). `relative_path` is rooted at the instance's base_path.
 	fff_search_result_get_count         :: proc(r: ^FffSearchResult) -> u32 ---
 	fff_search_result_get_total_matched :: proc(r: ^FffSearchResult) -> u32 ---
+	fff_search_result_get_total_files   :: proc(r: ^FffSearchResult) -> u32 ---
 	fff_search_result_get_item          :: proc(r: ^FffSearchResult, index: u32) -> ^FffFileItem ---
 	fff_file_item_get_relative_path     :: proc(item: ^FffFileItem) -> cstring ---
 	fff_file_item_get_file_name         :: proc(item: ^FffFileItem) -> cstring ---

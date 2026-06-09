@@ -360,6 +360,12 @@ draw_sidebar :: proc(l: Layout) {
 	max_scroll := max(0, len(g_sidebar_entries) - view_rows)
 	g_sidebar_scroll = clamp(g_sidebar_scroll, 0, max_scroll)
 
+	// When the scrollbar shows, the selection highlight stops short of it
+	// so the row doesn't bleed through under the (flush-to-edge) track.
+	sb_w: f32 = 6
+	sb_visible := len(g_sidebar_entries) > view_rows && view_rows > 0
+	hl_w := sb_visible ? r.w - sb_w : r.w
+
 	clip := sdl.Rect{i32(r.x), i32(list_y), i32(r.w), i32(list_h)}
 	sdl.SetRenderClipRect(g_renderer, &clip)
 
@@ -371,7 +377,7 @@ draw_sidebar :: proc(l: Layout) {
 		row += 1
 		bg := MENU_BG_COLOR
 		if i == g_sidebar_selected {
-			fill_rect({r.x, ry, r.w, row_h}, MENU_HOVER_COLOR)
+			fill_rect({r.x, ry, hl_w, row_h}, MENU_HOVER_COLOR)
 			bg = MENU_HOVER_COLOR
 		}
 		x := r.x + SIDEBAR_PAD + f32(e.depth) * SIDEBAR_INDENT
@@ -396,10 +402,11 @@ draw_sidebar :: proc(l: Layout) {
 
 	sdl.SetRenderClipRect(g_renderer, nil)
 
-	// Scrollbar (visual; the wheel does the scrolling).
-	if len(g_sidebar_entries) > view_rows && view_rows > 0 {
-		track_w: f32 = 6
-		track_x := r.x + r.w - track_w - 2
+	// Scrollbar (visual; the wheel does the scrolling). Flush to the right
+	// edge so no highlighted-row sliver shows beside it.
+	if sb_visible {
+		track_w := sb_w
+		track_x := r.x + r.w - track_w
 		track_h := f32(view_rows) * row_h
 		fill_rect({track_x, list_y, track_w, track_h}, g_theme.sb_track_color)
 		total := f32(len(g_sidebar_entries))

@@ -2194,6 +2194,11 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 			// care about. Re-stat every open file, reconcile, surface.
 			editor_check_external_changes()
 		}
+		if ev.user.code == FFF_EVENT {
+			// fff index build thread: instance ready / scan progressed.
+			// Re-run the finder search so new files appear live.
+			finder_on_fff_event()
+		}
 		return
 	case .QUIT:
 		if try_quit_all() do running^ = false
@@ -2208,8 +2213,11 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		handle_key_down(active_editor(), ev.key)
 	case .TEXT_INPUT:
 		// Sidebar focus consumes typing (its nav keys arrive via KEY_DOWN);
-		// don't let the runes fall through into the buffer.
-		if g_sidebar_active do return
+		// don't let the runes fall through into the buffer. The finder is a
+		// modal that owns text input, so it wins over sidebar focus — its
+		// search box must keep working even when the sidebar is focused
+		// (e.g. you opened a folder, then hit Cmd+F).
+		if g_sidebar_active && !g_finder_visible do return
 		if !cmd_or_ctrl(sdl.GetModState()) do handle_text_input(active_editor(), ev.text.text)
 	case .MOUSE_BUTTON_DOWN:
 		// Finder modal swallows clicks; outside-click dismisses,

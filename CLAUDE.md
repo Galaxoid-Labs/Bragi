@@ -79,10 +79,21 @@ Both have identical advance width so cell math is unchanged.
   by fff. Flat recursive search (relative paths), NOT a directory
   browser. Picks an index root from the active file — git root (walk up
   to nearest `.git`), else the file's dir, else cwd when no file is
-  open. `is_indexable_root` refuses `$HOME` / `/` (fff itself errors on
-  home unless `enable_home_dir_scanning`). The fff instance is created
-  lazily on first open, kept alive with a live watcher, and re-pointed
-  via `fff_restart_index` when the root changes.
+  open (workspace root wins over all of this when set). `is_indexable_root`
+  refuses `$HOME` / `/` (fff itself errors on home unless
+  `enable_home_dir_scanning`). **ALL fff calls run on a background worker
+  thread** (`fff_worker`) — both `fff_create_instance_with` (whose scan
+  freezes the UI on a big repo) AND every `fff_search` (which blocks while
+  the index is still scanning). The main thread never calls fff: it posts
+  a query into `g_fff_req_*` and signals `g_fff_sem`; the worker searches
+  and publishes `g_fff_results` + status under `g_fff_mutex`, then pushes
+  `FFF_EVENT`. The main loop's `FFF_EVENT` handler (`finder_on_fff_event`)
+  copies results into `g_finder_results` and renders. The worker re-runs
+  the search on a ~120 ms timeout while `fff_is_scanning`, so results
+  stream in live and the "indexing… N files" status updates — without ever
+  blocking input. A root change / shutdown tears the worker down
+  (`fff_teardown`: set quit, signal sem, `WaitThread`; the worker frees the
+  instance + results on exit).
 - **`fff.odin`** — Foreign bindings for the fff C library
   (`vendor/fff/fff.h`). Subset: instance lifecycle, `fff_search` +
   result accessors, frees. Links the vendored per-arch
