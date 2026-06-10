@@ -242,6 +242,18 @@ lsp_dir_of :: proc(path: string) -> string {
 	return ""
 }
 
+// Directory portion INCLUDING the trailing separator, separator-agnostic
+// (handles '/' and '\\' so Windows binary paths work too). "" if there's no
+// separator (a bare PATH-resolved name). Matches the `base` convention used by
+// lsp_vendored_path — caller appends a sibling name straight onto it.
+@(private="file")
+lsp_dir_with_sep :: proc(path: string) -> string {
+	for i := len(path) - 1; i >= 0; i -= 1 {
+		if path[i] == '/' || path[i] == '\\' do return path[:i + 1]
+	}
+	return ""
+}
+
 @(private="file")
 lsp_client_start :: proc(lang: Language, root: string) -> ^LSP_Client {
 	bin, ok := lsp_resolve_binary(lang)
@@ -259,6 +271,32 @@ lsp_client_start :: proc(lang: Language, root: string) -> ^LSP_Client {
 		// rich hover.
 		if len(g_config.lsp.jai_compiler) > 0 {
 			append(&env, fmt.tprintf("JAI_COMPILER=%s", g_config.lsp.jai_compiler))
+		}
+	}
+
+	if lang == .Odin {
+		// ols resolves Odin's `builtin` package (len/make/append, intrinsics,
+		// core:/base:) from a `builtin` folder. It probes next to its own binary
+		// by default, but a packaged install doesn't always lay it out that way —
+		// so point it straight at the folder we ship. Probe the layouts our
+		// packaging produces and use the first that exists:
+		//   - next to the ols binary: dev (vendor/odin-lsp/builtin), the macOS
+		//     .app (Contents/MacOS/builtin), and Windows (beside ols.exe).
+		//   - Linux: ols lands in /usr/bin but multi-file blobs go in the private
+		//     libdir, so builtin ships at /usr/lib/bragi/builtin (sibling of fff).
+		// Skipped entirely when ols came off PATH (no dir to anchor on) or no
+		// candidate exists — ols then falls back to its own next-to-binary probe.
+		if dir := lsp_dir_with_sep(bin); len(dir) > 0 {
+			candidates := [?]string{
+				fmt.tprintf("%sbuiltin", dir),
+				fmt.tprintf("%s../lib/bragi/builtin", dir), // Linux packaged libdir
+			}
+			for cand in candidates {
+				if os.exists(cand) {
+					append(&env, fmt.tprintf("OLS_BUILTIN_FOLDER=%s", cand))
+					break
+				}
+			}
 		}
 	}
 

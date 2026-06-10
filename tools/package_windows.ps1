@@ -246,6 +246,17 @@ if ($StageBundle) {
     if (Test-Path -LiteralPath $ols) {
         Copy-Item -LiteralPath $ols -Destination (Join-Path $StagingDir 'ols.exe') -Force
         Write-Output "→ bundled ols.exe"
+
+        # ols resolves Odin's builtin/intrinsics packages from a `builtin`
+        # folder; ship it beside ols.exe, where lsp_client_start points
+        # OLS_BUILTIN_FOLDER.
+        $olsBuiltin = Join-Path $RepoRoot 'vendor\odin-lsp\builtin'
+        if (Test-Path -LiteralPath $olsBuiltin) {
+            Copy-Item -LiteralPath $olsBuiltin -Destination (Join-Path $StagingDir 'builtin') -Recurse -Force
+            Write-Output "→ bundled ols builtin folder"
+        } else {
+            Write-Output "  warning: ols builtin folder missing ($olsBuiltin) - .odin builtins won't resolve"
+        }
     } else {
         Write-Output "  warning: ols not bundled (missing $ols) - .odin LSP falls back to PATH"
     }
@@ -372,6 +383,8 @@ Source: "$StagingDir\fff_c.dll";   DestDir: "{app}"; Flags: ignoreversion
 ; skipifsourcedoesntexist mirrors the staging step's optional copy.
 Source: "$StagingDir\jai-lsp.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "$StagingDir\ols.exe";     DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+; ols's builtin folder (Odin builtin/intrinsics packages), beside ols.exe.
+Source: "$StagingDir\builtin\*"; DestDir: "{app}\builtin"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
 Source: "$StagingDir\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 ; Third-party license notices for the bundled / linked deps. skipif* keeps
 ; the installer building if a notice is absent in the staging tree.

@@ -188,6 +188,18 @@ if (( STAGE_BUNDLE )); then
 		echo "→ bundling ols ($(basename "$OLS_SRC"))"
 		cp "$OLS_SRC" "$MACOS_DIR/ols"
 		chmod +x "$MACOS_DIR/ols"
+
+		# ols resolves Odin's builtin/intrinsics packages from a `builtin`
+		# folder; ship it beside the binary (Contents/MacOS/builtin), where
+		# lsp_client_start points OLS_BUILTIN_FOLDER. Plain .odin text — no
+		# codesigning needed (unlike the nested Mach-O helpers below).
+		OLS_BUILTIN_SRC="$REPO_ROOT/vendor/odin-lsp/builtin"
+		if [[ -d "$OLS_BUILTIN_SRC" ]]; then
+			echo "→ bundling ols builtin folder"
+			cp -R "$OLS_BUILTIN_SRC" "$MACOS_DIR/builtin"
+		else
+			echo "  warning: ols builtin folder missing ($OLS_BUILTIN_SRC) — .odin builtins won't resolve"
+		fi
 	else
 		echo "  warning: ols not bundled (missing ${OLS_SRC:-no binary for $(uname -m)}) — .odin LSP falls back to PATH"
 	fi

@@ -39,7 +39,11 @@ A small, GPU-accelerated, vim-flavoured text/code editor written in
   mmap-backed file open on POSIX (kernel lazy-pages the file as you
   scroll), incremental line-index + per-line column-width caches.
   Open is near-instant regardless of file size; edits stay snappy on
-  multi-hundred-MB files.
+  multi-hundred-MB files. Live window-resize tracks the cursor in real
+  time on every platform (the redraw path is split: a synchronous
+  event-watch on macOS / Windows, where the OS blocks the main thread
+  during the resize loop; the normal render loop on Linux, where it
+  doesn't — drawing in the watch there would jam the event queue).
 - **Syntax highlighting** for **Odin**, **C**, **C++**, **Go**, **Jai**,
   **Swift**, **Rust**, **GDScript**, **Bash** (and `.sh` / `.zsh`),
   **INI** (sections,
@@ -73,6 +77,13 @@ A small, GPU-accelerated, vim-flavoured text/code editor written in
   reload automatically and preserve the cursor; dirty buffers get a
   `[disk]` marker in the status bar so you can decide when to
   reconcile. `:reload` (`:re`) forces a reload from disk.
+- **Crash-safe saves** — writes go to a sibling temp file that's then
+  atomically `rename`d over the target, so a crash mid-write can never
+  leave a half-written or truncated file. Symlinks are followed (the link
+  is preserved, not clobbered) and the original file's permission bits are
+  kept. On POSIX this is also what keeps the mmap-backed buffer correct: an
+  in-place overwrite of a file you've still got mapped reads back as zeros
+  past the new end on Linux — the rename sidesteps it entirely.
 - **Native everything** — file dialogs (`Cmd+O`, `Cmd+Shift+S`),
   message boxes (mixed-EOL warning, unsaved-changes prompt), context
   menu on right-click. No browser embedded, no Electron, no Node.
@@ -225,8 +236,10 @@ Produces `dist/macos/Bragi.app` and `dist/macos/Bragi-<version>.dmg`.
 The script bundles all Homebrew dylibs into
 `Bragi.app/Contents/Frameworks/` and rewrites the binary's load paths,
 so the resulting `.app` is fully self-contained — no Homebrew on the
-target. Code-signs with the Developer ID set in `[macos]` (or ad-hoc
-otherwise), and notarizes if Apple ID credentials are filled in.
+target. The jai-lsp / ols servers (and ols's `builtin` folder) are copied
+into `Contents/MacOS/` next to the binary. Code-signs with the Developer ID
+set in `[macos]` (or ad-hoc otherwise), and notarizes if Apple ID
+credentials are filled in.
 
 Stage toggles for iteration: `STAGE_BUILD=0`, `STAGE_BUNDLE=0`,
 `STAGE_SIGN=0`, `STAGE_DMG=0`. Required tools all ship with the Xcode
@@ -249,7 +262,10 @@ Must run on a Linux host. Produces:
 Each format auto-skips when its build tool is missing. Both `.deb` and
 `.rpm` declare the distro's SDL3 / SDL3_ttf / libvterm packages as
 runtime deps; bundling `.so` files is fragile across glibc / Wayland
-/ X11 versions and discouraged by both packaging policies.
+/ X11 versions and discouraged by both packaging policies. The jai-lsp /
+ols servers go in `/usr/bin`; ols's `builtin` folder ships in the private
+libdir at `/usr/lib/bragi/builtin` (a multi-file data dir doesn't belong in
+`/usr/bin` under the FHS), and Bragi points `OLS_BUILTIN_FOLDER` there.
 
 The script's footer has copy-pasteable host-setup recipes for Fedora,
 Debian/Ubuntu, Arch, and "macOS-via-Docker." See `tools/aur/README.md`
@@ -268,7 +284,8 @@ Produces:
 
 Generates `bragi.ico` from `icon.png`, compiles a `bragi.rc` resource
 (icon + version-info string table) into `Bragi.exe`, and stages the
-redistributable (exe + 3 DLLs + LICENSE + third-party notices).
+redistributable (exe + 3 DLLs + jai-lsp / ols + ols's `builtin` folder +
+LICENSE + third-party notices).
 Requires **Inno Setup 6** (`winget install JRSoftware.InnoSetup`); the
 script falls back to the zip alone if it's missing. `rc.exe` is
 auto-located off any Visual Studio 2022+ install.
@@ -340,6 +357,14 @@ finds the arch-suffixed binaries under `vendor/jai-lsp/` and
 `vendor/odin-lsp/` automatically. Override the path explicitly if you want
 your own build:
 
+ols also needs its **`builtin` folder** (Odin's `builtin` + `intrinsics`
+packages) to resolve language built-ins — `len`, `make`, `append`, the
+`intrinsics` package, `core:`/`base:` — for completion, hover, and
+go-to-definition. It's vendored under `vendor/odin-lsp/builtin/` and bundled
+into every release, and Bragi points ols at it via `OLS_BUILTIN_FOLDER` at
+launch (probing next to the ols binary, and `/usr/lib/bragi/builtin` on
+packaged Linux). No setup needed.
+
 ```ini
 [lsp]
 jai          = /path/to/jai-lsp        # else: bundled → PATH
@@ -355,9 +380,10 @@ format_on_save = false                 # run the LSP formatter on :w / Cmd+S
   compiler — set `jai_compiler` to your `jai-macos` / `jai-linux` /
   `jai.exe` (it's passed as `JAI_COMPILER`). Completion, signatures, and
   go-to-definition work without it (they use the workspace scan).
-- **Odin** completion/hover/def work out of the box; collection-aware
-  features and diagnostics want an `ols.json` in the workspace root and
-  `odin` on `PATH` (ols's standard config — not bundled).
+- **Odin** completion/hover/def — including built-ins (`len`, `append`,
+  `intrinsics`, …) via the bundled `builtin` folder — work out of the box.
+  Collection-aware features and diagnostics want an `ols.json` in the
+  workspace root and `odin` on `PATH` (ols's standard config — not bundled).
 - **macOS Gatekeeper** SIGKILLs unsigned helper binaries on first spawn.
   Release `.app`s codesign the bundled servers under the app identity; a
   raw downloaded binary needs a one-time allow in System Settings →

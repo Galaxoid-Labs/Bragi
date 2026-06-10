@@ -359,6 +359,54 @@ normalize_crlf_inplace :: proc(buf: []u8) -> int {
 	return j
 }
 
+// Write `bytes` to `path` without an in-place truncate of the live file.
+//
+// On POSIX we load files via mmap (MAP_PRIVATE) and the editor buffer keeps
+// reading that mapping for the file's lifetime. Overwriting the same inode in
+// place (`write_entire_file` does open(O_TRUNC)+write) yanks the bytes out from
+// under that mapping: any piece still pointing past the new EOF reads back as
+// zeros on Linux (macOS' VM happens to keep the old resident pages, which is
+// why this never reproduced there). So instead write a sibling temp file and
+// rename it over the target — rename leaves the original inode unlinked-but-
+// alive while our mapping holds it, so the buffer's pages stay valid, and the
+// swap is atomic (a crash mid-write can't leave a half-written file).
+//
+// Windows uses the read-into-buffer load path (no mmap), so there's nothing to
+// invalidate — and rename-over-existing isn't atomic there anyway — so it keeps
+// the simple in-place write.
+@(private="file")
+write_file_atomic :: proc(path: string, bytes: []u8) -> bool {
+	when ODIN_OS == .Windows {
+		return os.write_entire_file(path, bytes)
+	} else {
+		// Resolve the real target: stat() follows symlinks, and its fullpath is
+		// the canonical file. We rename onto THAT, not onto `path` — renaming
+		// over a symlink would replace the link with a regular file, orphaning
+		// it (think dotfiles symlinked into a repo). stat also hands us the mode
+		// to preserve. A brand-new path won't stat → `path` itself is the
+		// target (no link to chase, no existing mode to keep).
+		target := path
+		mode:      os.Permissions
+		have_mode: bool
+		if info, serr := os.stat(path, context.temp_allocator); serr == nil {
+			if len(info.fullpath) > 0 do target = strings.clone(info.fullpath, context.temp_allocator)
+			mode, have_mode = info.mode, true
+			os.file_info_delete(info, context.temp_allocator)
+		}
+
+		tmp := fmt.tprintf("%s.bragi-tmp", target)
+		if err := os.write_entire_file(tmp, bytes); err != nil do return false
+		// Preserve the target's permission bits; a fresh temp would otherwise
+		// drop to the default 0644 (losing +x, group bits, etc.).
+		if have_mode do _ = os.chmod(tmp, mode)
+		if os.rename(tmp, target) != nil {
+			os.remove(tmp) // don't leave the temp littering the dir
+			return false
+		}
+		return true
+	}
+}
+
 editor_save_file :: proc(ed: ^Editor) -> bool {
 	if len(ed.file_path) == 0 do return false
 	text := piece_buffer_to_string(&ed.buffer, context.temp_allocator)
@@ -370,7 +418,7 @@ editor_save_file :: proc(ed: ^Editor) -> bool {
 		bytes = expand_lf_to_crlf(bytes, context.temp_allocator)
 	}
 
-	if write_err := os.write_entire_file(ed.file_path, bytes); write_err != nil do return false
+	if !write_file_atomic(ed.file_path, bytes) do return false
 	ed.dirty = false
 	ed.eol_mixed = false // file is now uniform after this write
 	// Re-capture mtime so the watcher event our own write triggers

@@ -1,18 +1,18 @@
 package bragi
 
 import "base:runtime"
+import "core:c"
 import "core:fmt"
 import "core:math"
 import "core:os"
 import "core:strings"
 import "core:unicode/utf8"
-import "core:c"
 import sdl "vendor:sdl3"
 import ttf "vendor:sdl3/ttf"
 
-WINDOW_WIDTH  :: 1280
+WINDOW_WIDTH :: 1280
 WINDOW_HEIGHT :: 800
-WINDOW_TITLE  :: "Bragi"
+WINDOW_TITLE :: "Bragi"
 
 // FiraCode-Regular.ttf baked into the binary at compile time (~290 KB).
 // Used as the default font when g_config.font.path is empty, and as the
@@ -43,7 +43,7 @@ SB_MIN_THUMB :: 24.0
 // "this is dimmed" without making the underlying text unreadable.
 INACTIVE_DIM :: sdl.Color{0, 0, 0, 50}
 
-GUTTER_PADDING    :: 12.0
+GUTTER_PADDING :: 12.0
 GUTTER_MIN_DIGITS :: 3
 
 STATUS_PAD_X :: 8.0
@@ -53,76 +53,82 @@ STATUS_PAD_Y :: 5.0
 // overridden from the [theme] section of the user's config.ini.
 Theme :: struct {
 	// Syntax tokens.
-	default_color:  sdl.Color,
-	keyword_color:  sdl.Color,
-	type_color:     sdl.Color,
-	constant_color: sdl.Color,
-	number_color:   sdl.Color,
-	string_color:   sdl.Color,
-	comment_color:  sdl.Color,
-	function_color: sdl.Color,
+	default_color:        sdl.Color,
+	keyword_color:        sdl.Color,
+	type_color:           sdl.Color,
+	constant_color:       sdl.Color,
+	number_color:         sdl.Color,
+	string_color:         sdl.Color,
+	comment_color:        sdl.Color,
+	function_color:       sdl.Color,
 	// Chrome.
-	bg_color:              sdl.Color,
-	cursor_color:          sdl.Color,
-	selection_color:       sdl.Color,
-	search_match_color:    sdl.Color,
-	sb_track_color:        sdl.Color,
-	sb_thumb_color:        sdl.Color,
-	sb_thumb_hover_color:  sdl.Color,
-	gutter_bg_color:       sdl.Color,
-	gutter_text_color:     sdl.Color,
-	gutter_active_color:   sdl.Color,
-	sidebar_bg_color:      sdl.Color, // file-tree sidebar background (config `[theme] sidebar_bg`)
-	status_bg_color:       sdl.Color,
-	status_path_bg_color:  sdl.Color,
-	status_text_color:     sdl.Color,
-	status_dim_color:      sdl.Color,
-	status_info_color:     sdl.Color,
-	status_error_color:    sdl.Color,
-	status_warning_color:  sdl.Color, // also used for warning diagnostics
+	bg_color:             sdl.Color,
+	cursor_color:         sdl.Color,
+	selection_color:      sdl.Color,
+	search_match_color:   sdl.Color,
+	sb_track_color:       sdl.Color,
+	sb_thumb_color:       sdl.Color,
+	sb_thumb_hover_color: sdl.Color,
+	gutter_bg_color:      sdl.Color,
+	gutter_text_color:    sdl.Color,
+	gutter_active_color:  sdl.Color,
+	sidebar_bg_color:     sdl.Color, // file-tree sidebar background (config `[theme] sidebar_bg`)
+	status_bg_color:      sdl.Color,
+	status_path_bg_color: sdl.Color,
+	status_text_color:    sdl.Color,
+	status_dim_color:     sdl.Color,
+	status_info_color:    sdl.Color,
+	status_error_color:   sdl.Color,
+	status_warning_color: sdl.Color, // also used for warning diagnostics
 }
 
-DEFAULT_THEME :: Theme{
-	default_color  = sdl.Color{220, 220, 220, 255},
-	keyword_color  = sdl.Color{198, 120, 221, 255}, // purple
-	type_color     = sdl.Color{ 95, 200, 218, 255}, // cyan
-	constant_color = sdl.Color{229, 192, 123, 255}, // gold (true/false/nil)
-	number_color   = sdl.Color{215, 145,  90, 255}, // orange
-	string_color   = sdl.Color{152, 195, 121, 255}, // green
-	comment_color  = sdl.Color{ 95, 110, 130, 255}, // muted blue-gray
-	function_color = sdl.Color{ 97, 175, 239, 255}, // blue
-
-	bg_color             = sdl.Color{ 30,  30,  38, 255},
-	cursor_color         = sdl.Color{240, 200,  80, 255},
-	selection_color      = sdl.Color{ 70,  95, 150, 120},
-	search_match_color   = sdl.Color{190,  80, 180, 120},
-	sb_track_color       = sdl.Color{ 40,  40,  48, 255},
-	sb_thumb_color       = sdl.Color{ 90,  90, 100, 255},
+DEFAULT_THEME :: Theme {
+	default_color        = sdl.Color{220, 220, 220, 255},
+	keyword_color        = sdl.Color{198, 120, 221, 255}, // purple
+	type_color           = sdl.Color{95, 200, 218, 255}, // cyan
+	constant_color       = sdl.Color{229, 192, 123, 255}, // gold (true/false/nil)
+	number_color         = sdl.Color{215, 145, 90, 255}, // orange
+	string_color         = sdl.Color{152, 195, 121, 255}, // green
+	comment_color        = sdl.Color{95, 110, 130, 255}, // muted blue-gray
+	function_color       = sdl.Color{97, 175, 239, 255}, // blue
+	bg_color             = sdl.Color{30, 30, 38, 255},
+	cursor_color         = sdl.Color{240, 200, 80, 255},
+	selection_color      = sdl.Color{70, 95, 150, 120},
+	search_match_color   = sdl.Color{190, 80, 180, 120},
+	sb_track_color       = sdl.Color{40, 40, 48, 255},
+	sb_thumb_color       = sdl.Color{90, 90, 100, 255},
 	sb_thumb_hover_color = sdl.Color{130, 130, 140, 255},
-	gutter_bg_color      = sdl.Color{ 24,  24,  30, 255},
-	gutter_text_color    = sdl.Color{ 90,  95, 110, 255},
+	gutter_bg_color      = sdl.Color{24, 24, 30, 255},
+	gutter_text_color    = sdl.Color{90, 95, 110, 255},
 	gutter_active_color  = sdl.Color{200, 200, 210, 255},
-	sidebar_bg_color     = sdl.Color{ 45,  45,  55, 255}, // menu/finder slate
-
-	status_bg_color      = sdl.Color{ 20,  20,  26, 255},
-	status_path_bg_color = sdl.Color{ 28,  28,  36, 255},
+	sidebar_bg_color     = sdl.Color{45, 45, 55, 255}, // menu/finder slate
+	status_bg_color      = sdl.Color{20, 20, 26, 255},
+	status_path_bg_color = sdl.Color{28, 28, 36, 255},
 	status_text_color    = sdl.Color{200, 200, 210, 255},
 	status_dim_color     = sdl.Color{120, 125, 140, 255},
 	status_info_color    = sdl.Color{229, 192, 123, 255}, // gold — reload / config / etc.
-	status_error_color   = sdl.Color{220,  90,  90, 255}, // soft red for errors
-	status_warning_color = sdl.Color{218, 160,  70, 255}, // amber — warning diagnostics
+	status_error_color   = sdl.Color{220, 90, 90, 255}, // soft red for errors
+	status_warning_color = sdl.Color{218, 160, 70, 255}, // amber — warning diagnostics
 }
 
 theme_color :: proc(theme: ^Theme, kind: Token_Kind) -> sdl.Color {
 	switch kind {
-	case .Default:  return theme.default_color
-	case .Keyword:  return theme.keyword_color
-	case .Type:     return theme.type_color
-	case .Constant: return theme.constant_color
-	case .Number:   return theme.number_color
-	case .String:   return theme.string_color
-	case .Comment:  return theme.comment_color
-	case .Function: return theme.function_color
+	case .Default:
+		return theme.default_color
+	case .Keyword:
+		return theme.keyword_color
+	case .Type:
+		return theme.type_color
+	case .Constant:
+		return theme.constant_color
+	case .Number:
+		return theme.number_color
+	case .String:
+		return theme.string_color
+	case .Comment:
+		return theme.comment_color
+	case .Function:
+		return theme.function_color
 	}
 	return theme.default_color
 }
@@ -140,7 +146,7 @@ MOD :: "Cmd" when ODIN_OS == .Darwin else "Ctrl"
 // `key   description` rows split on any 3+ space run; the key half is drawn
 // in the help-screen blue, the description half is dim. Empty strings are
 // rendered as gaps for vertical breathing room.
-WELCOME_LINES :: [?]string{
+WELCOME_LINES :: [?]string {
 	"Bragi",
 	"",
 	"a small modal editor",
@@ -152,17 +158,19 @@ WELCOME_LINES :: [?]string{
 	":q             quit",
 }
 
-@(private="file")
+@(private = "file")
 WELCOME_TITLE_COLOR :: sdl.Color{229, 192, 123, 255} // gold accent
-@(private="file")
-WELCOME_KEY_COLOR   :: sdl.Color{ 97, 175, 239, 255} // help-screen blue
+@(private = "file")
+WELCOME_KEY_COLOR :: sdl.Color{97, 175, 239, 255} // help-screen blue
 
 is_welcome_pane :: proc(ed: ^Editor) -> bool {
-	return ed.mode == .Normal &&
-	       len(g_editors) == 1 &&
-	       !ed.dirty &&
-	       len(ed.file_path) == 0 &&
-	       piece_buffer_len(&ed.buffer) == 0
+	return(
+		ed.mode == .Normal &&
+		len(g_editors) == 1 &&
+		!ed.dirty &&
+		len(ed.file_path) == 0 &&
+		piece_buffer_len(&ed.buffer) == 0 \
+	)
 }
 
 draw_welcome :: proc(ed: ^Editor, p: Pane_Layout) {
@@ -173,16 +181,16 @@ draw_welcome :: proc(ed: ^Editor, p: Pane_Layout) {
 	// First pass: measure the widest key column and the widest description
 	// column across the key/desc rows so they all line up at one offset.
 	WELCOME_GAP :: f32(4) // chars of gap between key and description
-	max_key_w:  f32 = 0
+	max_key_w: f32 = 0
 	max_desc_w: f32 = 0
 	for line in WELCOME_LINES {
 		if len(line) == 0 do continue
 		key, _, has_desc := split_help_line(line)
 		if !has_desc do continue
 		desc := strings.trim_left(line[len(key):], " ")
-		key_w  := f32(len(key))  * g_char_width
+		key_w := f32(len(key)) * g_char_width
 		desc_w := f32(len(desc)) * g_char_width
-		if key_w  > max_key_w  do max_key_w  = key_w
+		if key_w > max_key_w do max_key_w = key_w
 		if desc_w > max_desc_w do max_desc_w = desc_w
 	}
 	block_w := max_key_w + WELCOME_GAP * g_char_width + max_desc_w
@@ -198,10 +206,17 @@ draw_welcome :: proc(ed: ^Editor, p: Pane_Layout) {
 			// at a fixed x so every row's description starts at the
 			// same column.
 			desc := strings.trim_left(line[len(key):], " ")
-			key_cstr  := strings.clone_to_cstring(key,  context.temp_allocator)
+			key_cstr := strings.clone_to_cstring(key, context.temp_allocator)
 			desc_cstr := strings.clone_to_cstring(desc, context.temp_allocator)
-			draw_text(key_cstr,  block_x,                                       y, WELCOME_KEY_COLOR,        g_theme.bg_color, g_editor_font)
-			draw_text(desc_cstr, block_x + max_key_w + WELCOME_GAP * g_char_width, y, g_theme.status_dim_color, g_theme.bg_color, g_editor_font)
+			draw_text(key_cstr, block_x, y, WELCOME_KEY_COLOR, g_theme.bg_color, g_editor_font)
+			draw_text(
+				desc_cstr,
+				block_x + max_key_w + WELCOME_GAP * g_char_width,
+				y,
+				g_theme.status_dim_color,
+				g_theme.bg_color,
+				g_editor_font,
+			)
 		} else {
 			// Title / subtitle / prose — measured independently and
 			// centered on the pane.
@@ -217,22 +232,26 @@ draw_welcome :: proc(ed: ^Editor, p: Pane_Layout) {
 }
 
 // Globals — easier than threading through every proc. Set in main, read elsewhere.
-g_renderer:    ^sdl.Renderer
-g_window:      ^sdl.Window
-g_font:           ^ttf.Font // UI / chrome font (status bar, finder, help, menus)
-g_editor_font:    ^ttf.Font // editor document + gutter font (zoomable via Cmd +/-)
-g_editor_font_size: f32     // current editor font size (logical px); Cmd +/-/0 adjust it
-g_terminal_font:  ^ttf.Font // Nerd Font variant used by the terminal pane
-g_density:        f32   // pixel density (1.0 non-retina, 2.0 retina)
-g_char_width:     f32   // logical px per monospace char (editor font)
-g_line_height: f32   // logical px per line (editor font)
-g_term_char_width:  f32 // logical px per cell (terminal font; fixed at UI size, NOT zoomed)
+g_renderer: ^sdl.Renderer
+g_window: ^sdl.Window
+g_font: ^ttf.Font // UI / chrome font (status bar, finder, help, menus)
+g_editor_font: ^ttf.Font // editor document + gutter font (zoomable via Cmd +/-)
+g_editor_font_size: f32 // current editor font size (logical px); Cmd +/-/0 adjust it
+g_terminal_font: ^ttf.Font // Nerd Font variant used by the terminal pane
+g_density: f32 // pixel density (1.0 non-retina, 2.0 retina)
+g_char_width: f32 // logical px per monospace char (editor font)
+g_line_height: f32 // logical px per line (editor font)
+g_term_char_width: f32 // logical px per cell (terminal font; fixed at UI size, NOT zoomed)
 g_term_line_height: f32 // logical px per terminal row
 
 // Text cache: keyed by hash of (text, fg, bg). Avoids re-rasterizing unchanged
 // lines/labels every frame. Capped to keep memory bounded; on overflow we wipe
 // the whole cache (cheap to rebuild on the next few frames).
-Text_Tex :: struct { tex: ^sdl.Texture, w, h: f32 }
+Text_Tex :: struct {
+	tex:  ^sdl.Texture,
+	w, h: f32,
+}
+
 g_text_cache: map[u64]Text_Tex
 TEXT_CACHE_MAX :: 1024
 
@@ -247,8 +266,8 @@ fnv64a :: proc(data: []u8) -> u64 {
 
 text_cache_key :: proc(text: string, fg, bg: sdl.Color, font: ^ttf.Font) -> u64 {
 	h := fnv64a(transmute([]u8)text)
-	fg_u := u64(fg.r) | u64(fg.g)<<8 | u64(fg.b)<<16 | u64(fg.a)<<24
-	bg_u := u64(bg.r) | u64(bg.g)<<8 | u64(bg.b)<<16 | u64(bg.a)<<24
+	fg_u := u64(fg.r) | u64(fg.g) << 8 | u64(fg.b) << 16 | u64(fg.a) << 24
+	bg_u := u64(bg.r) | u64(bg.g) << 8 | u64(bg.b) << 16 | u64(bg.a) << 24
 	// Mix the font pointer in too — same text + same colors but a
 	// different font (regular Fira vs. Nerd) need separate textures.
 	return h ~ fg_u ~ (bg_u << 32) ~ (bg_u >> 32) ~ u64(uintptr(font))
@@ -263,10 +282,10 @@ text_cache_clear :: proc() {
 // equal vertical strips; each strip has its own gutter, scrollbars, and
 // text region, and is owned by a single Editor.
 Pane_Layout :: struct {
-	pane_x, pane_w:  f32, // full column bounds (gutter + text + v_track)
-	gutter_w:        f32,
-	text_x, text_y:  f32,
-	text_w, text_h:  f32,
+	pane_x, pane_w:   f32, // full column bounds (gutter + text + v_track)
+	gutter_w:         f32,
+	text_x, text_y:   f32,
+	text_w, text_h:   f32,
 	v_track, h_track: sdl.FRect,
 }
 
@@ -288,18 +307,18 @@ Layout :: struct {
 	// Vertical stack when visible (top → bottom):
 	//   editor zone → status bar → terminal_divider → terminal_rect.
 	// The 4-px `terminal_divider_y..+h` strip is the grab handle.
-	terminal_rect:           sdl.FRect,
-	terminal_divider_y:      f32,
-	terminal_divider_h:      f32,
+	terminal_rect:      sdl.FRect,
+	terminal_divider_y: f32,
+	terminal_divider_h: f32,
 
 	// Left file-tree sidebar. Populated only when g_sidebar_visible;
 	// otherwise sidebar_rect is zero-sized and panes start at x=0. It's
 	// carved from the editor zone (TITLEBAR_H..editor_bottom); the status
 	// bar and terminal stay full-width below it. The divider strip at
 	// `sidebar_divider_x..+w` is the grab handle.
-	sidebar_rect:            sdl.FRect,
-	sidebar_divider_x:       f32,
-	sidebar_divider_w:       f32,
+	sidebar_rect:       sdl.FRect,
+	sidebar_divider_x:  f32,
+	sidebar_divider_w:  f32,
 }
 
 // Multi-pane editor list. Panes are rendered as columns left-to-right
@@ -314,20 +333,20 @@ Layout :: struct {
 // adjusted when the user drags a divider. g_resize_divider is the
 // index of the right-side pane whose left edge is being dragged
 // (-1 when no drag is in progress).
-g_editors:        [dynamic]Editor
-g_pane_ratios:    [dynamic]f32
-g_active_idx:     int
-g_drag_idx:       int = -1
+g_editors: [dynamic]Editor
+g_pane_ratios: [dynamic]f32
+g_active_idx: int
+g_drag_idx: int = -1
 g_resize_divider: int = -1
-g_cursor_default:    ^sdl.Cursor
-g_cursor_resize_h:   ^sdl.Cursor // ↔  for vertical pane dividers (left/right resize)
-g_cursor_resize_v:   ^sdl.Cursor // ↕  for the horizontal terminal divider (up/down resize)
+g_cursor_default: ^sdl.Cursor
+g_cursor_resize_h: ^sdl.Cursor // ↔  for vertical pane dividers (left/right resize)
+g_cursor_resize_v: ^sdl.Cursor // ↕  for the horizontal terminal divider (up/down resize)
 
 // Vim's Ctrl+W "window" prefix. When set, the next key is interpreted as
 // a window command (h / l for focus, c / q for close) instead of going to
 // the editor. g_swallow_text_input rides along so the rune that arrived
 // for the same physical keypress doesn't get inserted into the buffer.
-g_pending_ctrl_w:     bool
+g_pending_ctrl_w: bool
 g_swallow_text_input: bool
 
 // One-shot message shown in the status bar's bottom row, vim-style. Set
@@ -336,14 +355,18 @@ g_swallow_text_input: bool
 // something). The kind picks the foreground color: Default = neutral
 // gray, Info = themed accent (reload succeeded, config notes), Error
 // = red.
-Status_Kind :: enum u8 { Default, Info, Error }
+Status_Kind :: enum u8 {
+	Default,
+	Info,
+	Error,
+}
 
-g_status_message:      string
+g_status_message: string
 g_status_message_kind: Status_Kind
 
 set_status_message :: proc(msg: string, kind: Status_Kind = .Default) {
 	if len(g_status_message) > 0 do delete(g_status_message)
-	g_status_message      = strings.clone(msg)
+	g_status_message = strings.clone(msg)
 	g_status_message_kind = kind
 }
 
@@ -355,8 +378,8 @@ clear_status_message :: proc() {
 	g_status_message_kind = .Default
 }
 
-DIVIDER_GRAB_PX :: 6.0  // total grab width centered on the divider line
-MIN_PANE_PX     :: 80.0 // minimum width a pane can be shrunk to
+DIVIDER_GRAB_PX :: 6.0 // total grab width centered on the divider line
+MIN_PANE_PX :: 80.0 // minimum width a pane can be shrunk to
 
 // Returns the index of the divider near `x` (= the index of the pane to
 // the *right* of the divider, in 1..N-1), or -1 if x isn't over a divider.
@@ -393,7 +416,7 @@ move_divider :: proc(right_idx: int, x: f32, screen_w: f32) {
 
 	pos_ratio := clamp(x / screen_w, 0, 1)
 	left_ratio := clamp(pos_ratio - pre_sum, min_ratio, available - min_ratio)
-	g_pane_ratios[left_idx]  = left_ratio
+	g_pane_ratios[left_idx] = left_ratio
 	g_pane_ratios[right_idx] = available - left_ratio
 }
 
@@ -479,10 +502,10 @@ compute_layout :: proc() -> Layout {
 		divider_h: f32 = 4
 		// Clamp so editor + status fit; min editor zone ≈ 100 px.
 		t_h := clamp(content_h * g_terminal_height_ratio, 60, content_h - divider_h - 100)
-		l.terminal_rect      = sdl.FRect{0, l.screen_h - t_h, l.screen_w, t_h}
+		l.terminal_rect = sdl.FRect{0, l.screen_h - t_h, l.screen_w, t_h}
 		l.terminal_divider_y = l.screen_h - t_h - divider_h
 		l.terminal_divider_h = divider_h
-		l.status_y           = l.terminal_divider_y - l.status_h
+		l.status_y = l.terminal_divider_y - l.status_h
 	} else {
 		l.status_y = l.screen_h - l.status_h
 	}
@@ -493,12 +516,15 @@ compute_layout :: proc() -> Layout {
 	// fill [sidebar_right, screen_w].
 	sidebar_right: f32 = 0
 	if g_sidebar_visible {
-		sw := clamp(g_sidebar_width, SIDEBAR_MIN_WIDTH,
-		            max(SIDEBAR_MIN_WIDTH, l.screen_w - SIDEBAR_DIVIDER_W - SIDEBAR_MIN_EDITOR))
-		l.sidebar_rect      = sdl.FRect{0, TITLEBAR_H, sw, l.editor_bottom - TITLEBAR_H}
+		sw := clamp(
+			g_sidebar_width,
+			SIDEBAR_MIN_WIDTH,
+			max(SIDEBAR_MIN_WIDTH, l.screen_w - SIDEBAR_DIVIDER_W - SIDEBAR_MIN_EDITOR),
+		)
+		l.sidebar_rect = sdl.FRect{0, TITLEBAR_H, sw, l.editor_bottom - TITLEBAR_H}
 		l.sidebar_divider_x = sw
 		l.sidebar_divider_w = SIDEBAR_DIVIDER_W
-		sidebar_right       = sw + SIDEBAR_DIVIDER_W
+		sidebar_right = sw + SIDEBAR_DIVIDER_W
 	}
 	editor_w := l.screen_w - sidebar_right
 
@@ -527,7 +553,7 @@ compute_layout :: proc() -> Layout {
 		text_w := pane_w - gutter_w - SB_THICKNESS
 		text_h := l.editor_bottom - SB_THICKNESS - text_y
 
-		panes[i] = Pane_Layout{
+		panes[i] = Pane_Layout {
 			pane_x   = pane_x,
 			pane_w   = pane_w,
 			gutter_w = gutter_w,
@@ -535,8 +561,8 @@ compute_layout :: proc() -> Layout {
 			text_y   = text_y,
 			text_w   = text_w,
 			text_h   = text_h,
-			v_track  = sdl.FRect{pane_x + pane_w - SB_THICKNESS, text_y,                  SB_THICKNESS, text_h},
-			h_track  = sdl.FRect{text_x,                          l.editor_bottom - SB_THICKNESS, text_w,       SB_THICKNESS},
+			v_track  = sdl.FRect{pane_x + pane_w - SB_THICKNESS, text_y, SB_THICKNESS, text_h},
+			h_track  = sdl.FRect{text_x, l.editor_bottom - SB_THICKNESS, text_w, SB_THICKNESS},
 		}
 	}
 	l.panes = panes
@@ -581,7 +607,11 @@ draw_text :: proc(text: cstring, x, y: f32, fg, bg: sdl.Color, font: ^ttf.Font =
 	h := f32(surface.h) / g_density
 
 	if len(g_text_cache) >= TEXT_CACHE_MAX do text_cache_clear()
-	g_text_cache[key] = Text_Tex{tex = texture, w = w, h = h}
+	g_text_cache[key] = Text_Tex {
+		tex = texture,
+		w   = w,
+		h   = h,
+	}
 
 	dst := sdl.FRect{sx, sy, w, h}
 	sdl.RenderTexture(g_renderer, texture, nil, &dst)
@@ -692,8 +722,8 @@ compute_state_at_line :: proc(ed: ^Editor, target_line: int) -> Tokenizer_State 
 // Input
 // ──────────────────────────────────────────────────────────────────
 
-shift_held    :: proc(mods: sdl.Keymod) -> bool { return mods & sdl.KMOD_SHIFT != {} }
-cmd_or_ctrl   :: proc(mods: sdl.Keymod) -> bool { return mods & (sdl.KMOD_GUI | sdl.KMOD_CTRL) != {} }
+shift_held :: proc(mods: sdl.Keymod) -> bool {return mods & sdl.KMOD_SHIFT != {}}
+cmd_or_ctrl :: proc(mods: sdl.Keymod) -> bool {return mods & (sdl.KMOD_GUI | sdl.KMOD_CTRL) != {}}
 
 handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 	// Any keystroke dismisses the one-shot status message (file-open
@@ -714,7 +744,7 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 	}
 	if ev.key == sdl.K_F && ev.mod & (sdl.KMOD_GUI | sdl.KMOD_CTRL) != {} && !shift_held(ev.mod) {
 		if g_finder_visible do finder_hide()
-		else                do finder_show()
+		else do finder_show()
 		return
 	}
 
@@ -757,23 +787,40 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 	if g_help_visible {
 		line_h := g_config.font.size + HELP_LINE_GAP
 		switch ev.key {
-		case sdl.K_ESCAPE:                   help_hide()
-		case sdl.K_H, sdl.K_LEFT:            help_step_category(-1)
-		case sdl.K_L, sdl.K_RIGHT:           help_step_category(+1)
-		case sdl.K_1: help_set_category(0)
-		case sdl.K_2: help_set_category(1)
-		case sdl.K_3: help_set_category(2)
-		case sdl.K_4: help_set_category(3)
-		case sdl.K_5: help_set_category(4)
-		case sdl.K_6: help_set_category(5)
-		case sdl.K_7: help_set_category(6)
-		case sdl.K_8: help_set_category(7)
-		case sdl.K_UP, sdl.K_K:              help_scroll_by(-line_h)
-		case sdl.K_DOWN, sdl.K_J:            help_scroll_by( line_h)
-		case sdl.K_PAGEUP:                   help_scroll_by(-line_h * 8)
-		case sdl.K_PAGEDOWN, sdl.K_SPACE:    help_scroll_by( line_h * 8)
-		case sdl.K_HOME, sdl.K_G:            g_help_scroll = 0
-		case sdl.K_END:                      help_scroll_to_end()
+		case sdl.K_ESCAPE:
+			help_hide()
+		case sdl.K_H, sdl.K_LEFT:
+			help_step_category(-1)
+		case sdl.K_L, sdl.K_RIGHT:
+			help_step_category(+1)
+		case sdl.K_1:
+			help_set_category(0)
+		case sdl.K_2:
+			help_set_category(1)
+		case sdl.K_3:
+			help_set_category(2)
+		case sdl.K_4:
+			help_set_category(3)
+		case sdl.K_5:
+			help_set_category(4)
+		case sdl.K_6:
+			help_set_category(5)
+		case sdl.K_7:
+			help_set_category(6)
+		case sdl.K_8:
+			help_set_category(7)
+		case sdl.K_UP, sdl.K_K:
+			help_scroll_by(-line_h)
+		case sdl.K_DOWN, sdl.K_J:
+			help_scroll_by(line_h)
+		case sdl.K_PAGEUP:
+			help_scroll_by(-line_h * 8)
+		case sdl.K_PAGEDOWN, sdl.K_SPACE:
+			help_scroll_by(line_h * 8)
+		case sdl.K_HOME, sdl.K_G:
+			g_help_scroll = 0
+		case sdl.K_END:
+			help_scroll_to_end()
 		}
 		return
 	}
@@ -786,13 +833,17 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 	// action, not editor input. Swallow the corresponding TEXT_INPUT so
 	// the letter doesn't get typed into the buffer.
 	if g_pending_ctrl_w {
-		g_pending_ctrl_w     = false
+		g_pending_ctrl_w = false
 		g_swallow_text_input = true
 		switch ev.key {
-		case sdl.K_H, sdl.K_LEFT:  if g_active_idx > 0                   do g_active_idx -= 1
-		case sdl.K_L, sdl.K_RIGHT: if g_active_idx < len(g_editors) - 1  do g_active_idx += 1
-		case sdl.K_C, sdl.K_Q:     try_close_active_pane()
-		case sdl.K_ESCAPE:         g_swallow_text_input = false // cancel, no rune queued
+		case sdl.K_H, sdl.K_LEFT:
+			if g_active_idx > 0 do g_active_idx -= 1
+		case sdl.K_L, sdl.K_RIGHT:
+			if g_active_idx < len(g_editors) - 1 do g_active_idx += 1
+		case sdl.K_C, sdl.K_Q:
+			try_close_active_pane()
+		case sdl.K_ESCAPE:
+			g_swallow_text_input = false // cancel, no rune queued
 		}
 		return
 	}
@@ -804,10 +855,14 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 	// Cmd/Ctrl shortcuts (work in any mode)
 	if cmd {
 		switch ev.key {
-		case sdl.K_A: editor_select_all(ed)
-		case sdl.K_C: clipboard_copy(ed)
-		case sdl.K_X: clipboard_cut(ed)
-		case sdl.K_V: clipboard_paste(ed)
+		case sdl.K_A:
+			editor_select_all(ed)
+		case sdl.K_C:
+			clipboard_copy(ed)
+		case sdl.K_X:
+			clipboard_cut(ed)
+		case sdl.K_V:
+			clipboard_paste(ed)
 		case sdl.K_W:
 			when ODIN_OS == .Darwin {
 				// macOS: Cmd+W closes the pane via WINDOW_CLOSE_REQUESTED
@@ -854,7 +909,7 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 			// Cmd/Ctrl+Shift+O opens a *folder* as the workspace;
 			// plain Cmd/Ctrl+O opens a file.
 			if shift_held(mods) do open_folder_dialog()
-			else                do open_file_dialog(ed)
+			else do open_file_dialog(ed)
 		case sdl.K_S:
 			if shift_held(mods) {
 				save_as_dialog(ed)
@@ -864,8 +919,9 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 			}
 		case sdl.K_Z:
 			if shift_held(mods) do editor_redo(ed)
-			else                do editor_undo(ed)
-		case sdl.K_Y: editor_redo(ed)
+			else do editor_undo(ed)
+		case sdl.K_Y:
+			editor_redo(ed)
 		case sdl.K_EQUALS, sdl.K_KP_PLUS:
 			// Cmd/Ctrl + = (or +) — grow the editor font. = and + share a
 			// key, so we don't require Shift. UI chrome stays fixed.
@@ -905,32 +961,52 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 		case sdl.K_ESCAPE:
 			dot_observe_esc()
 			vim_enter_normal(ed)
-		case sdl.K_RETURN:    editor_smart_newline(ed)
-		case sdl.K_BACKSPACE: editor_backspace(ed)
-		case sdl.K_DELETE:    editor_delete_forward(ed)
-		case sdl.K_LEFT:      editor_move_left(ed, extend)
-		case sdl.K_RIGHT:     editor_move_right(ed, extend)
-		case sdl.K_UP:        editor_move_up(ed, extend)
-		case sdl.K_DOWN:      editor_move_down(ed, extend)
-		case sdl.K_HOME:      editor_move_home(ed, extend)
-		case sdl.K_END:       editor_move_end(ed, extend)
-		case sdl.K_TAB:       editor_insert_soft_tab(ed)
+		case sdl.K_RETURN:
+			editor_smart_newline(ed)
+		case sdl.K_BACKSPACE:
+			editor_backspace(ed)
+		case sdl.K_DELETE:
+			editor_delete_forward(ed)
+		case sdl.K_LEFT:
+			editor_move_left(ed, extend)
+		case sdl.K_RIGHT:
+			editor_move_right(ed, extend)
+		case sdl.K_UP:
+			editor_move_up(ed, extend)
+		case sdl.K_DOWN:
+			editor_move_down(ed, extend)
+		case sdl.K_HOME:
+			editor_move_home(ed, extend)
+		case sdl.K_END:
+			editor_move_end(ed, extend)
+		case sdl.K_TAB:
+			editor_insert_soft_tab(ed)
 		}
 	case .Normal:
 		switch ev.key {
-		case sdl.K_ESCAPE: vim_reset_state(ed)
-		case sdl.K_LEFT:   vim_move_left_in_line(ed, false)
-		case sdl.K_RIGHT:  vim_move_right_in_line(ed, false)
-		case sdl.K_UP:     editor_move_up(ed, false)
-		case sdl.K_DOWN:   editor_move_down(ed, false)
+		case sdl.K_ESCAPE:
+			vim_reset_state(ed)
+		case sdl.K_LEFT:
+			vim_move_left_in_line(ed, false)
+		case sdl.K_RIGHT:
+			vim_move_right_in_line(ed, false)
+		case sdl.K_UP:
+			editor_move_up(ed, false)
+		case sdl.K_DOWN:
+			editor_move_down(ed, false)
 		}
 	case .Visual, .Visual_Line:
 		switch ev.key {
-		case sdl.K_ESCAPE: vim_enter_normal(ed)
-		case sdl.K_LEFT:   vim_move_left_in_line(ed, true)
-		case sdl.K_RIGHT:  vim_move_right_in_line(ed, true)
-		case sdl.K_UP:     editor_move_up(ed, true)
-		case sdl.K_DOWN:   editor_move_down(ed, true)
+		case sdl.K_ESCAPE:
+			vim_enter_normal(ed)
+		case sdl.K_LEFT:
+			vim_move_left_in_line(ed, true)
+		case sdl.K_RIGHT:
+			vim_move_right_in_line(ed, true)
+		case sdl.K_UP:
+			editor_move_up(ed, true)
+		case sdl.K_DOWN:
+			editor_move_down(ed, true)
 		}
 	case .Command, .Search:
 		switch ev.key {
@@ -945,12 +1021,12 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 					// was present so search uses the right case mode.
 					cleaned, force := vim_strip_case_modifiers(text)
 					if len(ed.search_pattern) > 0 do delete(ed.search_pattern)
-					ed.search_pattern    = strings.clone(cleaned)
+					ed.search_pattern = strings.clone(cleaned)
 					ed.search_force_case = force
 					editor_find_next(ed, ed.search_pattern, ed.search_forward)
 				} else if len(ed.search_pattern) > 0 {
 					delete(ed.search_pattern)
-					ed.search_pattern    = ""
+					ed.search_pattern = ""
 					ed.search_force_case = 0
 				}
 			} else {
@@ -991,7 +1067,7 @@ handle_text_input :: proc(ed: ^Editor, text: cstring) {
 			dot_observe_insert(r)
 			editor_insert_rune(ed, r)
 			completion_after_insert(ed, r) // trigger / narrow LSP completion
-			signature_after_insert(ed, r)  // param hints on '(' / ',' / ')'
+			signature_after_insert(ed, r) // param hints on '(' / ',' / ')'
 		}
 	case .Normal, .Visual, .Visual_Line:
 		// vim_handle_char internally routes Visual modes to their own
@@ -1021,7 +1097,7 @@ handle_mouse_button :: proc(ed: ^Editor, ev: sdl.MouseButtonEvent, p: Pane_Layou
 	if ev.down && g_menu.visible {
 		if ev.button == sdl.BUTTON_LEFT {
 			if menu_handle_click(ed, mx, my) do return // hit a menu item
-			menu_hide()                                 // left-click outside dismisses + falls through
+			menu_hide() // left-click outside dismisses + falls through
 		} else {
 			menu_hide() // right-click while menu is open dismisses; below opens a new one
 		}
@@ -1044,8 +1120,18 @@ handle_mouse_button :: proc(ed: ^Editor, ev: sdl.MouseButtonEvent, p: Pane_Layou
 
 	content_h := f32(editor_total_lines(ed)) * g_line_height
 	content_w := f32(editor_max_line_cols(ed)) * g_char_width
-	v_thumb_start, v_thumb_size := scrollbar_thumb_metrics(ed.scroll_y, content_h, p.text_h, p.v_track.h)
-	h_thumb_start, h_thumb_size := scrollbar_thumb_metrics(ed.scroll_x, content_w, p.text_w, p.h_track.w)
+	v_thumb_start, v_thumb_size := scrollbar_thumb_metrics(
+		ed.scroll_y,
+		content_h,
+		p.text_h,
+		p.v_track.h,
+	)
+	h_thumb_start, h_thumb_size := scrollbar_thumb_metrics(
+		ed.scroll_x,
+		content_w,
+		p.text_w,
+		p.h_track.w,
+	)
 
 	v_thumb_rect := sdl.FRect{p.v_track.x, p.v_track.y + v_thumb_start, p.v_track.w, v_thumb_size}
 	h_thumb_rect := sdl.FRect{p.h_track.x + h_thumb_start, p.h_track.y, h_thumb_size, p.h_track.h}
@@ -1156,7 +1242,7 @@ handle_mouse_motion :: proc(ed: ^Editor, ev: sdl.MouseMotionEvent, p: Pane_Layou
 
 handle_mouse_wheel :: proc(ed: ^Editor, ev: sdl.MouseWheelEvent) {
 	if ev.y != 0 do ed.scroll_y -= ev.y * g_line_height * SCROLL_LINES_PER_NOTCH
-	if ev.x != 0 do ed.scroll_x -= ev.x * g_char_width  * SCROLL_LINES_PER_NOTCH
+	if ev.x != 0 do ed.scroll_x -= ev.x * g_char_width * SCROLL_LINES_PER_NOTCH
 }
 
 clamp_scroll :: proc(ed: ^Editor, p: Pane_Layout) {
@@ -1172,10 +1258,10 @@ auto_scroll_to_caret :: proc(ed: ^Editor, p: Pane_Layout) {
 	cline, ccol := editor_pos_to_line_col(ed, ed.cursor)
 	caret_y := f32(cline) * g_line_height
 	caret_x := f32(ccol) * g_char_width
-	if caret_y < ed.scroll_y                       do ed.scroll_y = caret_y
+	if caret_y < ed.scroll_y do ed.scroll_y = caret_y
 	else if caret_y + g_line_height > ed.scroll_y + p.text_h do ed.scroll_y = caret_y + g_line_height - p.text_h
-	if caret_x < ed.scroll_x                       do ed.scroll_x = caret_x
-	else if caret_x + g_char_width  > ed.scroll_x + p.text_w do ed.scroll_x = caret_x + g_char_width  - p.text_w
+	if caret_x < ed.scroll_x do ed.scroll_x = caret_x
+	else if caret_x + g_char_width > ed.scroll_x + p.text_w do ed.scroll_x = caret_x + g_char_width - p.text_w
 }
 
 point_in_rect :: proc(p: sdl.FPoint, r: sdl.FRect) -> bool {
@@ -1222,7 +1308,7 @@ draw_selection_for_line :: proc(
 	if on_line_lo > line_byte_end || on_line_hi < line_byte_start do return
 
 	_, start_col := editor_pos_to_line_col(ed, on_line_lo)
-	_, end_col   := editor_pos_to_line_col(ed, on_line_hi)
+	_, end_col := editor_pos_to_line_col(ed, on_line_hi)
 
 	x := x_origin + f32(start_col) * g_char_width
 	w := f32(end_col - start_col) * g_char_width
@@ -1232,19 +1318,22 @@ draw_selection_for_line :: proc(
 	fill_rect({x, y, w, g_line_height}, color)
 }
 
-@(private="file")
+@(private = "file")
 diag_severity_color :: proc(severity: int) -> sdl.Color {
 	switch severity {
-	case 1:  return g_theme.status_error_color
-	case 2:  return g_theme.status_warning_color
-	case:    return g_theme.status_info_color
+	case 1:
+		return g_theme.status_error_color
+	case 2:
+		return g_theme.status_warning_color
+	case:
+		return g_theme.status_info_color
 	}
 }
 
 // Underline the LSP diagnostic ranges on visible lines. LSP positions are
 // utf-8 (jai-lsp) → byte offsets; x uses display columns like the rest of
 // the editor (so tabs line up). Multi-line ranges split per line.
-@(private="file")
+@(private = "file")
 draw_lsp_diagnostics :: proc(ed: ^Editor, p: Pane_Layout, first_visible, last_visible: int) {
 	if !lsp_lang_supported(ed.language) || len(ed.file_path) == 0 do return
 	diags := lsp_diagnostics_for(ed.file_path)
@@ -1277,8 +1366,8 @@ draw_lsp_diagnostics :: proc(ed: ^Editor, p: Pane_Layout, first_visible, last_vi
 
 draw_editor :: proc(ed: ^Editor, p: Pane_Layout, is_active: bool) {
 	first_visible := max(0, int(ed.scroll_y / g_line_height))
-	last_visible  := first_visible + int(p.text_h / g_line_height) + 1
-	total_lines   := editor_total_lines(ed)
+	last_visible := first_visible + int(p.text_h / g_line_height) + 1
+	total_lines := editor_total_lines(ed)
 	last_visible = min(last_visible, total_lines - 1)
 
 	sel_lo, sel_hi := visible_selection_range(ed)
@@ -1288,8 +1377,7 @@ draw_editor :: proc(ed: ^Editor, p: Pane_Layout, is_active: bool) {
 	// match — same trigger as the [n/m] readout, so the highlight only
 	// appears while the user is paging through results.
 	sel_color := g_theme.selection_color
-	if has_sel && len(ed.search_pattern) > 0 &&
-	   sel_hi - sel_lo == len(ed.search_pattern) {
+	if has_sel && len(ed.search_pattern) > 0 && sel_hi - sel_lo == len(ed.search_pattern) {
 		cur, _ := editor_search_stats(ed, ed.search_pattern)
 		if cur > 0 do sel_color = g_theme.search_match_color
 	}
@@ -1349,7 +1437,16 @@ draw_editor :: proc(ed: ^Editor, p: Pane_Layout, is_active: bool) {
 		}
 
 		if has_sel {
-			draw_selection_for_line(ed, line_start, line_end, sel_lo, sel_hi, x_origin, y, sel_color)
+			draw_selection_for_line(
+				ed,
+				line_start,
+				line_end,
+				sel_lo,
+				sel_hi,
+				x_origin,
+				y,
+				sel_color,
+			)
 		}
 
 		if line_end >= buf_len do break
@@ -1376,7 +1473,7 @@ draw_editor :: proc(ed: ^Editor, p: Pane_Layout, is_active: bool) {
 			if line > last_visible do break // positions are sorted ascending
 			if pos == active_pos do continue
 
-			x := p.text_x + f32(col) * g_char_width  - ed.scroll_x
+			x := p.text_x + f32(col) * g_char_width - ed.scroll_x
 			y := p.text_y + f32(line) * g_line_height - ed.scroll_y
 			w := f32(needle_len) * g_char_width
 			fill_rect({x, y, w, g_line_height}, faint)
@@ -1391,7 +1488,7 @@ draw_editor :: proc(ed: ^Editor, p: Pane_Layout, is_active: bool) {
 	// (where the cursor *would* go if focus moved here); the active pane
 	// blinks normally.
 	cline, ccol := editor_pos_to_line_col(ed, ed.cursor)
-	caret_x := p.text_x + f32(ccol) * g_char_width  - ed.scroll_x
+	caret_x := p.text_x + f32(ccol) * g_char_width - ed.scroll_x
 	caret_y := p.text_y + f32(cline) * g_line_height - ed.scroll_y
 
 	if !is_active {
@@ -1465,8 +1562,8 @@ draw_gutter :: proc(ed: ^Editor, p: Pane_Layout) {
 	fill_rect({p.pane_x, p.text_y, p.gutter_w, gutter_h}, g_theme.gutter_bg_color)
 
 	first_visible := max(0, int(ed.scroll_y / g_line_height))
-	last_visible  := first_visible + int(p.text_h / g_line_height) + 1
-	total_lines   := editor_total_lines(ed)
+	last_visible := first_visible + int(p.text_h / g_line_height) + 1
+	total_lines := editor_total_lines(ed)
 	last_visible = min(last_visible, total_lines - 1)
 
 	cur_line, _ := editor_pos_to_line_col(ed, ed.cursor)
@@ -1489,7 +1586,7 @@ draw_gutter :: proc(ed: ^Editor, p: Pane_Layout) {
 // in view, "Bot" when the last line is in view, "nn%" otherwise (cursor
 // line as a percentage of the total). Returns "" when the buffer
 // already fits in the pane and there's no scrolling to indicate.
-@(private="file")
+@(private = "file")
 pane_scroll_indicator :: proc(ed: ^Editor, p: Pane_Layout) -> string {
 	total := editor_total_lines(ed)
 	if total <= 0 do return ""
@@ -1509,7 +1606,7 @@ pane_scroll_indicator :: proc(ed: ^Editor, p: Pane_Layout) -> string {
 // the title bar. ~14 px each × 3 buttons + ~12 px between + ~16 px of
 // left padding ≈ 80 px. Used so we don't center the title text into
 // the buttons.
-@(private="file")
+@(private = "file")
 TITLEBAR_TRAFFIC_LIGHT_W :: f32(80)
 
 // Paint the title-bar strip across the top of the window: solid
@@ -1529,10 +1626,10 @@ draw_titlebar :: proc(l: Layout) {
 	// Active pane's filename + dirty marker. Mirrors the per-pane
 	// path strip in the status bar.
 	ed := active_editor()
-	name  := len(ed.file_path) > 0 ? path_basename(ed.file_path) : "[Untitled]"
+	name := len(ed.file_path) > 0 ? path_basename(ed.file_path) : "[Untitled]"
 	dirty := ed.dirty ? " *" : ""
 	title := fmt.tprintf("%s%s", name, dirty)
-	cstr  := strings.clone_to_cstring(title, context.temp_allocator)
+	cstr := strings.clone_to_cstring(title, context.temp_allocator)
 
 	w_px: c.int
 	ttf.GetStringSize(g_font, cstr, 0, &w_px, nil)
@@ -1549,7 +1646,12 @@ draw_titlebar :: proc(l: Layout) {
 	y := (TITLEBAR_H - g_config.font.size) * 0.5
 
 	// Clip so very long titles don't bleed off the right edge.
-	clip := sdl.Rect{i32(TITLEBAR_TRAFFIC_LIGHT_W), 0, i32(l.screen_w - TITLEBAR_TRAFFIC_LIGHT_W), i32(TITLEBAR_H)}
+	clip := sdl.Rect {
+		i32(TITLEBAR_TRAFFIC_LIGHT_W),
+		0,
+		i32(l.screen_w - TITLEBAR_TRAFFIC_LIGHT_W),
+		i32(TITLEBAR_H),
+	}
 	sdl.SetRenderClipRect(g_renderer, &clip)
 	defer sdl.SetRenderClipRect(g_renderer, nil)
 
@@ -1564,8 +1666,8 @@ draw_status_bar :: proc(ed: ^Editor, l: Layout) {
 	row_h := g_config.font.size + STATUS_PAD_Y * 2
 	// Top row (paths) gets a subtly lighter background so the eye can
 	// separate "which file is in which pane" from the global status.
-	fill_rect({0, l.status_y,         l.screen_w, row_h},               g_theme.status_path_bg_color)
-	fill_rect({0, l.status_y + row_h, l.screen_w, l.status_h - row_h},  g_theme.status_bg_color)
+	fill_rect({0, l.status_y, l.screen_w, row_h}, g_theme.status_path_bg_color)
+	fill_rect({0, l.status_y + row_h, l.screen_w, l.status_h - row_h}, g_theme.status_bg_color)
 	top_y := l.status_y + STATUS_PAD_Y
 	bot_y := l.status_y + 3 * STATUS_PAD_Y + g_config.font.size
 
@@ -1577,7 +1679,7 @@ draw_status_bar :: proc(ed: ^Editor, l: Layout) {
 	// neighbor. Active pane gets the bright text color.
 	for p, i in l.panes {
 		e := &g_editors[i]
-		name  := len(e.file_path) > 0 ? path_basename(e.file_path) : "[untitled]"
+		name := len(e.file_path) > 0 ? path_basename(e.file_path) : "[untitled]"
 		dirty := e.dirty ? " *" : ""
 		// Persistent marker for "file changed on disk while you were
 		// editing." The one-shot status message at detection time gets
@@ -1591,12 +1693,7 @@ draw_status_bar :: proc(ed: ^Editor, l: Layout) {
 		// Clip to the full row height (not just `font.size`) so glyph
 		// descenders and characters like `%` aren't shaved off at the
 		// bottom by a too-tight clip rect.
-		clip := sdl.Rect{
-			i32(p.pane_x),
-			i32(l.status_y),
-			i32(p.pane_w),
-			i32(row_h),
-		}
+		clip := sdl.Rect{i32(p.pane_x), i32(l.status_y), i32(p.pane_w), i32(row_h)}
 		sdl.SetRenderClipRect(g_renderer, &clip)
 		draw_text(left_cstr, p.pane_x + STATUS_PAD_X, top_y, color, g_theme.status_path_bg_color)
 
@@ -1607,11 +1704,13 @@ draw_status_bar :: proc(ed: ^Editor, l: Layout) {
 			right_w_px: c.int
 			ttf.GetStringSize(g_font, right_cstr, 0, &right_w_px, nil)
 			right_w := f32(right_w_px) / g_density
-			draw_text(right_cstr,
-			          p.pane_x + p.pane_w - STATUS_PAD_X - right_w,
-			          top_y,
-			          color,
-			          g_theme.status_path_bg_color)
+			draw_text(
+				right_cstr,
+				p.pane_x + p.pane_w - STATUS_PAD_X - right_w,
+				top_y,
+				color,
+				g_theme.status_path_bg_color,
+			)
 		}
 	}
 	// Thin separators between path segments to mirror the editor-area
@@ -1619,7 +1718,10 @@ draw_status_bar :: proc(ed: ^Editor, l: Layout) {
 	sdl.SetRenderClipRect(g_renderer, nil)
 	for i in 1 ..< len(l.panes) {
 		x := l.panes[i].pane_x
-		fill_rect({x, top_y - STATUS_PAD_Y * 0.5, 1.0 / g_density, g_config.font.size + STATUS_PAD_Y}, g_theme.gutter_bg_color)
+		fill_rect(
+			{x, top_y - STATUS_PAD_Y * 0.5, 1.0 / g_density, g_config.font.size + STATUS_PAD_Y},
+			g_theme.gutter_bg_color,
+		)
 	}
 
 	// Transient status message (file-open errors, "binary file", etc.)
@@ -1628,9 +1730,12 @@ draw_status_bar :: proc(ed: ^Editor, l: Layout) {
 	if len(g_status_message) > 0 && ed.mode != .Command && ed.mode != .Search {
 		color: sdl.Color
 		switch g_status_message_kind {
-		case .Error:   color = g_theme.status_error_color
-		case .Info:    color = g_theme.status_info_color
-		case .Default: color = g_theme.status_text_color
+		case .Error:
+			color = g_theme.status_error_color
+		case .Info:
+			color = g_theme.status_info_color
+		case .Default:
+			color = g_theme.status_text_color
 		}
 		cstr := strings.clone_to_cstring(g_status_message, context.temp_allocator)
 		draw_text(cstr, STATUS_PAD_X, bot_y, color, g_theme.status_bg_color)
@@ -1644,7 +1749,13 @@ draw_status_bar :: proc(ed: ^Editor, l: Layout) {
 		if ed.mode == .Search do prefix = ed.search_forward ? "/" : "?"
 		cmd_str := fmt.tprintf("%s%s", prefix, string(ed.cmd_buffer[:]))
 		cstr := strings.clone_to_cstring(cmd_str, context.temp_allocator)
-		w := draw_text(cstr, STATUS_PAD_X, bot_y, g_theme.status_text_color, g_theme.status_bg_color)
+		w := draw_text(
+			cstr,
+			STATUS_PAD_X,
+			bot_y,
+			g_theme.status_text_color,
+			g_theme.status_bg_color,
+		)
 		if int(ed.blink_timer * 2) % 2 == 0 {
 			fill_rect({STATUS_PAD_X + w, bot_y, 2, g_config.font.size}, g_theme.cursor_color)
 		}
@@ -1653,9 +1764,12 @@ draw_status_bar :: proc(ed: ^Editor, l: Layout) {
 
 	mode_label: string
 	switch ed.mode {
-	case .Insert:       mode_label = " INSERT "
-	case .Visual:       mode_label = " VISUAL "
-	case .Visual_Line:  mode_label = " V-LINE "
+	case .Insert:
+		mode_label = " INSERT "
+	case .Visual:
+		mode_label = " VISUAL "
+	case .Visual_Line:
+		mode_label = " V-LINE "
 	case .Normal, .Command, .Search:
 		mode_label = " NORMAL "
 	}
@@ -1674,15 +1788,21 @@ draw_status_bar :: proc(ed: ^Editor, l: Layout) {
 	}
 	right := fmt.tprintf("%s%s%s   %d:%d", search_part, lang_part, eol_str, line + 1, col + 1)
 
-	left_cstr  := strings.clone_to_cstring(mode_label, context.temp_allocator)
+	left_cstr := strings.clone_to_cstring(mode_label, context.temp_allocator)
 	right_cstr := strings.clone_to_cstring(right, context.temp_allocator)
 
 	right_w_px: c.int
 	ttf.GetStringSize(g_font, right_cstr, 0, &right_w_px, nil)
 	right_w := f32(right_w_px) / g_density
 
-	draw_text(left_cstr,  STATUS_PAD_X,                        bot_y, g_theme.status_text_color, g_theme.status_bg_color)
-	draw_text(right_cstr, l.screen_w - STATUS_PAD_X - right_w, bot_y, g_theme.status_dim_color,  g_theme.status_bg_color)
+	draw_text(left_cstr, STATUS_PAD_X, bot_y, g_theme.status_text_color, g_theme.status_bg_color)
+	draw_text(
+		right_cstr,
+		l.screen_w - STATUS_PAD_X - right_w,
+		bot_y,
+		g_theme.status_dim_color,
+		g_theme.status_bg_color,
+	)
 
 	// LSP server indicator, just left of the right-hand block: a small
 	// state-colored square dot + the server name. The dot is drawn (not a
@@ -1696,7 +1816,7 @@ draw_status_bar :: proc(ed: ^Editor, l: Layout) {
 		lsp_w := f32(lsp_w_px) / g_density
 		text_h := f32(lsp_h_px) / g_density // full line height; taller than font.size
 
-		dot_sz  := g_config.font.size * 0.45
+		dot_sz := g_config.font.size * 0.45
 		dot_gap := g_char_width * 0.5
 		total_w := dot_sz + dot_gap + lsp_w
 		gap: f32 = g_char_width * 2
@@ -1711,9 +1831,9 @@ draw_status_bar :: proc(ed: ^Editor, l: Layout) {
 }
 
 update_window_title :: proc(ed: ^Editor) {
-	@(static) last_path:    string
-	@(static) last_dirty:   bool
-	@(static) initialized:  bool
+	@(static) last_path: string
+	@(static) last_dirty: bool
+	@(static) initialized: bool
 
 	if initialized && last_dirty == ed.dirty && last_path == ed.file_path do return
 	initialized = true
@@ -1739,10 +1859,10 @@ update_window_title :: proc(ed: ^Editor) {
 // flaky on macOS — the OS run loop can swallow the first request.
 // ──────────────────────────────────────────────────────────────────
 
-g_pending_open:           bool
-g_pending_open_folder:    bool // Cmd/Ctrl+Shift+O — set the workspace via folder picker
-g_pending_save_as:        bool
-g_pending_raise:          bool // set by dialog callbacks; main loop calls RaiseWindow next iter
+g_pending_open: bool
+g_pending_open_folder: bool // Cmd/Ctrl+Shift+O — set the workspace via folder picker
+g_pending_save_as: bool
+g_pending_raise: bool // set by dialog callbacks; main loop calls RaiseWindow next iter
 g_pending_quit_after_save: bool // try_quit on an untitled buffer: quit once save-as completes
 
 open_file_dialog :: proc(ed: ^Editor) {
@@ -1757,17 +1877,17 @@ save_as_dialog :: proc(ed: ^Editor) {
 	g_pending_save_as = true
 }
 
-@(private="file")
+@(private = "file")
 do_open_file_dialog :: proc(ed: ^Editor) {
 	sdl.ShowOpenFileDialog(open_file_callback, rawptr(ed), g_window, nil, 0, nil, false)
 }
 
-@(private="file")
+@(private = "file")
 do_save_as_dialog :: proc(ed: ^Editor) {
 	sdl.ShowSaveFileDialog(save_as_callback, rawptr(ed), g_window, nil, 0, nil)
 }
 
-@(private="file")
+@(private = "file")
 do_open_folder_dialog :: proc() {
 	// Start the picker in the current workspace if there is one.
 	loc: cstring
@@ -1805,7 +1925,7 @@ flush_pending_dialogs :: proc(ed: ^Editor) {
 open_file_callback :: proc "c" (userdata: rawptr, filelist: [^]cstring, filter: c.int) {
 	context = runtime.default_context()
 	defer free_all(context.temp_allocator)
-	defer { g_pending_raise = true } // restore focus on next main-loop iter
+	defer {g_pending_raise = true} 	// restore focus on next main-loop iter
 
 	if filelist == nil || filelist[0] == nil do return // canceled or error
 
@@ -1816,7 +1936,7 @@ open_file_callback :: proc "c" (userdata: rawptr, filelist: [^]cstring, filter: 
 open_folder_callback :: proc "c" (userdata: rawptr, filelist: [^]cstring, filter: c.int) {
 	context = runtime.default_context()
 	defer free_all(context.temp_allocator)
-	defer { g_pending_raise = true } // restore focus on next main-loop iter
+	defer {g_pending_raise = true} 	// restore focus on next main-loop iter
 
 	if filelist == nil || filelist[0] == nil do return // canceled or error
 	set_workspace(string(filelist[0]))
@@ -1825,7 +1945,7 @@ open_folder_callback :: proc "c" (userdata: rawptr, filelist: [^]cstring, filter
 save_as_callback :: proc "c" (userdata: rawptr, filelist: [^]cstring, filter: c.int) {
 	context = runtime.default_context()
 	defer free_all(context.temp_allocator)
-	defer { g_pending_raise = true } // restore focus on next main-loop iter
+	defer {g_pending_raise = true} 	// restore focus on next main-loop iter
 
 	// User canceled the dialog — abort any pending quit so the editor stays open.
 	if filelist == nil || filelist[0] == nil {
@@ -1912,7 +2032,8 @@ open_font_path :: proc(path: string, size_px: f32) -> ^ttf.Font {
 
 	fmt.eprintfln(
 		"OpenFont '%s' failed (%s); falling back to bundled FiraCode",
-		path, sdl.GetError(),
+		path,
+		sdl.GetError(),
 	)
 	return open_embedded_font(size_px)
 }
@@ -1957,7 +2078,7 @@ editor_font_reopen :: proc() {
 	} else {
 		ttf.SetFontHinting(g_editor_font, g_config.editor_font.hinting)
 	}
-	g_char_width  = measure_char_width(g_editor_font)
+	g_char_width = measure_char_width(g_editor_font)
 	g_line_height = g_editor_font_size * g_config.editor.line_spacing
 	text_cache_clear()
 }
@@ -1989,7 +2110,7 @@ config_reload :: proc() {
 	} else {
 		ttf.SetFontHinting(g_editor_font, g_config.editor_font.hinting)
 	}
-	g_char_width  = measure_char_width(g_editor_font)
+	g_char_width = measure_char_width(g_editor_font)
 	g_line_height = g_editor_font_size * g_config.editor.line_spacing
 
 	if old_edit != nil && old_edit != old_ui do ttf.CloseFont(old_edit)
@@ -2002,7 +2123,9 @@ config_reload :: proc() {
 	// path/compiler/entry changed so e.g. a freshly-set jai_compiler applies
 	// without a manual :lsp restart.
 	n := g_config.lsp
-	if n.jai_path != old_lsp.jai_path || n.jai_compiler != old_lsp.jai_compiler || n.jai_entry != old_lsp.jai_entry {
+	if n.jai_path != old_lsp.jai_path ||
+	   n.jai_compiler != old_lsp.jai_compiler ||
+	   n.jai_entry != old_lsp.jai_entry {
 		lsp_restart(.Jai)
 	}
 	if n.odin_path != old_lsp.odin_path {
@@ -2021,8 +2144,8 @@ editor_font_set_size :: proc(size: f32) {
 }
 
 // Cmd +/- step (whole logical px) and Cmd 0 reset target.
-editor_font_zoom  :: proc(delta: f32) { editor_font_set_size(g_editor_font_size + delta) }
-editor_font_reset :: proc()           { editor_font_set_size(g_config.editor_font.size) }
+editor_font_zoom :: proc(delta: f32) {editor_font_set_size(g_editor_font_size + delta)}
+editor_font_reset :: proc() {editor_font_set_size(g_config.editor_font.size)}
 
 // Terminal cell metrics, derived from g_terminal_font at the fixed UI
 // size (the Nerd Font shares the editor font's advance). Kept separate
@@ -2030,11 +2153,15 @@ editor_font_reset :: proc()           { editor_font_set_size(g_config.editor_fon
 // terminal grid (which would SIGWINCH the shell).
 recompute_terminal_metrics :: proc() {
 	f := g_terminal_font != nil ? g_terminal_font : g_font
-	g_term_char_width  = measure_char_width(f)
+	g_term_char_width = measure_char_width(f)
 	g_term_line_height = g_config.font.size * g_config.editor.line_spacing
 }
 
-Quit_Choice :: enum { Cancel, Save, Discard }
+Quit_Choice :: enum {
+	Cancel,
+	Save,
+	Discard,
+}
 
 // Modal native dialog: "this buffer has unsaved changes — Save / Discard /
 // Cancel?". Returns the user's choice. Anything other than `:q!` (which
@@ -2048,13 +2175,13 @@ prompt_unsaved_changes :: proc(ed: ^Editor) -> Quit_Choice {
 	// SDL renders buttons right-to-left on macOS by default. Order entries
 	// so the visual layout reads "Cancel | Discard | Save" with Save as the
 	// return-key default and Cancel as the escape default.
-	buttons := [3]sdl.MessageBoxButtonData{
+	buttons := [3]sdl.MessageBoxButtonData {
 		{flags = {.RETURNKEY_DEFAULT}, buttonID = 1, text = "Save"},
-		{flags = {},                   buttonID = 2, text = "Discard"},
+		{flags = {}, buttonID = 2, text = "Discard"},
 		{flags = {.ESCAPEKEY_DEFAULT}, buttonID = 0, text = "Cancel"},
 	}
 
-	data := sdl.MessageBoxData{
+	data := sdl.MessageBoxData {
 		flags      = {.WARNING},
 		window     = g_window,
 		title      = "Unsaved changes",
@@ -2066,8 +2193,10 @@ prompt_unsaved_changes :: proc(ed: ^Editor) -> Quit_Choice {
 	choice: c.int = 0
 	if !sdl.ShowMessageBox(data, &choice) do return .Cancel
 	switch choice {
-	case 1: return .Save
-	case 2: return .Discard
+	case 1:
+		return .Save
+	case 2:
+		return .Discard
 	}
 	return .Cancel
 }
@@ -2136,9 +2265,7 @@ open_file_in_new_pane :: proc(path: string) -> bool {
 // were just reset after closing the last file. Used to decide whether
 // the next file open should replace the current pane or split alongside.
 should_replace_active :: proc() -> bool {
-	return len(g_editors) == 1 &&
-	       !active_editor().dirty &&
-	       len(active_editor().file_path) == 0
+	return len(g_editors) == 1 && !active_editor().dirty && len(active_editor().file_path) == 0
 }
 
 // Open the user's config.ini for editing. If the file already exists,
@@ -2169,12 +2296,14 @@ bragi_open_config :: proc() {
 	editor_set_text(ed, DEFAULT_CONFIG_INI)
 	if len(ed.file_path) > 0 do delete(ed.file_path)
 	ed.file_path = strings.clone(path)
-	ed.language  = .Ini
-	ed.dirty     = false           // Untouched template — closing without edits should be silent.
-	ed.cursor    = 0
-	ed.scroll_x  = 0
-	ed.scroll_y  = 0
-	set_status_message(fmt.tprintf("config does not exist — save this buffer to create %s", path))
+	ed.language = .Ini
+	ed.dirty = false // Untouched template — closing without edits should be silent.
+	ed.cursor = 0
+	ed.scroll_x = 0
+	ed.scroll_y = 0
+	set_status_message(
+		fmt.tprintf("config does not exist — save this buffer to create %s", path),
+	)
 }
 
 // Unified file-open entry point: replaces the welcome/blank pane in
@@ -2263,7 +2392,8 @@ warn_if_mixed_eol :: proc(ed: ^Editor) {
 	name := len(ed.file_path) > 0 ? path_basename(ed.file_path) : "(file)"
 	msg := fmt.tprintf(
 		"%s contains a mix of LF and CRLF line endings.\n\nIt will be normalized to %s when you save.",
-		name, eol_label(ed.eol),
+		name,
+		eol_label(ed.eol),
 	)
 	cstr := strings.clone_to_cstring(msg, context.temp_allocator)
 	sdl.ShowSimpleMessageBox({.WARNING}, "Mixed line endings", cstr, g_window)
@@ -2274,11 +2404,17 @@ warn_if_mixed_eol :: proc(ed: ^Editor) {
 // while macOS is in its live-resize event loop).
 draw_frame :: proc() {
 	l := compute_layout()
-	sdl.SetRenderDrawColor(g_renderer, g_theme.bg_color.r, g_theme.bg_color.g, g_theme.bg_color.b, g_theme.bg_color.a)
+	sdl.SetRenderDrawColor(
+		g_renderer,
+		g_theme.bg_color.r,
+		g_theme.bg_color.g,
+		g_theme.bg_color.b,
+		g_theme.bg_color.a,
+	)
 	sdl.RenderClear(g_renderer)
 	for i in 0 ..< len(l.panes) {
 		ed := &g_editors[i]
-		p  := l.panes[i]
+		p := l.panes[i]
 		is_active := i == g_active_idx
 		draw_editor(ed, p, is_active)
 		draw_gutter(ed, p)
@@ -2304,7 +2440,10 @@ draw_frame :: proc() {
 	// per-pane.
 	for i in 1 ..< len(l.panes) {
 		x := l.panes[i].pane_x
-		fill_rect({x, TITLEBAR_H, 1.0 / g_density, l.editor_bottom - TITLEBAR_H}, g_theme.gutter_bg_color)
+		fill_rect(
+			{x, TITLEBAR_H, 1.0 / g_density, l.editor_bottom - TITLEBAR_H},
+			g_theme.gutter_bg_color,
+		)
 	}
 	// File-tree sidebar (left strip) — its own bg/divider/dim, drawn in
 	// the carved-out region the panes leave to their left.
@@ -2316,7 +2455,10 @@ draw_frame :: proc() {
 		// Re-fit the cell grid to whatever the layout gave us this
 		// frame (covers window resize + divider drag in one place).
 		terminal_fit_to_rect(l.terminal_rect)
-		fill_rect({0, l.terminal_divider_y, l.screen_w, l.terminal_divider_h}, g_theme.gutter_bg_color)
+		fill_rect(
+			{0, l.terminal_divider_y, l.screen_w, l.terminal_divider_h},
+			g_theme.gutter_bg_color,
+		)
 		draw_terminal(l.terminal_rect)
 		// Match the editor-pane treatment: dim the terminal when it
 		// doesn't own keyboard focus.
@@ -2365,22 +2507,36 @@ refresh_pixel_density :: proc() {
 	editor_font_reopen()
 }
 
-// SDL fires this synchronously during macOS live-resize (before the main
-// thread regains control of WaitEventTimeout). Redraw inside the callback
-// keeps the content rendered at the correct size during the drag. The
-// display-change events also flow through here so the pixel-density
-// refresh fires before the next frame draws.
+// SDL fires this synchronously during a live-resize. On macOS and Windows the
+// OS pumps a modal resize loop that blocks the main thread (Cocoa / Win32), so
+// WaitEventTimeout never returns mid-drag — this callback is the ONLY chance to
+// redraw at the new size, and being throttled to one present per vblank it
+// stays smooth.
+//
+// Linux (X11/Wayland) does NOT block the main thread during resize: the main
+// loop's WaitEventTimeout keeps returning and already redraws once per event
+// batch. Drawing here too is not just redundant — it's actively harmful. Each
+// resize step fires WINDOW_RESIZED + WINDOW_EXPOSED (and on fractional-scale
+// setups WINDOW_PIXEL_SIZE_CHANGED), and every draw_frame() ends in a
+// VSync-blocked RenderPresent. Doing that synchronously inside the event pump
+// stalls event delivery, so resize events back up and the window lags seconds
+// behind the cursor. So on Linux we let the main loop own resize redraws and
+// only keep the (cheap, density-gated) pixel-density refresh here.
+WATCH_REDRAWS_ON_RESIZE :: ODIN_OS != .Linux
+
 resize_event_watch :: proc "c" (userdata: rawptr, event: ^sdl.Event) -> bool {
 	#partial switch event.type {
 	case .WINDOW_PIXEL_SIZE_CHANGED, .WINDOW_DISPLAY_CHANGED, .WINDOW_DISPLAY_SCALE_CHANGED:
 		context = runtime.default_context()
 		defer free_all(context.temp_allocator)
 		refresh_pixel_density()
-		draw_frame()
+		when WATCH_REDRAWS_ON_RESIZE do draw_frame()
 	case .WINDOW_RESIZED, .WINDOW_EXPOSED:
-		context = runtime.default_context()
-		defer free_all(context.temp_allocator)
-		draw_frame()
+		when WATCH_REDRAWS_ON_RESIZE {
+			context = runtime.default_context()
+			defer free_all(context.temp_allocator)
+			draw_frame()
+		}
 	}
 	return true
 }
@@ -2439,8 +2595,10 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		// area a little vertically since the text rect is thin.
 		if ev.button.button == sdl.BUTTON_LEFT && g_lsp_status_rect.w > 0 {
 			rr := g_lsp_status_rect
-			if ev.button.x >= rr.x && ev.button.x <= rr.x + rr.w &&
-			   ev.button.y >= rr.y - STATUS_PAD_Y && ev.button.y <= rr.y + rr.h + STATUS_PAD_Y {
+			if ev.button.x >= rr.x &&
+			   ev.button.x <= rr.x + rr.w &&
+			   ev.button.y >= rr.y - STATUS_PAD_Y &&
+			   ev.button.y <= rr.y + rr.h + STATUS_PAD_Y {
 				lsp_restart(active_editor().language)
 				return
 			}
@@ -2455,7 +2613,7 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		// the divider strip.
 		if g_sidebar_visible &&
 		   ev.button.x >= l.sidebar_divider_x &&
-		   ev.button.x <  l.sidebar_divider_x + l.sidebar_divider_w {
+		   ev.button.x < l.sidebar_divider_x + l.sidebar_divider_w {
 			g_sidebar_resizing = true
 			return
 		}
@@ -2469,7 +2627,7 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		// showing and the click is in the divider strip.
 		if g_terminal_visible &&
 		   ev.button.y >= l.terminal_divider_y &&
-		   ev.button.y <  l.terminal_divider_y + l.terminal_divider_h {
+		   ev.button.y < l.terminal_divider_y + l.terminal_divider_h {
 			g_terminal_resizing = true
 			return
 		}
@@ -2478,7 +2636,8 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		// thumb-grab steals the click instead of stealing focus.
 		if g_terminal_visible && point_in_rect({ev.button.x, ev.button.y}, l.terminal_rect) {
 			pt := sdl.FPoint{ev.button.x, ev.button.y}
-			if ev.button.button == sdl.BUTTON_LEFT && ev.button.down &&
+			if ev.button.button == sdl.BUTTON_LEFT &&
+			   ev.button.down &&
 			   terminal_handle_sb_button_down(l.terminal_rect, pt) {
 				return
 			}
@@ -2488,7 +2647,7 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		// Anything else lands in editor territory; if the terminal or
 		// sidebar had focus, it's losing it now.
 		g_terminal_active = false
-		g_sidebar_active  = false
+		g_sidebar_active = false
 		// Divider grab takes priority over pane interior — the grab
 		// strip overlaps the rightmost few pixels of one pane's
 		// scrollbar and the leftmost few pixels of the next pane's
@@ -2513,7 +2672,7 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		}
 		idx := pane_at_x(ev.button.x, l)
 		g_active_idx = idx
-		g_drag_idx   = idx
+		g_drag_idx = idx
 		// Cmd/Ctrl + click → go to definition at the clicked symbol.
 		if ev.button.button == sdl.BUTTON_LEFT && cmd_or_ctrl(sdl.GetModState()) {
 			ced := &g_editors[idx]
@@ -2552,7 +2711,8 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		// SDL's event pump, so the layout we computed at the top of
 		// this iteration is stale until the next one. `l.panes[target]`
 		// must always be in bounds for the layout we're using.
-		target := g_drag_idx >= 0 && g_drag_idx < len(l.panes) ? g_drag_idx : pane_at_x(ev.button.x, l)
+		target :=
+			g_drag_idx >= 0 && g_drag_idx < len(l.panes) ? g_drag_idx : pane_at_x(ev.button.x, l)
 		if target >= 0 && target < len(l.panes) {
 			handle_mouse_button(&g_editors[target], ev.button, l.panes[target])
 		}
@@ -2597,8 +2757,11 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		if g_sidebar_resizing {
 			// Sidebar width is stored in logical px (resilient to window
 			// resize); clamp so the editor keeps a usable minimum.
-			g_sidebar_width = clamp(ev.motion.x, SIDEBAR_MIN_WIDTH,
-			                        max(SIDEBAR_MIN_WIDTH, l.screen_w - SIDEBAR_DIVIDER_W - SIDEBAR_MIN_EDITOR))
+			g_sidebar_width = clamp(
+				ev.motion.x,
+				SIDEBAR_MIN_WIDTH,
+				max(SIDEBAR_MIN_WIDTH, l.screen_w - SIDEBAR_DIVIDER_W - SIDEBAR_MIN_EDITOR),
+			)
 			return
 		}
 		if g_terminal_resizing {
@@ -2627,14 +2790,16 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		// terminal uses ↕ . SetCursor is cheap and SDL no-ops when
 		// the cursor doesn't actually change.
 		over_pane_div := divider_at_x(ev.motion.x, l, ev.motion.y) > 0
-		over_side_div := g_sidebar_visible &&
-		                 ev.motion.x >= l.sidebar_divider_x &&
-		                 ev.motion.x <  l.sidebar_divider_x + l.sidebar_divider_w &&
-		                 ev.motion.y >= l.sidebar_rect.y &&
-		                 ev.motion.y <  l.sidebar_rect.y + l.sidebar_rect.h
-		over_term_div := g_terminal_visible &&
-		                 ev.motion.y >= l.terminal_divider_y &&
-		                 ev.motion.y <  l.terminal_divider_y + l.terminal_divider_h
+		over_side_div :=
+			g_sidebar_visible &&
+			ev.motion.x >= l.sidebar_divider_x &&
+			ev.motion.x < l.sidebar_divider_x + l.sidebar_divider_w &&
+			ev.motion.y >= l.sidebar_rect.y &&
+			ev.motion.y < l.sidebar_rect.y + l.sidebar_rect.h
+		over_term_div :=
+			g_terminal_visible &&
+			ev.motion.y >= l.terminal_divider_y &&
+			ev.motion.y < l.terminal_divider_y + l.terminal_divider_h
 		switch {
 		case (over_pane_div || over_side_div) && g_cursor_resize_h != nil:
 			_ = sdl.SetCursor(g_cursor_resize_h)
@@ -2658,7 +2823,8 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 			return
 		}
 		// Wheel over the sidebar scrolls the tree.
-		if g_sidebar_visible && point_in_rect({ev.wheel.mouse_x, ev.wheel.mouse_y}, l.sidebar_rect) {
+		if g_sidebar_visible &&
+		   point_in_rect({ev.wheel.mouse_x, ev.wheel.mouse_y}, l.sidebar_rect) {
 			sidebar_handle_wheel(ev.wheel)
 			return
 		}
@@ -2677,7 +2843,7 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 			path := string(ev.drop.data)
 			// Dropping a folder sets the workspace; a file opens normally.
 			if os.is_dir(path) do set_workspace(path)
-			else               do open_file_smart(path)
+			else do open_file_smart(path)
 		}
 	}
 	// Vim's :q / :q! / :wq set ed.want_quit. Translate that to "close this
@@ -2725,7 +2891,14 @@ main :: proc() {
 	config_load()
 	g_theme = g_config.theme
 
-	if !sdl.CreateWindowAndRenderer(WINDOW_TITLE, WINDOW_WIDTH, WINDOW_HEIGHT, {.RESIZABLE, .HIGH_PIXEL_DENSITY}, &g_window, &g_renderer) {
+	if !sdl.CreateWindowAndRenderer(
+		WINDOW_TITLE,
+		WINDOW_WIDTH,
+		WINDOW_HEIGHT,
+		{.RESIZABLE, .HIGH_PIXEL_DENSITY},
+		&g_window,
+		&g_renderer,
+	) {
 		fmt.eprintln("CreateWindowAndRenderer:", sdl.GetError())
 		return
 	}
@@ -2777,7 +2950,7 @@ main :: proc() {
 	defer if g_editor_font != nil && g_editor_font != g_font do ttf.CloseFont(g_editor_font)
 
 	_ = sdl.StartTextInput(g_window)
-	defer { _ = sdl.StopTextInput(g_window) }
+	defer {_ = sdl.StopTextInput(g_window)}
 
 	g_cursor_default = sdl.GetDefaultCursor()
 	g_cursor_resize_h = sdl.CreateSystemCursor(.EW_RESIZE)

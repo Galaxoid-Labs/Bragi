@@ -66,6 +66,18 @@ Both have identical advance width so cell math is unchanged.
 - **`undo.odin`** — Edit-log undo/redo with adjacent-op merging.
 - **`file.odin`** — Load (direct-into-gap-buffer + EOL detect) / save
   (atomic, EOL expand) / `path_basename` / `digit_count`.
+  **Saves MUST be atomic on POSIX** (`write_file_atomic`: write a sibling
+  `.bragi-tmp` + `rename` over the target), NOT an in-place
+  `write_entire_file`. The buffer keeps reading its `MAP_PRIVATE` mmap of
+  the loaded file for the file's lifetime; truncating+rewriting that same
+  inode in place makes any piece pointing past the new EOF read back as
+  zeros on Linux (macOS' VM happens to keep the old resident pages, so it
+  never reproduced there — symptom was "Ctrl+S adds an empty line each
+  save"). Rename leaves the original inode unlinked-but-alive behind the
+  mapping, so pages stay valid; it also follows symlinks (preserves the
+  link via `stat().fullpath`) and keeps the target's mode. Windows uses the
+  read-into-buffer load path (no mmap), so it keeps the in-place write.
+  Regression test: `save_test.odin`.
 - **`vim.odin`** — `Mode` enum, vim parser FSM, motions / operators /
   ex commands. Modes: `Insert`, `Normal`, `Visual`, `Visual_Line`,
   `Command`, `Search`.
@@ -140,6 +152,13 @@ Both have identical advance width so cell math is unchanged.
   (`LSP_FORMAT_SAVE_TIMEOUT_NS`) so a wedged server can't eat the save.
   Triggers: Cmd/Ctrl+Shift+F, `:fmt`, right-click → Format Document.
   Servers/paths resolve from `[lsp]` config → next-to-exe → PATH.
+  For Odin, `lsp_client_start` also exports `OLS_BUILTIN_FOLDER` so ols
+  can resolve Odin's `builtin`/`intrinsics` packages (len/make/append,
+  `core:`/`base:`) for completion/hover/def — probing `<ols-dir>/builtin`
+  (dev: `vendor/odin-lsp/builtin`; macOS `.app`; Windows beside `ols.exe`)
+  then `<ols-dir>/../lib/bragi/builtin` (packaged Linux libdir). Skipped if
+  ols came off PATH (no dir to anchor on); the packaging scripts ship the
+  folder beside/near the binary on every platform.
   Teardown mirrors `fff_teardown` (quit flag, close stdin to EOF the
   reader, `WaitThread`, reap).
 - **`lsp_posix.odin`** / **`lsp_windows.odin`** — process spawn with
@@ -303,8 +322,17 @@ sentinel that forces full rebuild on next read.
 - Cmd OR Ctrl (`KMOD_GUI | KMOD_CTRL`) trigger shortcuts so bindings
   work cross-platform.
 - `resize_event_watch` (registered via `AddEventWatch`) fires
-  *synchronously* during macOS live-resize, forcing redraws while
-  Cocoa otherwise blocks the main thread.
+  *synchronously* during live-resize, forcing redraws while the OS
+  otherwise blocks the main thread — but **only macOS and Windows block
+  it** (Cocoa / the Win32 modal resize loop). The redraw is gated on
+  `WATCH_REDRAWS_ON_RESIZE :: ODIN_OS != .Linux`. On Linux (X11/Wayland)
+  the main thread keeps running during resize, so the normal render loop
+  already redraws; calling `draw_frame()` in the watch there is not just
+  redundant — each resize step fires 2–3 window events and every
+  `draw_frame` ends in a VSync-blocked `RenderPresent`, so doing it
+  synchronously inside the event pump stalls event delivery and the window
+  lags seconds behind the cursor. The watch still runs the cheap
+  `refresh_pixel_density()` on Linux (density-gated, for DPI changes).
 - Mouse routing: button-down sets `g_active_idx` and `g_drag_idx`;
   button-up routes back to `g_drag_idx` (so the originating pane's
   drag state clears even if the cursor wandered). Wheel routes to

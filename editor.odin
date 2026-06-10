@@ -3,41 +3,45 @@ package bragi
 import "core:strings"
 import "core:unicode/utf8"
 
-Scrollbar_Drag :: enum { None, Vertical, Horizontal }
+Scrollbar_Drag :: enum {
+	None,
+	Vertical,
+	Horizontal,
+}
 
 Editor :: struct {
-	buffer:         Piece_Buffer,
-	cursor:         int, // byte offset
-	anchor:         int, // selection anchor
-	desired_col:    int,
-	blink_timer:    f32,
-	scroll_x:       f32,
-	scroll_y:       f32,
-	mouse_drag:     bool,
-	sb_drag:        Scrollbar_Drag,
-	sb_drag_offset: f32,
+	buffer:                   Piece_Buffer,
+	cursor:                   int, // byte offset
+	anchor:                   int, // selection anchor
+	desired_col:              int,
+	blink_timer:              f32,
+	scroll_x:                 f32,
+	scroll_y:                 f32,
+	mouse_drag:               bool,
+	sb_drag:                  Scrollbar_Drag,
+	sb_drag_offset:           f32,
 
 	// Undo/redo state.
-	undo_stack:   [dynamic]Undo_Group,
-	redo_stack:   [dynamic]Undo_Group,
-	pending:      Undo_Group,
-	pending_kind: Pending_Kind,
+	undo_stack:               [dynamic]Undo_Group,
+	redo_stack:               [dynamic]Undo_Group,
+	pending:                  Undo_Group,
+	pending_kind:             Pending_Kind,
 
 	// Vim modal state.
-	mode:         Mode,
-	vim_count:    int,
-	vim_op:       Vim_Operator,
-	vim_op_count: int,
-	vim_prefix:   Vim_Prefix,
+	mode:                     Mode,
+	vim_count:                int,
+	vim_op:                   Vim_Operator,
+	vim_op_count:             int,
+	vim_prefix:               Vim_Prefix,
 
 	// File state.
-	file_path:  string, // owned; "" means no file
-	dirty:      bool,
-	language:   Language,
-	lsp_open:   bool,    // didOpen has been sent to the language server for this file
-	lsp_sent_version: u64, // buffer.version at the last didChange we sent
-	eol:        EOL,
-	eol_mixed:  bool, // transient — set by load_file when input had mixed endings
+	file_path:                string, // owned; "" means no file
+	dirty:                    bool,
+	language:                 Language,
+	lsp_open:                 bool, // didOpen has been sent to the language server for this file
+	lsp_sent_version:         u64, // buffer.version at the last didChange we sent
+	eol:                      EOL,
+	eol_mixed:                bool, // transient — set by load_file when input had mixed endings
 
 	// External-change detection. `file_mtime_ns` is the modification
 	// time we observed at the last successful load or save (in
@@ -46,21 +50,21 @@ Editor :: struct {
 	// against this. `external_changed` is set when on-disk mtime
 	// drifted past ours AND the buffer is dirty (so we can't silently
 	// reload). Cleared on `:reload` or successful `:w`.
-	file_mtime_ns:    i64,
-	external_changed: bool,
+	file_mtime_ns:            i64,
+	external_changed:         bool,
 
 
 	// Command-line ":..." state (Command mode). Reused for Search mode input.
-	cmd_buffer: [dynamic]u8,
-	want_quit:  bool,
+	cmd_buffer:               [dynamic]u8,
+	want_quit:                bool,
 
 	// Search state (vim-style). pattern persists across uses so n/N can repeat.
-	search_pattern: string, // owned; "" if no search yet
-	search_forward: bool,
+	search_pattern:           string, // owned; "" if no search yet
+	search_forward:           bool,
 
 	// Cached editor_max_line_cols result; invalidated by buffer.version mismatch.
-	cached_max_cols:     int,
-	cached_max_cols_ver: u64,
+	cached_max_cols:          int,
+	cached_max_cols_ver:      u64,
 
 	// line_starts[i] = byte offset of the start of line i. Always at least
 	// one entry (line 0 starts at 0). Lazily rebuilt when buffer.version
@@ -68,23 +72,23 @@ Editor :: struct {
 	// editor_nth_line_start, and editor_total_lines avoid full-buffer walks.
 	// line_widths[i] = column width of line i (parallel to line_starts);
 	// keeps editor_max_line_cols cheap by avoiding per-frame buffer scans.
-	line_starts:     [dynamic]int,
-	line_widths:     [dynamic]int,
-	line_starts_ver: u64,
+	line_starts:              [dynamic]int,
+	line_widths:              [dynamic]int,
+	line_starts_ver:          u64,
 
 	// Cache of every match position for the current search pattern.
 	// Invalidated when buffer.version changes or the pattern differs from
 	// the one that was scanned. Without this, scrolling rescans the full
 	// buffer every frame for the [n/m] readout.
-	search_match_positions:    [dynamic]int,
-	search_match_ver:          u64,
-	search_match_pattern:      string, // owned clone of pattern at time of cache
-	search_match_ignore_case:  bool,   // case-mode the cache was built under
+	search_match_positions:   [dynamic]int,
+	search_match_ver:         u64,
+	search_match_pattern:     string, // owned clone of pattern at time of cache
+	search_match_ignore_case: bool, // case-mode the cache was built under
 
 	// Per-search override of case sensitivity (-1 = sensitive via `\C`,
 	// 0 = use config defaults, +1 = insensitive via `\c`). Set when the
 	// user submits a pattern via `/` or `?`.
-	search_force_case: i8
+	search_force_case:        i8,
 }
 
 editor_make :: proc() -> Editor {
@@ -97,8 +101,8 @@ editor_destroy :: proc(ed: ^Editor) {
 	undo_group_destroy(&ed.pending)
 	undo_stack_destroy(&ed.undo_stack)
 	undo_stack_destroy(&ed.redo_stack)
-	if len(ed.file_path) > 0           do delete(ed.file_path)
-	if len(ed.search_pattern) > 0      do delete(ed.search_pattern)
+	if len(ed.file_path) > 0 do delete(ed.file_path)
+	if len(ed.search_pattern) > 0 do delete(ed.search_pattern)
 	if len(ed.search_match_pattern) > 0 do delete(ed.search_match_pattern)
 	delete(ed.cmd_buffer)
 	delete(ed.line_starts)
@@ -126,10 +130,14 @@ editor_selection_range :: proc(ed: ^Editor) -> (lo, hi: int) {
 
 utf8_lead_size :: proc(b: u8) -> int {
 	switch {
-	case b < 0x80: return 1
-	case b < 0xC0: return 1
-	case b < 0xE0: return 2
-	case b < 0xF0: return 3
+	case b < 0x80:
+		return 1
+	case b < 0xC0:
+		return 1
+	case b < 0xE0:
+		return 2
+	case b < 0xF0:
+		return 3
 	}
 	return 4
 }
@@ -156,7 +164,7 @@ editor_step_forward :: proc(ed: ^Editor, pos: int) -> int {
 // on a 100 MB buffer that's the difference between hundreds of
 // milliseconds and tens. A freshly-loaded file has just one piece;
 // even a heavily-edited file usually stays in the dozens.
-@(private="file")
+@(private = "file")
 ensure_line_starts :: proc(ed: ^Editor) {
 	if ed.line_starts_ver == ed.buffer.version && len(ed.line_starts) > 0 do return
 	clear(&ed.line_starts)
@@ -168,7 +176,7 @@ ensure_line_starts :: proc(ed: ^Editor) {
 	pos := 0
 	for piece in piece_buffer_pieces(gb) {
 		src := piece_buffer_source(gb, piece)
-		bytes := src[piece.start : piece.start + piece.length]
+		bytes := src[piece.start:piece.start + piece.length]
 		for b, i in bytes {
 			switch b {
 			case '\n':
@@ -190,7 +198,7 @@ ensure_line_starts :: proc(ed: ^Editor) {
 // Walks the bytes of line `line_idx` and returns its column width, honoring
 // tab stops and skipping UTF-8 continuation bytes. Lines are typically short,
 // so the per-byte branch in piece_buffer_byte_at is a non-issue here.
-@(private="file")
+@(private = "file")
 compute_line_width_for :: proc(ed: ^Editor, line_idx: int) -> int {
 	start := ed.line_starts[line_idx]
 	end: int
@@ -212,13 +220,13 @@ compute_line_width_for :: proc(ed: ^Editor, line_idx: int) -> int {
 	return cols
 }
 
-@(private="file")
+@(private = "file")
 bisect_first_gt :: proc(line_starts: []int, value: int) -> int {
 	lo, hi := 0, len(line_starts)
 	for lo < hi {
 		mid := (lo + hi) / 2
 		if line_starts[mid] > value do hi = mid
-		else                        do lo = mid + 1
+		else do lo = mid + 1
 	}
 	return lo
 }
@@ -308,14 +316,15 @@ editor_pos_to_line_col :: proc(ed: ^Editor, pos: int) -> (line, col: int) {
 	for lo < hi {
 		mid := (lo + hi) / 2
 		if ed.line_starts[mid] <= pos do lo = mid + 1
-		else                          do hi = mid
+		else do hi = mid
 	}
 	line = lo - 1
 	if line < 0 do line = 0
 	for i := ed.line_starts[line]; i < pos; {
 		b := piece_buffer_byte_at(&ed.buffer, i)
 		switch b {
-		case '\n': return
+		case '\n':
+			return
 		case '\t':
 			col += g_config.editor.tab_size - (col % g_config.editor.tab_size)
 			i += 1
@@ -390,7 +399,7 @@ editor_pos_at_line_col :: proc(ed: ^Editor, line, col: int) -> int {
 }
 
 // Apply a buffer insert at cursor and record it in the undo log.
-@(private="file")
+@(private = "file")
 do_insert :: proc(ed: ^Editor, bytes: []u8) {
 	pos := ed.cursor
 	editor_buffer_insert(ed, pos, bytes)
@@ -404,7 +413,7 @@ do_insert :: proc(ed: ^Editor, bytes: []u8) {
 // Apply a buffer delete and record it. Caller passes new_cursor (and we mirror
 // it in anchor) — both backspace (cursor moves back) and forward-delete (cursor
 // stays at deletion start) flow through here.
-@(private="file")
+@(private = "file")
 do_delete_range :: proc(ed: ^Editor, pos, count: int, new_cursor: int) {
 	if count <= 0 do return
 	bytes := make([]u8, count, context.temp_allocator)
@@ -433,12 +442,12 @@ editor_replace_range :: proc(ed: ^Editor, lo, hi: int, s: string) {
 		editor_buffer_insert(ed, lo, transmute([]u8)s)
 		record_insert(ed, lo, transmute([]u8)s, new_cursor, new_cursor)
 	}
-	ed.cursor  = new_cursor
-	ed.anchor  = new_cursor
-	ed.dirty   = true
+	ed.cursor = new_cursor
+	ed.anchor = new_cursor
+	ed.dirty = true
 }
 
-@(private="file")
+@(private = "file")
 do_delete_selection :: proc(ed: ^Editor) -> bool {
 	if !editor_has_selection(ed) do return false
 	lo, hi := editor_selection_range(ed)
@@ -447,27 +456,33 @@ do_delete_selection :: proc(ed: ^Editor) -> bool {
 }
 
 // Open-bracket → matching close-bracket. Returns 0 for unpaired runes.
-@(private="file")
+@(private = "file")
 auto_close_pair :: proc(r: rune) -> rune {
 	switch r {
-	case '(': return ')'
-	case '[': return ']'
-	case '{': return '}'
-	case '"': return '"'
-	case '\'': return '\''
+	case '(':
+		return ')'
+	case '[':
+		return ']'
+	case '{':
+		return '}'
+	case '"':
+		return '"'
+	case '\'':
+		return '\''
 	}
 	return 0
 }
 
-@(private="file")
+@(private = "file")
 is_close_bracket :: proc(r: rune) -> bool {
 	switch r {
-	case ')', ']', '}', '"', '\'': return true
+	case ')', ']', '}', '"', '\'':
+		return true
 	}
 	return false
 }
 
-@(private="file")
+@(private = "file")
 is_word_byte :: proc(b: u8) -> bool {
 	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_'
 }
@@ -513,7 +528,7 @@ editor_line_bounds_at :: proc(ed: ^Editor, pos: int) -> (start, end: int) {
 // Decide whether to auto-insert the closing pair after typing `r`.
 // Quotes (' ") get extra checks so contractions ("don't") and word-adjacent
 // quotes don't get spurious closing chars.
-@(private="file")
+@(private = "file")
 should_auto_close :: proc(ed: ^Editor, r: rune) -> bool {
 	pair := auto_close_pair(r)
 	if pair == 0 do return false
@@ -577,11 +592,13 @@ editor_insert_rune :: proc(ed: ^Editor, r: rune) {
 	ed.blink_timer = 0
 }
 
-@(private="file")
+@(private = "file")
 matches_bracket_pair :: proc(open_b, close_b: u8) -> bool {
-	return (open_b == '{' && close_b == '}') ||
-	       (open_b == '[' && close_b == ']') ||
-	       (open_b == '(' && close_b == ')')
+	return(
+		(open_b == '{' && close_b == '}') ||
+		(open_b == '[' && close_b == ']') ||
+		(open_b == '(' && close_b == ')') \
+	)
 }
 
 // Insert "\n" + the leading whitespace of the current line, preserving indent.
@@ -614,7 +631,7 @@ editor_smart_newline :: proc(ed: ^Editor) {
 	// Use a tab for the extra indent if existing indent uses tabs; otherwise spaces.
 	indent_uses_tabs := false
 	for b in ws {
-		if b == '\t' { indent_uses_tabs = true; break }
+		if b == '\t' {indent_uses_tabs = true; break}
 	}
 
 	if between_pair {
@@ -699,7 +716,7 @@ editor_delete_forward :: proc(ed: ^Editor) {
 	ed.blink_timer = 0
 }
 
-@(private="file")
+@(private = "file")
 finish_move :: proc(ed: ^Editor, extend: bool, update_desired_col: bool = true) {
 	commit_pending(ed)
 	if !extend do ed.anchor = ed.cursor
@@ -778,7 +795,7 @@ editor_insert_soft_tab :: proc(ed: ^Editor) {
 
 // ASCII tolower. Used by case-insensitive search; sufficient for the
 // literal-substring matcher we have today (no Unicode case folding).
-@(private="file")
+@(private = "file")
 ascii_tolower :: proc(b: u8) -> u8 {
 	if b >= 'A' && b <= 'Z' do return b + 32
 	return b
@@ -789,8 +806,10 @@ ascii_tolower :: proc(b: u8) -> u8 {
 // case when no uppercase appears in the pattern.
 editor_pattern_ignore_case :: proc(pattern: string, force: i8) -> bool {
 	switch force {
-	case  1: return true
-	case -1: return false
+	case 1:
+		return true
+	case -1:
+		return false
 	}
 	if !g_config.editor.ignorecase do return false
 	if g_config.editor.smartcase {
@@ -802,7 +821,7 @@ editor_pattern_ignore_case :: proc(pattern: string, force: i8) -> bool {
 	return true
 }
 
-@(private="file")
+@(private = "file")
 match_at :: proc(ed: ^Editor, pos: int, needle: []u8, ignore_case: bool) -> bool {
 	for j in 0 ..< len(needle) {
 		a := piece_buffer_byte_at(&ed.buffer, pos + j)
@@ -817,7 +836,7 @@ match_at :: proc(ed: ^Editor, pos: int, needle: []u8, ignore_case: bool) -> bool
 }
 
 // Find first occurrence of `needle` at or after `start`, in [start, end).
-@(private="file")
+@(private = "file")
 find_in_range :: proc(ed: ^Editor, needle: []u8, start, end: int, ignore_case: bool) -> int {
 	if len(needle) == 0 do return -1
 	last := end - len(needle)
@@ -828,7 +847,7 @@ find_in_range :: proc(ed: ^Editor, needle: []u8, start, end: int, ignore_case: b
 }
 
 // Find last occurrence of `needle` strictly before `before`, scanning backward.
-@(private="file")
+@(private = "file")
 find_in_range_backward :: proc(ed: ^Editor, needle: []u8, before: int, ignore_case: bool) -> int {
 	if len(needle) == 0 do return -1
 	for i := before - len(needle); i >= 0; i -= 1 {
@@ -840,7 +859,7 @@ find_in_range_backward :: proc(ed: ^Editor, needle: []u8, before: int, ignore_ca
 // Rebuilds the cached list of match positions for `pattern` if buffer,
 // pattern, or effective case-mode changed since the last scan. Caller is
 // responsible for not asking when pattern is empty.
-@(private="file")
+@(private = "file")
 ensure_search_matches :: proc(ed: ^Editor, pattern: string) {
 	ic := editor_pattern_ignore_case(pattern, ed.search_force_case)
 	if ed.search_match_ver == ed.buffer.version &&
@@ -879,7 +898,7 @@ editor_search_stats :: proc(ed: ^Editor, pattern: string) -> (current, total: in
 	for lo < hi {
 		mid := (lo + hi) / 2
 		if ed.search_match_positions[mid] < ed.cursor do lo = mid + 1
-		else                                          do hi = mid
+		else do hi = mid
 	}
 	if lo < total && ed.search_match_positions[lo] == ed.cursor {
 		current = lo + 1

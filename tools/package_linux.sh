@@ -215,6 +215,20 @@ if [[ -n "$OLS_SRC" && -f "$OLS_SRC" ]]; then
 	cp "$OLS_SRC" "$STAGING/usr/bin/ols"
 	chmod 0755 "$STAGING/usr/bin/ols"
 	strip "$STAGING/usr/bin/ols" 2>/dev/null || true
+
+	# ols needs its `builtin` folder (Odin's builtin/intrinsics packages) to
+	# resolve builtins for completion / hover / go-to-def. A multi-file data
+	# dir doesn't belong in /usr/bin (FHS), so ship it in the private libdir
+	# next to fff; the binary points ols at it via OLS_BUILTIN_FOLDER (see
+	# lsp_client_start, which probes /usr/lib/<bin>/builtin).
+	OLS_BUILTIN_SRC="$REPO_ROOT/vendor/odin-lsp/builtin"
+	if [[ -d "$OLS_BUILTIN_SRC" ]]; then
+		echo "→ bundling ols builtin folder"
+		mkdir -p "$STAGING/usr/lib/$BIN_NAME"
+		cp -R "$OLS_BUILTIN_SRC" "$STAGING/usr/lib/$BIN_NAME/builtin"
+	else
+		echo "  warning: ols builtin folder missing ($OLS_BUILTIN_SRC) — .odin builtins won't resolve"
+	fi
 else
 	echo "  warning: ols not bundled (missing ${OLS_SRC:-no binary for $RPM_ARCH}) — .odin LSP falls back to PATH"
 fi
