@@ -138,6 +138,12 @@ echo
 ODIN_OUT="$REPO_ROOT/$BIN_NAME"
 if (( STAGE_BUILD )); then
 	echo "→ building $BIN_NAME (release)"
+	# NOTE: on Apple Silicon, Odin dev-2026-05 / dev-2026-06 have a codegen
+	# regression at optimized levels (-o:speed / -o:size, sometimes -o:minimal)
+	# that miscompiles SDL_RenderFillRect — menu / finder / sidebar fills render
+	# WHITE. Which level trips it is source-dependent and unstable. Until the
+	# upstream fix lands, build releases on dev-2026-04 (unaffected at every
+	# level) or drop to `-o:none` here. https://github.com/odin-lang/Odin/issues/6809
 	(
 		cd "$REPO_ROOT"
 		odin build . -o:speed -out:"$BIN_NAME"

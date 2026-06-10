@@ -121,12 +121,29 @@ odin build . -o:speed
 `-o:speed` matters — without it the file-load scan is 5–10× slower in
 the unoptimized debug build.
 
+> **⚠️ macOS / Apple Silicon on Odin `dev-2026-05` / `dev-2026-06`:** these
+> compilers have a codegen regression at optimized levels (`-o:speed`,
+> `-o:size`, and sometimes `-o:minimal`) that miscompiles
+> `SDL_RenderFillRect` — filled rectangles (menus, finder, sidebar) render
+> **white**. Editor text and background are unaffected (they use textures /
+> `RenderClear`). Which `-o` level trips it is source-dependent and shifts
+> with unrelated edits, so until the upstream fix lands, build with
+> **`-o:none`** on these toolchains:
+> ```sh
+> odin build . -o:none
+> ```
+> `dev-2026-04` is fine at every level (and is the safe fallback for
+> packaged release builds). This is an Odin compiler bug, not a Bragi or SDL
+> bug — tracked upstream at
+> [odin-lang/Odin#6809](https://github.com/odin-lang/Odin/issues/6809).
+
 ### Dependencies
 
 - An [Odin compiler](https://odin-lang.org/docs/install/) from
-  **`dev-2026-04`** or newer. The `core:os` package was overhauled in
-  that release; Bragi uses the new API and won't build against older
-  compilers.
+  **`dev-2026-04`** or newer; developed against **`dev-2026-06`**. The
+  `core:os` package was overhauled in `dev-2026-04`; Bragi uses the new API
+  and won't build against older compilers. On macOS / Apple Silicon with
+  `dev-2026-05`+ see the optimization caveat above — build with `-o:none`.
 - **SDL3** + **SDL3_ttf** at runtime.
 - **libvterm** for the embedded terminal pane.
 - **[fff](https://github.com/dmtrKovalenko/fff)** powers the fuzzy file

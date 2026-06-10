@@ -53,7 +53,7 @@ file_watch_shutdown :: proc() {
 // (a file that can't be watched still works otherwise).
 file_watch_add :: proc(path: string) {
 	if len(path) == 0 do return
-	dir := filepath.dir(path, context.temp_allocator)
+	dir := filepath.dir(path)
 	file_watch_backend_add(dir)
 }
 
