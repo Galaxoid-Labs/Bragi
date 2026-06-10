@@ -84,7 +84,18 @@ lsp_on_editor_opened :: proc(ed: ^Editor) {
 		if c == nil do return
 	}
 	lsp_did_open(c, ed)
+
+	// jai-lsp needs the Jai compiler for diagnostics + typed hover, but it
+	// isn't bundled (no canonical Jai install path). If it's unconfigured,
+	// hint once — completion / signatures / go-to-def still work without it.
+	if ed.language == .Jai && len(g_config.lsp.jai_compiler) == 0 && !g_jai_compiler_hinted {
+		g_jai_compiler_hinted = true
+		set_status_message("Jai diagnostics + typed hover need [lsp] jai_compiler — run :config to set it", .Info)
+	}
 }
+
+@(private="file")
+g_jai_compiler_hinted: bool
 
 // Called as a pane/editor is torn down (editor.odin), before file_path is freed.
 lsp_on_editor_closed :: proc(ed: ^Editor) {
@@ -220,6 +231,15 @@ lsp_pos_to_byte :: proc(ed: ^Editor, line, character: int) -> int {
 // Client start / stop
 // ──────────────────────────────────────────────────────────────────
 
+// Directory portion of a path (no trailing slash); "" if none.
+@(private="file")
+lsp_dir_of :: proc(path: string) -> string {
+	for i := len(path) - 1; i >= 0; i -= 1 {
+		if path[i] == '/' do return path[:i]
+	}
+	return ""
+}
+
 @(private="file")
 lsp_client_start :: proc(lang: Language, root: string) -> ^LSP_Client {
 	bin, ok := lsp_resolve_binary(lang)
@@ -238,6 +258,21 @@ lsp_client_start :: proc(lang: Language, root: string) -> ^LSP_Client {
 		if len(g_config.lsp.jai_compiler) > 0 {
 			append(&env, fmt.tprintf("JAI_COMPILER=%s", g_config.lsp.jai_compiler))
 		}
+	}
+
+	// A Finder/Applications-launched .app inherits a stripped PATH. The
+	// servers (and the compilers they shell out to — jai's linker, odin)
+	// need a real PATH or typed hover / diagnostics silently fail while
+	// scan-based features still work. Hand them the usual dirs, plus the
+	// configured Jai compiler's own dir.
+	when ODIN_OS != .Windows {
+		path := "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+		if lang == .Jai && len(g_config.lsp.jai_compiler) > 0 {
+			if d := lsp_dir_of(g_config.lsp.jai_compiler); len(d) > 0 {
+				path = fmt.tprintf("%s:%s", d, path)
+			}
+		}
+		append(&env, fmt.tprintf("PATH=%s", path))
 	}
 
 	pipes, spawned := lsp_spawn([]string{bin}, root, env[:])
@@ -885,17 +920,31 @@ lsp_resolve_binary :: proc(lang: Language) -> (path: string, ok: bool) {
 
 	base := sdl.GetBasePath()
 	if base != nil {
-		// Packaged layout: clean name next to the binary.
-		cand := fmt.tprintf("%s%s", string(base), name)
-		if os.exists(cand) do return cand, true
-		// Dev convenience: the arch-suffixed binary under vendor/ (running
-		// ./Bragi straight from the repo, where GetBasePath is the repo root).
-		if vp := lsp_vendored_path(lang, string(base)); len(vp) > 0 && os.exists(vp) {
-			return vp, true
+		b := string(base)
+		if p, found := lsp_try_dir(b, name, lang); found do return p, true
+		// macOS: SDL_GetBasePath returns Contents/Resources/, but the main
+		// binary AND the bundled servers live in the Contents/MacOS/ sibling.
+		// Check it, or a packaged .app never finds its own helpers.
+		when ODIN_OS == .Darwin {
+			marker := "Contents/Resources/"
+			if strings.has_suffix(b, marker) {
+				macos := fmt.tprintf("%sContents/MacOS/", b[:len(b) - len(marker)])
+				if p, found := lsp_try_dir(macos, name, lang); found do return p, true
+			}
 		}
 	}
 	// Fall back to PATH (execvp resolves a bare name).
 	return strings.clone(name, context.temp_allocator), true
+}
+
+// Look for `name` (clean bundled name) or the vendored arch-suffixed binary
+// inside `dir`. Returns the found path (temp-allocated) and whether it hit.
+@(private="file")
+lsp_try_dir :: proc(dir, name: string, lang: Language) -> (string, bool) {
+	cand := fmt.tprintf("%s%s", dir, name)
+	if os.exists(cand) do return cand, true
+	if vp := lsp_vendored_path(lang, dir); len(vp) > 0 && os.exists(vp) do return vp, true
+	return "", false
 }
 
 // Path to the vendored, arch-suffixed server binary relative to `base` (the

@@ -88,16 +88,17 @@ ignorecase   = false
 smartcase    = false
 
 [lsp]
-# Language servers. jai-lsp powers .jai files. Leave a path blank to
-# resolve the server next to the Bragi binary, then PATH. jai_entry
-# points jai-lsp at your project's entry .jai for diagnostics (auto-
-# detected from build.jai / first.jai / main.jai when blank).
-# jai_compiler is the absolute path to your jai compiler (e.g. jai-macos)
-# — passed to jai-lsp as JAI_COMPILER so it can type-check (diagnostics +
-# rich hover). With it set you need no jai symlink / PATH tweak.
-# jai          = /path/to/jai-lsp
-# jai_entry    = /path/to/main.jai
-# jai_compiler = /Users/you/Development/Tools/jai/bin/jai-macos
+# Language servers (jai-lsp for .jai, ols for .odin) are bundled and found
+# automatically — leave jai / odin blank unless you want a custom build.
+# jai_compiler is the one thing NOT bundled: the absolute path to your Jai
+# compiler (e.g. .../jai/bin/jai-macos), passed to jai-lsp as JAI_COMPILER
+# for Jai diagnostics + typed hover. (Odin's equivalent is the odin compiler
+# on PATH + an ols.json in the workspace.) jai_entry optionally pins jai-lsp's
+# type-check to a specific entry .jai. Saving this file applies changes live.
+jai          =
+odin         =
+jai_entry    =
+jai_compiler =
 
 [theme]
 # Each value is #RRGGBB or #RRGGBBAA.

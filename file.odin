@@ -378,6 +378,11 @@ editor_save_file :: proc(ed: ^Editor) -> bool {
 	ed.file_mtime_ns = stat_mtime_ns(ed.file_path)
 	ed.external_changed = false
 	lsp_on_editor_saved(ed)
+
+	// Saving the config file applies it immediately — no restart needed.
+	if cfg := config_path(context.temp_allocator); len(cfg) > 0 && ed.file_path == cfg {
+		config_reload()
+	}
 	return true
 }
 

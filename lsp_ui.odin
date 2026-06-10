@@ -265,12 +265,50 @@ hover_clear :: proc() {
 	g_hover.pending_id = 0
 }
 
+// Token kinds worth hovering — actual symbols. Comments / strings /
+// keywords / numbers / literals get no popup (hovering them is just noise).
+@(private="file")
+lsp_hoverable_kind :: proc(k: Token_Kind) -> bool {
+	#partial switch k {
+	case .Default, .Function, .Type:
+		return true
+	}
+	return false
+}
+
+// The syntax token kind covering byte `pos` — reuses the same tokenizer the
+// editor draws with, so "is this a comment / string / keyword?" matches what
+// you see on screen.
+@(private="file")
+lsp_token_kind_at :: proc(ed: ^Editor, pos: int) -> Token_Kind {
+	if ed.language == .None do return .Default
+	line, _ := editor_pos_to_line_col(ed, pos)
+	line_start := editor_nth_line_start(ed, line)
+	line_end := editor_line_end(ed, line_start)
+	n := line_end - line_start
+	if n <= 0 do return .Default
+	buf := make([]u8, n, context.temp_allocator)
+	for i in 0 ..< n do buf[i] = piece_buffer_byte_at(&ed.buffer, line_start + i)
+	state := compute_state_at_line(ed, line) // carry block-comment state in
+	tokens, _ := syntax_tokenize(ed.language, buf, state)
+	rel := pos - line_start
+	for tok in tokens {
+		if rel >= tok.start && rel < tok.end do return tok.kind
+	}
+	return .Default
+}
+
 // Cmd/Ctrl-hover the identifier at `pos`: underline it and request hover.
 hover_set_target :: proc(ed: ^Editor, pos: int) {
 	if !lsp_ready(ed.language) {hover_clear(); return}
 	lo, hi, ok := lsp_ident_range(ed, pos)
 	if !ok {hover_clear(); return}
 	if g_hover.has_target && g_hover.cmd_active && g_hover.target_lo == lo && g_hover.target_hi == hi do return
+	// Only hover real symbols — skip comments / strings / keywords / literals.
+	if !lsp_hoverable_kind(lsp_token_kind_at(ed, lo)) {
+		hover_clear()
+		return
+	}
 	g_hover.cmd_active = true
 	g_hover.target_lo = lo
 	g_hover.target_hi = hi

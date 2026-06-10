@@ -1937,6 +1937,55 @@ editor_font_reopen :: proc() {
 	text_cache_clear()
 }
 
+// Re-read config.ini and re-apply everything that's live-applicable: theme,
+// editor settings, and all three fonts (reopened at the configured sizes).
+// LSP path/compiler changes land on the next server (re)start. Reopens into
+// fresh handles, then closes the old ones de-duped, so the editor font
+// aliasing the UI font never double-frees.
+config_reload :: proc() {
+	old_lsp := g_config.lsp // capture before reload to detect server-affecting changes
+	config_load()
+	g_theme = g_config.theme
+
+	old_ui, old_term, old_edit := g_font, g_terminal_font, g_editor_font
+
+	g_font = open_configured_font(g_config.font.size * g_density)
+	if g_font != nil do ttf.SetFontHinting(g_font, g_config.font.hinting)
+
+	g_terminal_font = open_terminal_font(g_config.font.size * g_density)
+	recompute_terminal_metrics()
+
+	// Editor font (reset to the configured size — a reload clears Cmd +/- zoom).
+	g_editor_font_size = g_config.editor_font.size
+	g_editor_font = open_font_path(g_config.editor_font.path, g_editor_font_size * g_density)
+	if g_editor_font == nil {
+		g_editor_font = g_font
+	} else {
+		ttf.SetFontHinting(g_editor_font, g_config.editor_font.hinting)
+	}
+	g_char_width  = measure_char_width(g_editor_font)
+	g_line_height = g_editor_font_size * g_config.editor.line_spacing
+
+	if old_edit != nil && old_edit != old_ui do ttf.CloseFont(old_edit)
+	if old_ui != nil do ttf.CloseFont(old_ui)
+	if old_term != nil do ttf.CloseFont(old_term)
+
+	text_cache_clear()
+
+	// LSP settings only take effect at server start — restart any whose
+	// path/compiler/entry changed so e.g. a freshly-set jai_compiler applies
+	// without a manual :lsp restart.
+	n := g_config.lsp
+	if n.jai_path != old_lsp.jai_path || n.jai_compiler != old_lsp.jai_compiler || n.jai_entry != old_lsp.jai_entry {
+		lsp_restart(.Jai)
+	}
+	if n.odin_path != old_lsp.odin_path {
+		lsp_restart(.Odin)
+	}
+
+	set_status_message("config reloaded", .Info)
+}
+
 // Clamp + apply a new editor font size. No-op when unchanged.
 editor_font_set_size :: proc(size: f32) {
 	s := clamp(size, EDITOR_FONT_MIN, EDITOR_FONT_MAX)
@@ -2119,6 +2168,13 @@ open_file_smart :: proc(path: string) {
 // panes — pressing Cmd/Ctrl+W on a file goes back to the welcome screen
 // and stays there (closing files never quits; that's Cmd+Q / :q).
 close_active_pane_unconditional :: proc() {
+	// Drop any LSP popups first — they hold the pane's index + byte-offset
+	// anchors into its buffer, which `ordered_remove` below invalidates.
+	completion_dismiss()
+	signature_dismiss()
+	hover_clear()
+	def_picker_dismiss()
+
 	idx := g_active_idx
 	if len(g_editors) == 1 {
 		editor_destroy(&g_editors[0])
