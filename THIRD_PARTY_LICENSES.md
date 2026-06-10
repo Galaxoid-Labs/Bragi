@@ -10,6 +10,7 @@ copied into every distribution Bragi ships.
 | **libvterm** — VT state machine for the embedded terminal pane (linked dynamically; bundled in macOS .app, vendored on Windows). © 2008 Paul Evans. | MIT | [`licenses/libvterm.txt`](licenses/libvterm.txt) |
 | **fff** — fast recursive fuzzy file search powering the finder (linked dynamically; bundled on every platform). © 2025 Dmitriy Kovalenko. | MIT | [`licenses/fff.txt`](licenses/fff.txt) |
 | **ols** — the Odin Language Server, powering `.odin` intellisense (a standalone executable, bundled next to the binary and driven over LSP). © 2020 Daniel Gavin. | MIT | [`licenses/ols.txt`](licenses/ols.txt) |
+| **jai-lsp** — the Jai language server, powering `.jai` intellisense (a standalone executable, bundled next to the binary and driven over LSP). © 2026 Jacob Davis. | MIT | [`licenses/jai-lsp.txt`](licenses/jai-lsp.txt) |
 | **SDL3** — windowing, input, GPU rendering (linked dynamically; bundled on macOS, shipped as DLL on Windows). © 1997-2025 Sam Lantinga. | zlib | [`licenses/sdl3.txt`](licenses/sdl3.txt) |
 | **SDL3_ttf** — TTF / FreeType / HarfBuzz glue for text rendering. © 2001-2025 Sam Lantinga. | zlib | [`licenses/sdl3_ttf.txt`](licenses/sdl3_ttf.txt) |
 | **Fira Code** — embedded as `FiraCode-Regular.ttf` (the editor pane's default font). © 2014 The Fira Code Project Authors. | SIL OFL 1.1 | [`licenses/firacode.txt`](licenses/firacode.txt) |

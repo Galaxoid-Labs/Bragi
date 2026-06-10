@@ -373,6 +373,10 @@ Source: "$StagingDir\fff_c.dll";   DestDir: "{app}"; Flags: ignoreversion
 Source: "$StagingDir\jai-lsp.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "$StagingDir\ols.exe";     DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "$StagingDir\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
+; Third-party license notices for the bundled / linked deps. skipif* keeps
+; the installer building if a notice is absent in the staging tree.
+Source: "$StagingDir\THIRD_PARTY_LICENSES.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "$StagingDir\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
 
 [Icons]
 Name: "{group}\{#MyAppName}";        Filename: "{app}\{#MyAppExeName}"

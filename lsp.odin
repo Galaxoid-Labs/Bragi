@@ -644,7 +644,7 @@ lsp_range_fields_named :: proc(r: json.Object) -> (sl, sc, el, ec: int) {
 // Open `path` (if not already active) and move the cursor to (line,char).
 lsp_jump_to :: proc(path: string, line, character: int) {
 	cur := active_editor()
-	if cur.file_path != path {
+	if !lsp_path_eq(cur.file_path, path) {
 		p := strings.clone(path, context.temp_allocator)
 		open_file_smart(p)
 	}
@@ -1068,10 +1068,72 @@ lsp_path_to_uri :: proc(path: string) -> string {
 lsp_uri_to_path :: proc(uri: string) -> string {
 	s := uri
 	if strings.has_prefix(s, "file://") do s = s[7:]
+	// file:// URIs are percent-encoded (RFC 3986): a definition landing in
+	// a path with a space (`C:\Program Files\...`, the Jai modules dir) or
+	// other reserved char arrives as `%20` / `%3A`. Decode before we hand
+	// it to the file loader, or those targets silently fail to open.
+	s = lsp_percent_decode(s)
 	when ODIN_OS == .Windows {
-		if len(s) > 0 && s[0] == '/' do s = s[1:]
+		// Standard form is file:///C:/... → "/C:/..."; drop the slash that
+		// precedes the drive letter, then make separators native so the
+		// result both matches ed.file_path and opens reliably.
+		if len(s) >= 3 && s[0] == '/' && lsp_is_alpha(s[1]) && s[2] == ':' {
+			s = s[1:]
+		}
+		s, _ = strings.replace_all(s, "/", "\\", context.temp_allocator)
 	}
 	return s
+}
+
+// Decode %XX escapes. Returns the input unchanged (no copy) when there's
+// nothing to decode — the common case. Temp-allocated otherwise.
+@(private="file")
+lsp_percent_decode :: proc(s: string) -> string {
+	if strings.index_byte(s, '%') < 0 do return s
+	b := strings.builder_make(context.temp_allocator)
+	i := 0
+	for i < len(s) {
+		if s[i] == '%' && i + 2 < len(s) {
+			hi := lsp_hex_val(s[i + 1])
+			lo := lsp_hex_val(s[i + 2])
+			if hi >= 0 && lo >= 0 {
+				strings.write_byte(&b, u8(hi * 16 + lo))
+				i += 3
+				continue
+			}
+		}
+		strings.write_byte(&b, s[i])
+		i += 1
+	}
+	return strings.to_string(b)
+}
+
+@(private="file")
+lsp_hex_val :: proc(c: u8) -> int {
+	switch c {
+	case '0' ..= '9': return int(c - '0')
+	case 'a' ..= 'f': return int(c - 'a') + 10
+	case 'A' ..= 'F': return int(c - 'A') + 10
+	}
+	return -1
+}
+
+@(private="file")
+lsp_is_alpha :: proc(c: u8) -> bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+// Same file? On Windows compare case-insensitively and after separator
+// normalization — the server may hand back a lowercased drive or `/`
+// separators that still name the already-open document.
+lsp_path_eq :: proc(a, b: string) -> bool {
+	when ODIN_OS == .Windows {
+		na, _ := strings.replace_all(a, "/", "\\", context.temp_allocator)
+		nb, _ := strings.replace_all(b, "/", "\\", context.temp_allocator)
+		return strings.equal_fold(na, nb)
+	} else {
+		return a == b
+	}
 }
 
 lsp_obj_str :: proc(obj: json.Object, key: string) -> string {
