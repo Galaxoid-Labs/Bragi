@@ -377,7 +377,8 @@ normalize_crlf_inplace :: proc(buf: []u8) -> int {
 @(private="file")
 write_file_atomic :: proc(path: string, bytes: []u8) -> bool {
 	when ODIN_OS == .Windows {
-		return os.write_entire_file(path, bytes)
+		// write_entire_file now returns an Error (nil on success), not a bool.
+		return os.write_entire_file(path, bytes) == nil
 	} else {
 		// Resolve the real target: stat() follows symlinks, and its fullpath is
 		// the canonical file. We rename onto THAT, not onto `path` — renaming
