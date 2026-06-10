@@ -1914,6 +1914,23 @@ open_configured_font :: proc(size_px: f32) -> ^ttf.Font {
 	return open_font_path(g_config.font.path, size_px)
 }
 
+// Register the bundled Nerd Font as a glyph fallback on the UI font. A
+// user-supplied `[font] path` (e.g. Berkeley Mono) often lacks the symbol
+// glyphs the chrome uses — ⌘/⇧ in menu shortcuts, powerline/box-drawing in
+// status — so SDL3_ttf substitutes them from g_terminal_font when the
+// primary font has no glyph. UI font only: g_terminal_font is opened at the
+// same px size, so substituted glyphs match the chrome's metrics; the editor
+// font is runtime-zoomable and would mismatch a fixed-size fallback. Clears
+// any prior fallback first so repeated calls (config reload, density change)
+// don't stack stale handles. Safe no-op if either font failed to open.
+apply_ui_font_fallback :: proc() {
+	if g_font == nil do return
+	ttf.ClearFallbackFonts(g_font)
+	if g_terminal_font != nil {
+		_ = ttf.AddFallbackFont(g_font, g_terminal_font)
+	}
+}
+
 // Editor font size bounds for the Cmd +/- zoom.
 EDITOR_FONT_MIN :: f32(6)
 EDITOR_FONT_MAX :: f32(72)
@@ -1954,6 +1971,7 @@ config_reload :: proc() {
 
 	g_terminal_font = open_terminal_font(g_config.font.size * g_density)
 	recompute_terminal_metrics()
+	apply_ui_font_fallback()
 
 	// Editor font (reset to the configured size — a reload clears Cmd +/- zoom).
 	g_editor_font_size = g_config.editor_font.size
@@ -2332,6 +2350,7 @@ refresh_pixel_density :: proc() {
 	if g_terminal_font != nil do ttf.CloseFont(g_terminal_font)
 	g_terminal_font = open_terminal_font(g_config.font.size * g_density)
 	recompute_terminal_metrics()
+	apply_ui_font_fallback()
 
 	// Reopen the editor font at its current (possibly zoomed) size for the
 	// new density; this recomputes editor metrics and clears the cache.
@@ -2739,6 +2758,7 @@ main :: proc() {
 	g_terminal_font = open_terminal_font(g_config.font.size * g_density)
 	defer if g_terminal_font != nil do ttf.CloseFont(g_terminal_font)
 	recompute_terminal_metrics()
+	apply_ui_font_fallback()
 
 	// Editor document font — a separate handle so Cmd +/- can zoom it
 	// without touching the UI chrome. Starts at the configured editor

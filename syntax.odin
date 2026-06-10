@@ -39,6 +39,7 @@ Language :: enum {
 	Rust,
 	Ini,
 	Bash,
+	Gdscript,
 }
 
 // Per-language data table that drives `tokenize_with_spec`. New languages
@@ -271,6 +272,51 @@ BASH_KEYWORDS := []string{
 BASH_CONSTANTS := []string{ "true", "false" }
 
 // ──────────────────────────────────────────────────────────────────
+// GDScript (Godot)
+// ──────────────────────────────────────────────────────────────────
+//
+// Python-flavoured but its own language. `#` line comments, both quote
+// styles for strings (single quotes are strings here, not char literals
+// — single_quote_char scans the whole run so it reads correctly).
+// Annotations (`@export`, `@onready`, `@tool`, `@rpc`, …) ride on
+// directive_prefix = '@'. capitalized_types catches Godot's CamelCase
+// types (Vector2, Node, Color, …) without enumerating them all; the
+// lowercase primitives below still need listing.
+@(private="file")
+GDSCRIPT_KEYWORDS := []string{
+	// Control flow
+	"if", "elif", "else", "for", "while", "match", "when",
+	"break", "continue", "pass", "return",
+	"breakpoint", "assert", "await", "yield",
+	// Declarations
+	"var", "const", "func", "static", "class", "class_name", "extends",
+	"enum", "signal",
+	// Operators / membership
+	"and", "or", "not", "in", "is", "as",
+	"self", "super",
+	// Loaders
+	"preload", "load",
+	// Godot 3 holdovers (Godot 4 moves most of these to @annotations,
+	// but real-world files still carry them).
+	"export", "onready", "tool", "setget", "remote", "master", "puppet",
+	"remotesync", "mastersync", "puppetsync", "sync",
+}
+@(private="file")
+GDSCRIPT_TYPES := []string{
+	// Lowercase primitives — not caught by capitalized_types.
+	"int", "float", "bool", "void",
+	// A handful of ubiquitous CamelCase types listed explicitly so they
+	// highlight even if the capitalized heuristic is ever disabled; the
+	// rest of Godot's type zoo is caught by capitalized_types.
+	"String", "StringName", "NodePath", "Variant",
+	"Vector2", "Vector3", "Color", "Rect2", "Transform2D", "Transform3D",
+	"Array", "Dictionary", "Callable", "Signal",
+	"Node", "Node2D", "Node3D", "Object", "Resource",
+}
+@(private="file")
+GDSCRIPT_CONSTANTS := []string{ "true", "false", "null", "PI", "TAU", "INF", "NAN" }
+
+// ──────────────────────────────────────────────────────────────────
 // Spec table.  Indexed by `Language` so dispatch is O(1).
 // New built-ins go in here; INI-loaded languages would extend this
 // model (e.g. to a `[dynamic]Language_Spec` registry) later.
@@ -442,6 +488,25 @@ g_specs := [Language]Language_Spec{
 		// through as default text). Special params `$1 $@ $#` aren't
 		// caught because they aren't word identifiers — fine for v1.
 		directive_prefix = '$',
+	},
+	.Gdscript = Language_Spec{
+		name         = "gdscript",
+		display_name = "GDScript",
+		aliases      = []string{"gd", "godot"},
+		extensions   = []string{".gd"},
+		keywords     = GDSCRIPT_KEYWORDS,
+		types        = GDSCRIPT_TYPES,
+		constants    = GDSCRIPT_CONSTANTS,
+		line_comment        = "#",
+		// GDScript single quotes are strings (no char literal), and the
+		// single_quote_char scanner consumes the whole run, so it reads
+		// as a string either way — same as Bash.
+		double_quote_string = true,
+		single_quote_char   = true,
+		// Annotations: @export, @onready, @tool, @rpc, @icon, …
+		directive_prefix    = '@',
+		capitalized_types    = true,
+		detect_function_call = true,
 	},
 }
 

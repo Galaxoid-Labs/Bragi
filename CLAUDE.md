@@ -70,7 +70,7 @@ Both have identical advance width so cell math is unchanged.
   ex commands. Modes: `Insert`, `Normal`, `Visual`, `Visual_Line`,
   `Command`, `Search`.
 - **`syntax.odin`** — Per-language tokenizers (Odin / C / C++ / Go /
-  Jai / Swift / Rust / Bash / INI / Generic / None). Most go through
+  Jai / Swift / Rust / GDScript / Bash / INI / Generic / None). Most go through
   `tokenize_with_spec`; INI has its own dedicated tokenizer because
   sections / keys / values don't fit the C-family `Language_Spec`.
 - **`menu.odin`** — Right-click context menu.
