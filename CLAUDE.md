@@ -415,13 +415,25 @@ baked BG color stays right.
 Coordinates are pixel-snapped via `snap_px` to avoid blurring at
 fractional positions during smooth scroll.
 
+**macOS live-resize ghosting (SOLVED)** — text used to ghost/shiver
+while dragging the right/bottom edge. Cause: the `CAMetalLayer`'s
+default `contentsGravity` is `resize`, so for the one frame where the
+layer's bounds have already grown but the next Metal drawable hasn't
+presented, Core Animation *scales* the previous drawable to fill — the
+scaled stale frame is the ghost. Fix (`configure_metal_layer_for_resize`
+in `titlebar_darwin.odin`): set `contentsGravity = kCAGravityTopLeft`
+so the stale frame stays pinned at the origin (where the content is)
+and only the newly exposed strip lags a frame. **Critical detail:** it
+must target the layer from `SDL_GetRenderMetalLayer(g_renderer)`, NOT
+the window content view's `.layer` — SDL's Metal renderer hosts the
+real layer on a private metal subview, so messaging `contentView.layer`
+silently hits the wrong object (this cost three no-op attempts). The
+deeper `presentsWithTransaction` sync was deliberately NOT used: SDL
+owns the present, so forcing it risks regressing the everyday render
+path, and gravity alone fixed it.
+
 ## Engine-level limitations / known quirks
 
-- **macOS live-resize jumpiness** from right/bottom edges. Event
-  watch redraws but Cocoa stretches the last frame momentarily. Real
-  fix is `setPreservesContentDuringLiveResize: NO` via Odin's
-  Objective-C interop (`core:sys/darwin/Foundation`,
-  `intrinsics.objc_*`).
 - **No color emoji** — needs PlutoSVG glue in SDL3_ttf for bitmap
   glyph data.
 - **Combiners aren't drawn in the terminal** — `terminal_cell_at`

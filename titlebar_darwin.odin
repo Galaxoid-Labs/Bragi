@@ -1,7 +1,16 @@
 package bragi
 
+import "base:intrinsics"
 import NS "core:sys/darwin/Foundation"
 import sdl "vendor:sdl3"
+
+// CALayerContentsGravity constant (an NSString *) from QuartzCore. Pinning the
+// Metal layer's contentsGravity to top-left stops it from scaling the stale
+// frame during a live resize (see configure_titlebar).
+foreign import quartz_core "system:QuartzCore.framework"
+foreign quartz_core {
+	kCAGravityTopLeft: ^NS.String
+}
 
 // Standard macOS title-bar height in *logical* pixels. Has been 28 pt
 // since Big Sur (2020). Used by `compute_layout` to push the editor
@@ -48,29 +57,28 @@ configure_titlebar :: proc(window: ^sdl.Window) {
 	NS.Window_setTitlebarAppearsTransparent(nswin, true)
 	NS.Window_setTitleVisibility(nswin, .Hidden)
 
-	// TODO(macos): kill the slight live-resize flicker. During a drag Cocoa
-	// blocks the main thread (so the main render loop is frozen and the
-	// synchronous `resize_event_watch` redraw is the only draw path — see
-	// WATCH_REDRAWS_ON_RESIZE in main.odin; it must STAY on for macOS). The
-	// flicker is Cocoa briefly stretching the previous frame to the new size
-	// before our redraw lands.
-	//
-	// Fix is a one-liner on the SDL content view, but it's macOS-only and needs
-	// on-device A/B (compile + eyeball) — do it on a Mac, not blind from Linux:
-	//
-	//   view := NS.Window_contentView(nswin)   // already bound
-	//   // Option A (try first): stop AppKit caching/stretching old content.
-	//   //   raw msgSend "setLayerContentsRedrawPolicy:" with
-	//   //   NSViewLayerContentsRedrawDuringViewResize (= 2).
-	//   // Option B: if the layer still resizes async, also pin the layer's
-	//   //   contentsGravity = kCAGravityTopLeft, and/or set
-	//   //   presentsWithTransaction on the CAMetalLayer + present inside a
-	//   //   CATransaction.
-	//
-	// Note `preservesContentDuringLiveResize` is read-only on NSView
-	// (override-only), so target `layerContentsRedrawPolicy` instead. The policy
-	// setter needs a raw `msgSend` (no Foundation wrapper for it yet).
-	// Risk: an SDL/Metal interaction could regress to a blank/white window
-	// (cf. the -o:speed SDL_RenderFillRect bug), so verify a filled rect resizes
-	// cleanly end-to-end before committing.
+	configure_metal_layer_for_resize()
+}
+
+// Tame the live-resize ghosting. During a drag Cocoa blocks the main thread (so
+// the synchronous `resize_event_watch` redraw is the only draw path — see
+// WATCH_REDRAWS_ON_RESIZE in main.odin; it must STAY on for macOS). The
+// CAMetalLayer's default contentsGravity is `resize`, so for the frame where the
+// layer's bounds have already grown but the next drawable hasn't presented yet,
+// Core Animation SCALES the previous drawable to fill — that scale-up of the
+// text is the ghost/shiver. Pinning contentsGravity to top-left keeps the stale
+// frame anchored at the origin (where the editor content is); only the newly
+// exposed right/bottom strip lags a frame, which reads as clean.
+//
+// This MUST target the renderer's own CAMetalLayer. SDL's Metal renderer hosts
+// the layer on a private metal subview, NOT the window content view, so the
+// earlier attempts at `contentView.layer` were messaging the wrong object (zero
+// effect). SDL_GetRenderMetalLayer returns the real one — nil if the active
+// renderer isn't Metal, in which case this no-ops.
+@(private="file")
+configure_metal_layer_for_resize :: proc() {
+	raw_layer := sdl.GetRenderMetalLayer(g_renderer)
+	if raw_layer == nil do return
+	layer := cast(^NS.Layer)raw_layer
+	intrinsics.objc_send(nil, layer, "setContentsGravity:", kCAGravityTopLeft)
 }
