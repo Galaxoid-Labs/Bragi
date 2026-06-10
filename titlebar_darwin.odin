@@ -47,4 +47,30 @@ configure_titlebar :: proc(window: ^sdl.Window) {
 	NS.Window_setStyleMask(nswin, mask)
 	NS.Window_setTitlebarAppearsTransparent(nswin, true)
 	NS.Window_setTitleVisibility(nswin, .Hidden)
+
+	// TODO(macos): kill the slight live-resize flicker. During a drag Cocoa
+	// blocks the main thread (so the main render loop is frozen and the
+	// synchronous `resize_event_watch` redraw is the only draw path — see
+	// WATCH_REDRAWS_ON_RESIZE in main.odin; it must STAY on for macOS). The
+	// flicker is Cocoa briefly stretching the previous frame to the new size
+	// before our redraw lands.
+	//
+	// Fix is a one-liner on the SDL content view, but it's macOS-only and needs
+	// on-device A/B (compile + eyeball) — do it on a Mac, not blind from Linux:
+	//
+	//   view := NS.Window_contentView(nswin)   // already bound
+	//   // Option A (try first): stop AppKit caching/stretching old content.
+	//   //   raw msgSend "setLayerContentsRedrawPolicy:" with
+	//   //   NSViewLayerContentsRedrawDuringViewResize (= 2).
+	//   // Option B: if the layer still resizes async, also pin the layer's
+	//   //   contentsGravity = kCAGravityTopLeft, and/or set
+	//   //   presentsWithTransaction on the CAMetalLayer + present inside a
+	//   //   CATransaction.
+	//
+	// Note `preservesContentDuringLiveResize` is read-only on NSView
+	// (override-only), so target `layerContentsRedrawPolicy` instead. The policy
+	// setter needs a raw `msgSend` (no Foundation wrapper for it yet).
+	// Risk: an SDL/Metal interaction could regress to a blank/white window
+	// (cf. the -o:speed SDL_RenderFillRect bug), so verify a filled rect resizes
+	// cleanly end-to-end before committing.
 }
