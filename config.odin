@@ -16,6 +16,11 @@ Config :: struct {
 	editor:      Editor_Config,
 	theme:       Theme,
 	lsp:         Lsp_Config,
+	ui:          Ui_Config,
+}
+
+Ui_Config :: struct {
+	show_recent_on_startup: bool, // pop the Open-Recent list on a bare launch
 }
 
 // Language-server paths. Empty = resolve next to the Bragi binary, else
@@ -104,6 +109,12 @@ jai_entry      =
 jai_compiler   =
 format_on_save = false
 
+[ui]
+# show_recent_on_startup pops the Open-Recent list when Bragi launches with
+# nothing opened (no file / folder argument). Cmd/Ctrl+R or :recent summons
+# it any time; Esc / click-away closes it.
+show_recent_on_startup = true
+
 [theme]
 # Each value is #RRGGBB or #RRGGBBAA.
 
@@ -162,6 +173,9 @@ DEFAULT_CONFIG :: Config{
 		smartcase    = false,
 	},
 	theme = DEFAULT_THEME,
+	ui = {
+		show_recent_on_startup = true,
+	},
 }
 
 g_config: Config = DEFAULT_CONFIG
@@ -233,6 +247,10 @@ config_load :: proc() {
 		load_f32(section,  "line_spacing", &g_config.editor.line_spacing)
 		load_bool(section, "ignorecase",   &g_config.editor.ignorecase)
 		load_bool(section, "smartcase",    &g_config.editor.smartcase)
+	}
+
+	if section, has := m["ui"]; has {
+		load_bool(section, "show_recent_on_startup", &g_config.ui.show_recent_on_startup)
 	}
 
 	if section, has := m["theme"]; has {

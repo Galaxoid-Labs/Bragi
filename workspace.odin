@@ -33,6 +33,9 @@ set_workspace :: proc(path: string) -> bool {
 	if len(g_workspace_root) > 0 do delete(g_workspace_root)
 	g_workspace_root = strings.clone(resolved)
 
+	// Track it in Open Recent (most-recent-first, deduped).
+	recent_record_dir(g_workspace_root)
+
 	// Opening a folder reveals + focuses the file tree (any entry point:
 	// dialog, CLI, :cd, drop). Set before the rebuild below so it runs.
 	g_sidebar_visible = true

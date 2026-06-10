@@ -37,6 +37,7 @@ Editor :: struct {
 	// File state.
 	file_path:                string, // owned; "" means no file
 	dirty:                    bool,
+	is_scratch:               bool, // in-memory scratchpad pane (see scratch.odin)
 	language:                 Language,
 	lsp_open:                 bool, // didOpen has been sent to the language server for this file
 	lsp_sent_version:         u64, // buffer.version at the last didChange we sent

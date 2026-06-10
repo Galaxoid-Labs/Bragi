@@ -1008,6 +1008,10 @@ vim_execute_command :: proc(ed: ^Editor, raw: string) {
 		}
 	case "h", "help":
 		help_show()
+	case "recent", "recents":
+		recent_show()
+	case "scratch", "scratchpad":
+		scratch_open()
 	case "term", "terminal":
 		// Default size; first frame fits to the actual rect.
 		terminal_toggle(24, 80)

@@ -155,11 +155,16 @@ terminal_toggle :: proc(rows, cols: int) -> bool {
 	if g_terminal == nil {
 		if !terminal_open(rows, cols) do return false
 		g_terminal_active = true
+		g_sidebar_active  = false // steal keyboard focus from the file tree
 		return true
 	}
 	g_terminal_visible = !g_terminal_visible
-	if g_terminal_visible do g_terminal_active = true
-	else                  do g_terminal_active = false
+	if g_terminal_visible {
+		g_terminal_active = true
+		g_sidebar_active  = false // steal keyboard focus from the file tree
+	} else {
+		g_terminal_active = false
+	}
 	return true
 }
 
@@ -255,7 +260,11 @@ terminal_open :: proc(rows, cols: int) -> bool {
 	} else {
 		home = os.get_env("HOME", context.temp_allocator)
 	}
-	pty, ok := pty_spawn(argv, final_cols, final_rows, home)
+	// Prefer the open workspace root so a fresh pane lands at the project
+	// root; otherwise use home (computed above).
+	start_dir := home
+	if len(g_workspace_root) > 0 do start_dir = g_workspace_root
+	pty, ok := pty_spawn(argv, final_cols, final_rows, start_dir)
 	if !ok {
 		vterm_free(t.vt)
 		sdl.DestroyMutex(t.input_mutex)

@@ -35,6 +35,19 @@ A small, GPU-accelerated, vim-flavoured text/code editor written in
   navigate with `j/k/h/l` + Enter when focused; `i` toggles hidden
   dotfiles. Folder/file icons come from the embedded Nerd Font. The
   divider resizes it. The workspace also becomes the finder's root.
+- **Open Recent** — Cmd/Ctrl+R (or `:recent`) pops a menu-styled list of
+  recently opened folders and files, grouped and most-recent-first. Enter
+  (or click) opens; Esc / click-away closes. It also appears automatically
+  on a bare launch (no file/folder argument). Files opened *inside* the
+  current workspace aren't listed separately — the folder entry covers
+  them; only standalone files get their own entry. Entries that no longer
+  exist on disk are pruned on load. Disable the startup popup with
+  `[ui] show_recent_on_startup = false`.
+- **Scratchpad** — Cmd/Ctrl+Shift+N (or `:scratch`) opens an in-memory
+  notes buffer with full editing. Close its pane and the contents stay in
+  memory, so it's always one keystroke away while Bragi is open; quitting
+  discards it (nothing touches disk). Save As promotes it to a real file
+  if a note's worth keeping.
 - **Fast** — piece-table buffer (far cursor jumps don't memmove),
   mmap-backed file open on POSIX (kernel lazy-pages the file as you
   scroll), incremental line-index + per-line column-width caches.
@@ -311,9 +324,11 @@ buffer pre-populated with the commented default template, and saving
 writes it to the right path. INI mode is auto-detected, so colors,
 sections, and hex values are highlighted as you edit.
 
-The template covers `[font]`, `[editor_font]`, `[editor]`, `[lsp]`, and
-`[theme]`. `[editor_font]` overrides the code area's font independently
-of the UI (`[font]`); blank keys inherit `[font]`. Every visible
+The template covers `[font]`, `[editor_font]`, `[editor]`, `[lsp]`,
+`[ui]`, and `[theme]`. `[editor_font]` overrides the code area's font
+independently of the UI (`[font]`); blank keys inherit `[font]`. `[ui]`
+has `show_recent_on_startup` (default `true`) — set it `false` to stop the
+Open-Recent list from popping up on a bare launch. Every visible
 color in the editor — syntax token colors, gutter, status bar,
 selection, search, scrollbar — is themeable via `[theme]`.
 
@@ -425,12 +440,16 @@ n N                 next / prev match (wraps)
 :%s/pat/repl/[gi I] substitute (whole buffer)
 :term :terminal     open / focus the terminal pane
 :termclose          close the terminal pane
+:recent :recents    open the recent folders / files list
+:scratch            open the in-memory scratchpad
 :reload :re         reload the current file from disk
 :config             open / create the user config.ini
 :lsp [restart|stop|start]  manage the language server (bare :lsp restarts)
 :h  :help           open the categorised cheat sheet
 
 Cmd/Ctrl+F          fuzzy file finder
+Cmd/Ctrl+R          open recent (folders + files)
+Cmd/Ctrl+Shift+N    open the in-memory scratchpad
 Cmd/Ctrl+E          toggle the file-tree sidebar
 Cmd/Ctrl+J          toggle the terminal pane
 gd                  go to definition (LSP, Normal mode)

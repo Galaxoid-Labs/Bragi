@@ -128,6 +128,30 @@ Both have identical advance width so cell math is unchanged.
   (MENU_* colors, blue dirs, UI font — does NOT scale with editor zoom).
   Mouse (click dir=expand, file=open) + keyboard (j/k/h/l, Enter, Esc)
   when focused.
+- **`recent.odin`** — Open-Recent popup: a dismissable, menu-styled
+  overlay (`g_recent_visible`, `draw_recent`) listing recently opened
+  workspaces (folders) and standalone files, most-recent-first. Cmd/Ctrl+R
+  or `:recent` summons it; auto-pops on a bare launch (no file/dir arg)
+  when `[ui] show_recent_on_startup`. Esc / click-away closes, Enter opens
+  (folder → `set_workspace`, file → `open_file_smart`). Recorded via
+  `recent_record_dir` (in `set_workspace`) and `recent_record_file` (in the
+  open-file paths) — **a file inside the open workspace is NOT recorded**
+  (the folder entry covers it; only loose/outside files become file
+  entries). Persisted one absolute path per line in a `recent` file next to
+  `config.ini`; kind (dir/file) recomputed from disk on load so vanished
+  paths self-prune. Capped at `RECENT_MAX` (12) per group. Input/draw wired
+  next to the finder hooks in main.odin; mutually exclusive with sidebar/
+  terminal focus the same way the finder is.
+- **`scratch.odin`** — in-memory scratchpad: one ephemeral notes buffer,
+  opened/focused via `:scratch` or Cmd/Ctrl+Shift+N. It's a normal `Editor`
+  pane flagged `is_scratch` (full vim editing), placed like a file open
+  (reuse blank pane else split). Lifetime is the process: closing its pane
+  calls `scratch_snapshot` (stashes text+cursor in `g_scratch_text`) so
+  reopening restores it; quit just frees it (no disk, no prompt — `try_quit`
+  / `try_close_active_pane` special-case `is_scratch`). Save As `scratch_promote`s
+  it to a real file-backed buffer (clears the flag + snapshot). Shown as
+  `*scratch*` via `pane_display_name` (no dirty marker); excluded from
+  `is_welcome_pane` / `should_replace_active`. Plain text (language `.None`).
 - **`lsp.odin`** — Language Server Protocol client. **jai-lsp only for
   now** (ols/.odin later). One server process per language, spawned
   lazily when a `.jai` file opens in a workspace. JSON-RPC over the

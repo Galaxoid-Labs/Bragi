@@ -77,6 +77,7 @@ Finder_Result :: struct {
 }
 
 finder_show :: proc() {
+	recent_hide() // the finder and recents are mutually exclusive modals
 	// Only (re)point the index when we resolve an indexable root. When we
 	// can't (no file open + cwd is $HOME/root, or the file sits loose in
 	// $HOME), we leave any existing index alone and the list shows a hint.

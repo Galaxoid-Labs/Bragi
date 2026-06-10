@@ -154,6 +154,8 @@ WELCOME_LINES :: [?]string {
 	"i              start editing",
 	MOD + "+F          open file",
 	MOD + "+Shift+O    open folder (workspace)",
+	MOD + "+R          open recent",
+	MOD + "+Shift+N    scratchpad",
 	":h             show help",
 	":q             quit",
 }
@@ -168,6 +170,7 @@ is_welcome_pane :: proc(ed: ^Editor) -> bool {
 		ed.mode == .Normal &&
 		len(g_editors) == 1 &&
 		!ed.dirty &&
+		!ed.is_scratch &&
 		len(ed.file_path) == 0 &&
 		piece_buffer_len(&ed.buffer) == 0 \
 	)
@@ -748,6 +751,18 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 		return
 	}
 
+	// Cmd+R / Ctrl+R — toggle the Open-Recent popup.
+	if ev.key == sdl.K_R && ev.mod & (sdl.KMOD_GUI | sdl.KMOD_CTRL) != {} && !shift_held(ev.mod) {
+		recent_toggle()
+		return
+	}
+
+	// Cmd+Shift+N / Ctrl+Shift+N — open (or focus) the in-memory scratchpad.
+	if ev.key == sdl.K_N && ev.mod & (sdl.KMOD_GUI | sdl.KMOD_CTRL) != {} && shift_held(ev.mod) {
+		scratch_open()
+		return
+	}
+
 	// Cmd+J / Ctrl+J — toggle the bottom terminal strip. Mirrors VS
 	// Code's "Show / hide terminal" muscle memory.
 	if ev.key == sdl.K_J && ev.mod & (sdl.KMOD_GUI | sdl.KMOD_CTRL) != {} {
@@ -771,6 +786,9 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 		g_swallow_text_input = true
 		return
 	}
+
+	// Open-Recent popup swallows every key while visible.
+	if recent_handle_key(ev) do return
 
 	// Finder modal swallows every key while visible.
 	if finder_handle_key(ev) do return
@@ -1055,6 +1073,7 @@ handle_text_input :: proc(ed: ^Editor, text: cstring) {
 	}
 	if text == nil do return
 	s := string(text)
+	if recent_handle_text(s) do return
 	if finder_handle_text(s) do return
 	if g_terminal_active && g_terminal_visible {
 		handle_terminal_text(s)
@@ -1626,8 +1645,8 @@ draw_titlebar :: proc(l: Layout) {
 	// Active pane's filename + dirty marker. Mirrors the per-pane
 	// path strip in the status bar.
 	ed := active_editor()
-	name := len(ed.file_path) > 0 ? path_basename(ed.file_path) : "[Untitled]"
-	dirty := ed.dirty ? " *" : ""
+	name := pane_display_name(ed)
+	dirty := (ed.dirty && !ed.is_scratch) ? " *" : ""
 	title := fmt.tprintf("%s%s", name, dirty)
 	cstr := strings.clone_to_cstring(title, context.temp_allocator)
 
@@ -1679,8 +1698,8 @@ draw_status_bar :: proc(ed: ^Editor, l: Layout) {
 	// neighbor. Active pane gets the bright text color.
 	for p, i in l.panes {
 		e := &g_editors[i]
-		name := len(e.file_path) > 0 ? path_basename(e.file_path) : "[untitled]"
-		dirty := e.dirty ? " *" : ""
+		name := pane_display_name(e)
+		dirty := (e.dirty && !e.is_scratch) ? " *" : ""
 		// Persistent marker for "file changed on disk while you were
 		// editing." The one-shot status message at detection time gets
 		// cleared by the user's next keystroke; this stays until they
@@ -1840,8 +1859,8 @@ update_window_title :: proc(ed: ^Editor) {
 	last_path = ed.file_path
 	last_dirty = ed.dirty
 
-	name := len(ed.file_path) > 0 ? path_basename(ed.file_path) : "[untitled]"
-	dirty_marker := ed.dirty ? "* " : ""
+	name := pane_display_name(ed)
+	dirty_marker := (ed.dirty && !ed.is_scratch) ? "* " : ""
 	title := fmt.tprintf("%s%s — Bragi", dirty_marker, name)
 	cstr := strings.clone_to_cstring(title, context.temp_allocator)
 	sdl.SetWindowTitle(g_window, cstr)
@@ -1966,6 +1985,10 @@ save_as_callback :: proc "c" (userdata: rawptr, filelist: [^]cstring, filter: c.
 		g_pending_quit_after_save = false
 		return
 	}
+
+	// Saving a scratchpad to a real file promotes it to a normal file buffer
+	// (and clears the in-memory scratch slot).
+	scratch_promote(ed)
 
 	if g_pending_quit_after_save {
 		g_pending_quit_after_save = false
@@ -2168,7 +2191,7 @@ Quit_Choice :: enum {
 // short-circuits this entirely) routes through here when there are dirty
 // changes that would be lost.
 prompt_unsaved_changes :: proc(ed: ^Editor) -> Quit_Choice {
-	name := len(ed.file_path) > 0 ? path_basename(ed.file_path) : "[untitled]"
+	name := pane_display_name(ed)
 	msg := fmt.tprintf("'%s' has unsaved changes. Save before closing?", name)
 	msg_cstr := strings.clone_to_cstring(msg, context.temp_allocator)
 
@@ -2204,6 +2227,8 @@ prompt_unsaved_changes :: proc(ed: ^Editor) -> Quit_Choice {
 // Quit-with-prompt for the window-close path (Cmd+Q, red traffic light,
 // Alt+F4, etc.). Vim ':q' / ':q!' / ':wq' bypass this and live in vim.odin.
 try_quit :: proc(ed: ^Editor) -> bool {
+	// The scratchpad is intentionally ephemeral — quitting discards it, no prompt.
+	if ed.is_scratch do return true
 	if !ed.dirty do return true
 	switch prompt_unsaved_changes(ed) {
 	case .Save:
@@ -2265,7 +2290,7 @@ open_file_in_new_pane :: proc(path: string) -> bool {
 // were just reset after closing the last file. Used to decide whether
 // the next file open should replace the current pane or split alongside.
 should_replace_active :: proc() -> bool {
-	return len(g_editors) == 1 && !active_editor().dirty && len(active_editor().file_path) == 0
+	return len(g_editors) == 1 && !active_editor().dirty && !active_editor().is_scratch && len(active_editor().file_path) == 0
 }
 
 // Open the user's config.ini for editing. If the file already exists,
@@ -2312,10 +2337,13 @@ open_file_smart :: proc(path: string) {
 	if should_replace_active() {
 		ed := active_editor()
 		// editor_load_file populates the status bar on failure.
-		if editor_load_file(ed, path) do warn_if_mixed_eol(ed)
+		if editor_load_file(ed, path) {
+			warn_if_mixed_eol(ed)
+			recent_record_file(ed.file_path)
+		}
 		return
 	}
-	open_file_in_new_pane(path)
+	if open_file_in_new_pane(path) do recent_record_file(active_editor().file_path)
 }
 
 // Drop the active pane unconditionally. The last pane is replaced with a
@@ -2331,6 +2359,8 @@ close_active_pane_unconditional :: proc() {
 	def_picker_dismiss()
 
 	idx := g_active_idx
+	// Preserve scratchpad contents across a close (it lives only in memory).
+	scratch_snapshot(&g_editors[idx])
 	if len(g_editors) == 1 {
 		editor_destroy(&g_editors[0])
 		g_editors[0] = editor_make()
@@ -2353,6 +2383,12 @@ close_active_pane_unconditional :: proc() {
 // button). Cmd+Q (.QUIT → try_quit_all) is the other quit path.
 try_close_active_pane :: proc() -> bool {
 	ed := active_editor()
+	// Scratchpad: close without an unsaved-changes prompt — its contents are
+	// snapshotted (in close_active_pane_unconditional) and restored on reopen.
+	if ed.is_scratch {
+		close_active_pane_unconditional()
+		return true
+	}
 	if len(g_editors) == 1 && should_replace_active() {
 		ed.want_quit = true
 		return false
@@ -2474,6 +2510,7 @@ draw_frame :: proc() {
 	draw_menu()
 	draw_help(l)
 	draw_finder(l)
+	draw_recent(l)
 	sdl.RenderPresent(g_renderer)
 }
 
@@ -2603,6 +2640,8 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 				return
 			}
 		}
+		// Open-Recent popup swallows clicks; outside dismisses, row opens.
+		if recent_handle_button(ev.button, l) do return
 		// Finder modal swallows clicks; outside-click dismisses,
 		// inside-click selects (and double-click activates).
 		if finder_handle_button(ev.button, l) do return
@@ -2733,6 +2772,8 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		sidebar_handle_motion(ev.motion.x, ev.motion.y, l)
 		// Finder result-row hover.
 		finder_handle_motion(ev.motion.x, ev.motion.y, l)
+		// Open-Recent row hover.
+		recent_handle_motion(ev.motion.x, ev.motion.y, l)
 
 		if cmd_or_ctrl(sdl.GetModState()) && !g_finder_visible {
 			hidx := pane_at_x(ev.motion.x, l)
@@ -2816,6 +2857,7 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		if target < 0 || target >= len(l.panes) do return
 		handle_mouse_motion(&g_editors[target], ev.motion, l.panes[target])
 	case .MOUSE_WHEEL:
+		if recent_handle_wheel(ev.wheel) do return
 		if finder_handle_wheel(ev.wheel) do return
 		if g_help_visible {
 			line_h := g_config.font.size + HELP_LINE_GAP
@@ -2890,6 +2932,7 @@ main :: proc() {
 	// font / theme / tab / column-guide values come from g_config.
 	config_load()
 	g_theme = g_config.theme
+	recent_load() // Open-Recent list (prunes entries gone from disk)
 
 	if !sdl.CreateWindowAndRenderer(
 		WINDOW_TITLE,
@@ -2980,6 +3023,8 @@ main :: proc() {
 		def_picker_destroy()
 		lsp_shutdown_all()
 		sidebar_destroy()
+		recent_destroy()
+		scratch_destroy()
 		workspace_destroy()
 		dot_destroy()
 		clear_status_message()
@@ -3010,9 +3055,17 @@ main :: proc() {
 			// Buffer stays empty → welcome overlay renders.
 		} else {
 			warn_if_mixed_eol(active_editor())
+			recent_record_file(active_editor().file_path)
 		}
 	}
-	// No CLI arg → empty buffer → welcome overlay (no work needed).
+	// No CLI arg → empty buffer → welcome overlay. On a bare launch (nothing
+	// opened), pop the Open-Recent list so you can jump back into a project.
+	if g_config.ui.show_recent_on_startup &&
+	   len(g_workspace_root) == 0 &&
+	   len(active_editor().file_path) == 0 &&
+	   len(g_recents) > 0 {
+		recent_show()
+	}
 
 	last_ticks := sdl.GetTicksNS()
 	running := true
