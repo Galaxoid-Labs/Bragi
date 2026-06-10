@@ -500,6 +500,11 @@ if (( STAGE_RPM && HAS_RPM )); then
 		echo "%license /usr/share/doc/$BIN_NAME/copyright"
 		echo "/usr/share/doc/$BIN_NAME/"
 		echo "/usr/bin/$BIN_NAME"
+		# Bundled LSP servers — only staged when a binary exists for this
+		# arch (guarded the same way as the staging step), so declare them
+		# conditionally or rpmbuild trips "unpackaged file(s)".
+		[[ -f "$STAGING/usr/bin/jai-lsp" ]] && echo "/usr/bin/jai-lsp"
+		[[ -f "$STAGING/usr/bin/ols"     ]] && echo "/usr/bin/ols"
 		# Private libdir holding the bundled fff .so (only present when
 		# patchelf was available at package time). The %dir glob sweeps it
 		# up; rpmbuild ignores a missing dir gracefully via the if-guard
