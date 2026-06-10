@@ -134,7 +134,12 @@ Both have identical advance width so cell math is unchanged.
   reader, `WaitThread`, reap).
 - **`lsp_posix.odin`** / **`lsp_windows.odin`** — process spawn with
   PLAIN stdio pipes (not a PTY): POSIX `pipe`+`fork`+`dup2`+`execvp`
-  (reuses pty.odin's libc bindings); Windows is a stub for now.
+  (reuses pty.odin's libc bindings); Windows `CreatePipe` +
+  `CreateProcessW` with `STARTF_USESTDHANDLES` (child stderr → `NUL` so
+  server logs never corrupt the JSON-RPC stdout frames; `CREATE_NO_WINDOW`
+  so the GUI app never flashes a console). `LSP_Pipes`' `int` fields hold
+  Win32 HANDLEs (process handle in `pid`); env deltas go through
+  `SetEnvironmentVariableW` + inherited env rather than a hand-built block.
 - **`completion.odin`** — the autocompletion popup (intellisense).
   Insert-mode only; requests `textDocument/completion` once at the word
   start (`completion_trigger`), narrows locally as you type

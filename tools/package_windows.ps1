@@ -368,6 +368,10 @@ Source: "$StagingDir\SDL3.dll";    DestDir: "{app}"; Flags: ignoreversion
 Source: "$StagingDir\SDL3_ttf.dll";DestDir: "{app}"; Flags: ignoreversion
 Source: "$StagingDir\vterm.dll";   DestDir: "{app}"; Flags: ignoreversion
 Source: "$StagingDir\fff_c.dll";   DestDir: "{app}"; Flags: ignoreversion
+; LSP servers spawned next to Bragi.exe (lsp_resolve_binary → GetBasePath).
+; skipifsourcedoesntexist mirrors the staging step's optional copy.
+Source: "$StagingDir\jai-lsp.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "$StagingDir\ols.exe";     DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "$StagingDir\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
