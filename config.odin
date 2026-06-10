@@ -15,6 +15,17 @@ Config :: struct {
 	editor_font: Font_Config, // editor document + gutter font; Cmd +/-/0 zoom its size at runtime
 	editor:      Editor_Config,
 	theme:       Theme,
+	lsp:         Lsp_Config,
+}
+
+// Language-server paths. Empty = resolve next to the Bragi binary, else
+// PATH. `jai_entry` points jai-lsp at the Jai entry file for diagnostics
+// (auto-detected from build.jai/first.jai/main.jai when empty).
+Lsp_Config :: struct {
+	jai_path:     string, // owned; override path to jai-lsp
+	odin_path:    string, // owned; override path to ols
+	jai_entry:    string, // owned; JAI_LSP_ENTRY_FILE override
+	jai_compiler: string, // owned; absolute path to the jai compiler → JAI_COMPILER env
 }
 
 Font_Config :: struct {
@@ -76,6 +87,18 @@ line_spacing = 1.3
 ignorecase   = false
 smartcase    = false
 
+[lsp]
+# Language servers. jai-lsp powers .jai files. Leave a path blank to
+# resolve the server next to the Bragi binary, then PATH. jai_entry
+# points jai-lsp at your project's entry .jai for diagnostics (auto-
+# detected from build.jai / first.jai / main.jai when blank).
+# jai_compiler is the absolute path to your jai compiler (e.g. jai-macos)
+# — passed to jai-lsp as JAI_COMPILER so it can type-check (diagnostics +
+# rich hover). With it set you need no jai symlink / PATH tweak.
+# jai          = /path/to/jai-lsp
+# jai_entry    = /path/to/main.jai
+# jai_compiler = /Users/you/Development/Tools/jai/bin/jai-macos
+
 [theme]
 # Each value is #RRGGBB or #RRGGBBAA.
 
@@ -97,6 +120,8 @@ search_match    = #BE50B478
 gutter_bg       = #18181E
 gutter_text     = #5A5F6E
 gutter_active   = #C8C8D2
+# File-tree sidebar background (defaults to #2D2D37, the menu slate).
+# sidebar_bg    = #2D2D37
 status_bg       = #14141A
 status_path_bg  = #1C1C24
 status_text     = #C8C8D2
@@ -224,6 +249,7 @@ config_load :: proc() {
 		load_color(section, "sb_thumb",        &g_config.theme.sb_thumb_color)
 		load_color(section, "sb_thumb_hover",  &g_config.theme.sb_thumb_hover_color)
 		load_color(section, "gutter_bg",       &g_config.theme.gutter_bg_color)
+		load_color(section, "sidebar_bg",      &g_config.theme.sidebar_bg_color)
 		load_color(section, "gutter_text",     &g_config.theme.gutter_text_color)
 		load_color(section, "gutter_active",   &g_config.theme.gutter_active_color)
 		load_color(section, "status_bg",       &g_config.theme.status_bg_color)
@@ -232,6 +258,14 @@ config_load :: proc() {
 		load_color(section, "status_dim",      &g_config.theme.status_dim_color)
 		load_color(section, "status_info",     &g_config.theme.status_info_color)
 		load_color(section, "status_error",    &g_config.theme.status_error_color)
+		load_color(section, "status_warning",  &g_config.theme.status_warning_color)
+	}
+
+	if section, has := m["lsp"]; has {
+		load_string(section, "jai",          &g_config.lsp.jai_path)
+		load_string(section, "odin",         &g_config.lsp.odin_path)
+		load_string(section, "jai_entry",    &g_config.lsp.jai_entry)
+		load_string(section, "jai_compiler", &g_config.lsp.jai_compiler)
 	}
 }
 

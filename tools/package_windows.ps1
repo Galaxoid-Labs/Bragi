@@ -231,6 +231,25 @@ if ($StageBundle) {
 
     Copy-Item -LiteralPath $ExeBuiltAt -Destination (Join-Path $StagingDir $ExeName) -Force
 
+    # Bundle jai-lsp.exe next to Bragi.exe so lsp_resolve_binary (GetBasePath
+    # → next-to-exe) finds it. It's an executable we spawn, not a linked DLL.
+    $jaiLsp = Join-Path $RepoRoot 'vendor\jai-lsp\jai-lsp-windows-x64.exe'
+    if (Test-Path -LiteralPath $jaiLsp) {
+        Copy-Item -LiteralPath $jaiLsp -Destination (Join-Path $StagingDir 'jai-lsp.exe') -Force
+        Write-Output "→ bundled jai-lsp.exe"
+    } else {
+        Write-Output "  warning: jai-lsp not bundled (missing $jaiLsp) - .jai LSP falls back to PATH"
+    }
+
+    # Same for ols (Odin LSP).
+    $ols = Join-Path $RepoRoot 'vendor\odin-lsp\ols-x64-windows.exe'
+    if (Test-Path -LiteralPath $ols) {
+        Copy-Item -LiteralPath $ols -Destination (Join-Path $StagingDir 'ols.exe') -Force
+        Write-Output "→ bundled ols.exe"
+    } else {
+        Write-Output "  warning: ols not bundled (missing $ols) - .odin LSP falls back to PATH"
+    }
+
     $odinRoot   = Split-Path -Parent (Get-Command odin).Source
     $sdl3Dll    = Join-Path $odinRoot 'vendor\sdl3\SDL3.dll'
     $sdl3TtfDll = Join-Path $odinRoot 'vendor\sdl3\ttf\SDL3_ttf.dll'

@@ -156,6 +156,36 @@ if (( STAGE_BUNDLE )); then
 	cp "$ODIN_OUT" "$MACOS_DIR/$BIN_NAME"
 	chmod +x "$MACOS_DIR/$BIN_NAME"
 
+	# Bundle jai-lsp next to the binary so lsp_resolve_binary (SDL
+	# GetBasePath → next-to-exe) finds it. It's an executable we spawn,
+	# not a linked dylib, so no Frameworks / install_name dance.
+	case "$(uname -m)" in
+		arm64)  JAILSP_SRC="$REPO_ROOT/vendor/jai-lsp/jai-lsp-darwin-arm64" ;;
+		x86_64) JAILSP_SRC="$REPO_ROOT/vendor/jai-lsp/jai-lsp-darwin-x64"   ;;
+		*)      JAILSP_SRC="" ;;
+	esac
+	if [[ -n "$JAILSP_SRC" && -f "$JAILSP_SRC" ]]; then
+		echo "→ bundling jai-lsp ($(basename "$JAILSP_SRC"))"
+		cp "$JAILSP_SRC" "$MACOS_DIR/jai-lsp"
+		chmod +x "$MACOS_DIR/jai-lsp"
+	else
+		echo "  warning: jai-lsp not bundled (missing ${JAILSP_SRC:-no binary for $(uname -m)}) — .jai LSP falls back to PATH"
+	fi
+
+	# Same for ols (Odin LSP).
+	case "$(uname -m)" in
+		arm64)  OLS_SRC="$REPO_ROOT/vendor/odin-lsp/ols-arm64-darwin" ;;
+		x86_64) OLS_SRC="$REPO_ROOT/vendor/odin-lsp/ols-x64-darwin"   ;;
+		*)      OLS_SRC="" ;;
+	esac
+	if [[ -n "$OLS_SRC" && -f "$OLS_SRC" ]]; then
+		echo "→ bundling ols ($(basename "$OLS_SRC"))"
+		cp "$OLS_SRC" "$MACOS_DIR/ols"
+		chmod +x "$MACOS_DIR/ols"
+	else
+		echo "  warning: ols not bundled (missing ${OLS_SRC:-no binary for $(uname -m)}) — .odin LSP falls back to PATH"
+	fi
+
 	# 4-byte PkgInfo file marks this as a regular .app to legacy Finder.
 	# (Modern macOS will work without it; bundling is conventional.)
 	printf 'APPL????' > "$CONTENTS/PkgInfo"
@@ -360,6 +390,14 @@ if (( STAGE_SIGN )); then
 		# notarization. `--timestamp` embeds a secure timestamp.
 		find "$FRAMEWORKS_DIR" -type f \( -name '*.dylib' -o -name '*.so' \) -print0 \
 			| xargs -0 -I{} codesign --force --options runtime --timestamp --sign "$SIGN_ID" "{}"
+		# Bundled LSP helper executables (jai-lsp / ols) are nested Mach-O
+		# binaries Bragi spawns. They MUST be signed too (hardened runtime),
+		# inside-out before the main binary, or Gatekeeper SIGKILLs them on
+		# spawn and notarization rejects the bundle.
+		for helper in jai-lsp ols; do
+			[[ -f "$MACOS_DIR/$helper" ]] && \
+				codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$MACOS_DIR/$helper"
+		done
 		codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$MACOS_DIR/$BIN_NAME"
 		codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$APP_DIR"
 		codesign --verify --deep --strict --verbose=2 "$APP_DIR"

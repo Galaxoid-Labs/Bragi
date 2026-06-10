@@ -187,6 +187,38 @@ cp "$ODIN_OUT" "$STAGING/usr/bin/$BIN_NAME"
 chmod 0755 "$STAGING/usr/bin/$BIN_NAME"
 strip "$STAGING/usr/bin/$BIN_NAME" 2>/dev/null || true
 
+# Bundle jai-lsp into /usr/bin (next to the binary, where lsp_resolve_binary
+# finds it via GetBasePath, and on PATH besides). It's an executable we
+# spawn, not a linked .so — no patchelf/rpath needed.
+case "$RPM_ARCH" in
+	x86_64)  JAILSP_SRC="$REPO_ROOT/vendor/jai-lsp/jai-lsp-linux-x64"   ;;
+	aarch64) JAILSP_SRC="$REPO_ROOT/vendor/jai-lsp/jai-lsp-linux-arm64" ;;
+	*)       JAILSP_SRC="" ;;
+esac
+if [[ -n "$JAILSP_SRC" && -f "$JAILSP_SRC" ]]; then
+	echo "→ bundling jai-lsp ($(basename "$JAILSP_SRC"))"
+	cp "$JAILSP_SRC" "$STAGING/usr/bin/jai-lsp"
+	chmod 0755 "$STAGING/usr/bin/jai-lsp"
+	strip "$STAGING/usr/bin/jai-lsp" 2>/dev/null || true
+else
+	echo "  warning: jai-lsp not bundled (missing ${JAILSP_SRC:-no binary for $RPM_ARCH}) — .jai LSP falls back to PATH"
+fi
+
+# Same for ols (Odin LSP).
+case "$RPM_ARCH" in
+	x86_64)  OLS_SRC="$REPO_ROOT/vendor/odin-lsp/ols-x64-linux"   ;;
+	aarch64) OLS_SRC="$REPO_ROOT/vendor/odin-lsp/ols-arm64-linux" ;;
+	*)       OLS_SRC="" ;;
+esac
+if [[ -n "$OLS_SRC" && -f "$OLS_SRC" ]]; then
+	echo "→ bundling ols ($(basename "$OLS_SRC"))"
+	cp "$OLS_SRC" "$STAGING/usr/bin/ols"
+	chmod 0755 "$STAGING/usr/bin/ols"
+	strip "$STAGING/usr/bin/ols" 2>/dev/null || true
+else
+	echo "  warning: ols not bundled (missing ${OLS_SRC:-no binary for $RPM_ARCH}) — .odin LSP falls back to PATH"
+fi
+
 # ──────────────────────────────────────────────────────────────────
 # Bundle the vendored fff library. Unlike SDL3 / SDL3_ttf / libvterm,
 # fff has no distro package — so it's the one .so we DO ship, into a

@@ -36,8 +36,6 @@ GLYPH_FOLDER :: "\uF07B" // nf-fa-folder (collapsed)
 @(private="file")
 GLYPH_FOLDER_OPEN :: "\uF07C" // nf-fa-folder_open
 @(private="file")
-GLYPH_FILE :: "\uF15B" // nf-fa-file
-@(private="file")
 SIDEBAR_ICON_COL :: f32(1.4) // name offset past the icon, in UI-font em units
 
 @(private="file")
@@ -55,6 +53,8 @@ g_sidebar_entries: [dynamic]Sidebar_Entry
 g_sidebar_expanded: map[string]bool // expanded dir paths (owned keys)
 @(private="file")
 g_sidebar_selected: int
+@(private="file")
+g_sidebar_hovered: int = -1 // row under the mouse (-1 = none)
 @(private="file")
 g_sidebar_scroll: int
 @(private="file")
@@ -316,6 +316,16 @@ sidebar_handle_button :: proc(ev: sdl.MouseButtonEvent, l: Layout) -> bool {
 	return true
 }
 
+// Mouse moved over the sidebar: track the row under the cursor for the
+// hover highlight. `-1` when the cursor isn't over a row.
+sidebar_handle_motion :: proc(mx, my: f32, l: Layout) {
+	if !g_sidebar_visible || !point_in_rect({mx, my}, l.sidebar_rect) {
+		g_sidebar_hovered = -1
+		return
+	}
+	g_sidebar_hovered = sidebar_row_at(mx, my, l)
+}
+
 sidebar_handle_wheel :: proc(ev: sdl.MouseWheelEvent) -> bool {
 	if !g_sidebar_visible do return false
 	if ev.y == 0 do return true
@@ -339,14 +349,18 @@ draw_sidebar :: proc(l: Layout) {
 	if !g_sidebar_visible do return
 	r := l.sidebar_rect
 
-	fill_rect(r, MENU_BG_COLOR)
+	// Panel background ties the sidebar to the editor's gutter by default
+	// (config `[theme] sidebar_bg`, which inherits `gutter_bg`). Text is
+	// drawn over this color so LCD subpixel AA bakes the right bg.
+	panel_bg := g_theme.sidebar_bg_color
+	fill_rect(r, panel_bg)
 
 	row_h := g_config.font.size + SIDEBAR_ROW_GAP
 
 	// Header: workspace basename (or a hint when none is open).
 	header := len(g_workspace_root) > 0 ? path_basename(g_workspace_root) : "(no folder open)"
 	hdr_cstr := strings.clone_to_cstring(header, context.temp_allocator)
-	draw_text(hdr_cstr, r.x + SIDEBAR_PAD, r.y + SIDEBAR_PAD, MENU_DIM_COLOR, MENU_BG_COLOR)
+	draw_text(hdr_cstr, r.x + SIDEBAR_PAD, r.y + SIDEBAR_PAD, MENU_DIM_COLOR, panel_bg)
 
 	sep_y := r.y + sidebar_header_h() - SIDEBAR_PAD * 0.5
 	fill_rect({r.x + SIDEBAR_PAD, sep_y, r.w - SIDEBAR_PAD * 2, 1.0 / g_density}, MENU_BORDER_COLOR)
@@ -375,26 +389,40 @@ draw_sidebar :: proc(l: Layout) {
 		e := g_sidebar_entries[i]
 		ry := list_y + f32(row) * row_h
 		row += 1
-		bg := MENU_BG_COLOR
+		bg := panel_bg
 		if i == g_sidebar_selected {
 			fill_rect({r.x, ry, hl_w, row_h}, MENU_HOVER_COLOR)
 			bg = MENU_HOVER_COLOR
+		} else if i == g_sidebar_hovered {
+			// Hover: a dimmer SOLID blend of the selection color over the
+			// panel bg — NOT a translucent wash. The text's LCD AA bakes in
+			// `bg`, so the fill and `bg` must be the exact same opaque color
+			// or each glyph halos a box against the row (the "drawing behind"
+			// artifact).
+			hov := sdl.Color{
+				u8((u16(panel_bg.r) + u16(MENU_HOVER_COLOR.r)) / 2),
+				u8((u16(panel_bg.g) + u16(MENU_HOVER_COLOR.g)) / 2),
+				u8((u16(panel_bg.b) + u16(MENU_HOVER_COLOR.b)) / 2),
+				255,
+			}
+			fill_rect({r.x, ry, hl_w, row_h}, hov)
+			bg = hov
 		}
 		x := r.x + SIDEBAR_PAD + f32(e.depth) * SIDEBAR_INDENT
-		// Icon column, drawn from the embedded Nerd Font so it renders
-		// regardless of the configured UI font. Folder open/closed shows
-		// expansion state; files get a generic file glyph.
-		glyph := GLYPH_FILE
-		icon_fg := MENU_DIM_COLOR
+		// Folders get an open/closed icon from the embedded Nerd Font; files
+		// get none (the icon was redundant). Names still start at a fixed
+		// column so the tree stays aligned.
 		if e.is_dir {
-			glyph = g_sidebar_expanded[e.path] ? GLYPH_FOLDER_OPEN : GLYPH_FOLDER
-			icon_fg = SIDEBAR_DIR_COLOR
+			glyph := g_sidebar_expanded[e.path] ? GLYPH_FOLDER_OPEN : GLYPH_FOLDER
+			gc := strings.clone_to_cstring(glyph, context.temp_allocator)
+			draw_text(gc, x, ry, SIDEBAR_DIR_COLOR, bg, g_terminal_font)
 		}
-		gc := strings.clone_to_cstring(glyph, context.temp_allocator)
-		draw_text(gc, x, ry, icon_fg, bg, g_terminal_font)
-		// Name starts at a fixed offset past the icon so every row's
-		// name aligns (icon advance widths vary by glyph).
-		name_x := x + g_config.font.size * SIDEBAR_ICON_COL
+		// Folder names sit past their icon; file names (no icon) start at the
+		// icon column so they line up with folder icons at the same depth —
+		// otherwise the empty icon gap reads as a phantom indent under the
+		// folder above them.
+		name_x := x
+		if e.is_dir do name_x += g_config.font.size * SIDEBAR_ICON_COL
 		fg := e.is_dir ? SIDEBAR_DIR_COLOR : MENU_TEXT_COLOR
 		nc := strings.clone_to_cstring(e.name, context.temp_allocator)
 		draw_text(nc, name_x, ry, fg, bg)

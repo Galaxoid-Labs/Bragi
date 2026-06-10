@@ -539,6 +539,13 @@ finder_handle_button :: proc(ev: sdl.MouseButtonEvent, l: Layout) -> bool {
 	return true
 }
 
+// Mouse moved over a result row → highlight it (selection follows the
+// cursor, matching the context menu / completion popup).
+finder_handle_motion :: proc(mx, my: f32, l: Layout) {
+	if !g_finder_visible do return
+	if idx := finder_row_at(mx, my, l); idx >= 0 do g_finder_active = idx
+}
+
 // Backwards-compat: still called from older code paths that only passed
 // (x, y). Treats it as a single click.
 finder_handle_click :: proc(x, y: f32, l: Layout) -> bool {

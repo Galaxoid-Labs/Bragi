@@ -807,6 +807,11 @@ vim_handle_char :: proc(ed: ^Editor, c: rune) {
 			} else {
 				vim_goto_line(ed, target)
 			}
+		} else if c == 'd' && ed.vim_op == .None {
+			// gd — go to definition (LSP).
+			ed.vim_count = 0
+			commit_pending(ed)
+			lsp_definition_request(ed)
 		} else {
 			ed.vim_count = 0
 		}
@@ -1060,6 +1065,18 @@ vim_execute_command :: proc(ed: ^Editor, raw: string) {
 			} else {
 				set_status_message(fmt.tprintf("E: not a directory: %s", arg), .Error)
 			}
+		}
+	}
+
+	// :lsp [restart|stop|start] — manage the language server (bare :lsp
+	// restarts, the common case after a crash).
+	if cmd == "lsp" || strings.has_prefix(cmd, "lsp ") {
+		arg := cmd == "lsp" ? "" : strings.trim_space(cmd[4:])
+		switch arg {
+		case "", "restart": lsp_restart(ed.language)
+		case "stop":        lsp_stop(ed.language)
+		case "start":       lsp_on_editor_opened(ed)
+		case:               set_status_message("usage: :lsp [restart|stop|start]", .Info)
 		}
 	}
 }

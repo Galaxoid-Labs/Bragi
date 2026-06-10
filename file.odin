@@ -235,7 +235,9 @@ editor_load_file :: proc(ed: ^Editor, path: string) -> bool {
 	ed.language = language_for_path(path)
 	ed.file_mtime_ns = stat_mtime_ns(path)
 	ed.external_changed = false
+	ed.lsp_open = false // fresh document; a new didOpen will be sent
 	file_watch_add(ed.file_path)
+	lsp_on_editor_opened(ed)
 	return true
 }
 
@@ -375,6 +377,7 @@ editor_save_file :: proc(ed: ^Editor) -> bool {
 	// doesn't immediately fire as an external change.
 	ed.file_mtime_ns = stat_mtime_ns(ed.file_path)
 	ed.external_changed = false
+	lsp_on_editor_saved(ed)
 	return true
 }
 

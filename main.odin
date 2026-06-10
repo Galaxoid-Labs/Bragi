@@ -72,12 +72,14 @@ Theme :: struct {
 	gutter_bg_color:       sdl.Color,
 	gutter_text_color:     sdl.Color,
 	gutter_active_color:   sdl.Color,
+	sidebar_bg_color:      sdl.Color, // file-tree sidebar background (config `[theme] sidebar_bg`)
 	status_bg_color:       sdl.Color,
 	status_path_bg_color:  sdl.Color,
 	status_text_color:     sdl.Color,
 	status_dim_color:      sdl.Color,
 	status_info_color:     sdl.Color,
 	status_error_color:    sdl.Color,
+	status_warning_color:  sdl.Color, // also used for warning diagnostics
 }
 
 DEFAULT_THEME :: Theme{
@@ -100,12 +102,15 @@ DEFAULT_THEME :: Theme{
 	gutter_bg_color      = sdl.Color{ 24,  24,  30, 255},
 	gutter_text_color    = sdl.Color{ 90,  95, 110, 255},
 	gutter_active_color  = sdl.Color{200, 200, 210, 255},
+	sidebar_bg_color     = sdl.Color{ 45,  45,  55, 255}, // menu/finder slate
+
 	status_bg_color      = sdl.Color{ 20,  20,  26, 255},
 	status_path_bg_color = sdl.Color{ 28,  28,  36, 255},
 	status_text_color    = sdl.Color{200, 200, 210, 255},
 	status_dim_color     = sdl.Color{120, 125, 140, 255},
 	status_info_color    = sdl.Color{229, 192, 123, 255}, // gold — reload / config / etc.
 	status_error_color   = sdl.Color{220,  90,  90, 255}, // soft red for errors
+	status_warning_color = sdl.Color{218, 160,  70, 255}, // amber — warning diagnostics
 }
 
 theme_color :: proc(theme: ^Theme, kind: Token_Kind) -> sdl.Color {
@@ -722,8 +727,21 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 		return
 	}
 
+	// Ctrl+Space — manually invoke completion (Insert mode).
+	if ev.key == sdl.K_SPACE && ev.mod & sdl.KMOD_CTRL != {} {
+		if active_editor().mode == .Insert do completion_trigger(active_editor())
+		g_swallow_text_input = true
+		return
+	}
+
 	// Finder modal swallows every key while visible.
 	if finder_handle_key(ev) do return
+
+	// Definition chooser is modal too (after the finder).
+	if def_picker_handle_key(ev) do return
+
+	// Completion popup wins over the editor (but loses to the finder).
+	if completion_handle_key(ev) do return
 
 	// Help modal eats every key. Esc dismisses; 1-7 jump to a tab,
 	// h / l (or arrows) step tabs, j / k / page / g / G scroll within
@@ -946,6 +964,7 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 
 handle_text_input :: proc(ed: ^Editor, text: cstring) {
 	if g_help_visible do return
+	if def_picker_active() do return // modal chooser eats text input
 	if g_swallow_text_input {
 		g_swallow_text_input = false
 		return
@@ -963,6 +982,8 @@ handle_text_input :: proc(ed: ^Editor, text: cstring) {
 		for r in s {
 			dot_observe_insert(r)
 			editor_insert_rune(ed, r)
+			completion_after_insert(ed, r) // trigger / narrow LSP completion
+			signature_after_insert(ed, r)  // param hints on '(' / ',' / ')'
 		}
 	case .Normal, .Visual, .Visual_Line:
 		// vim_handle_char internally routes Visual modes to their own
@@ -1203,6 +1224,49 @@ draw_selection_for_line :: proc(
 	fill_rect({x, y, w, g_line_height}, color)
 }
 
+@(private="file")
+diag_severity_color :: proc(severity: int) -> sdl.Color {
+	switch severity {
+	case 1:  return g_theme.status_error_color
+	case 2:  return g_theme.status_warning_color
+	case:    return g_theme.status_info_color
+	}
+}
+
+// Underline the LSP diagnostic ranges on visible lines. LSP positions are
+// utf-8 (jai-lsp) → byte offsets; x uses display columns like the rest of
+// the editor (so tabs line up). Multi-line ranges split per line.
+@(private="file")
+draw_lsp_diagnostics :: proc(ed: ^Editor, p: Pane_Layout, first_visible, last_visible: int) {
+	if !lsp_lang_supported(ed.language) || len(ed.file_path) == 0 do return
+	diags := lsp_diagnostics_for(ed.file_path)
+	if len(diags) == 0 do return
+	thick := max(1.0 / g_density, 1.5)
+	for d in diags {
+		lo := lsp_pos_to_byte(ed, d.start_line, d.start_char)
+		hi := lsp_pos_to_byte(ed, d.end_line, d.end_char)
+		if hi < lo do hi = lo
+		col := diag_severity_color(d.severity)
+		seg := lo
+		for {
+			sline, scol := editor_pos_to_line_col(ed, seg)
+			if sline > last_visible do break
+			le := editor_line_end(ed, seg)
+			seg_end := min(hi, le)
+			if sline >= first_visible {
+				_, ecol := editor_pos_to_line_col(ed, seg_end)
+				x := p.text_x + f32(scol) * g_char_width - ed.scroll_x
+				y := p.text_y + f32(sline) * g_line_height - ed.scroll_y
+				w := f32(ecol - scol) * g_char_width
+				if w < g_char_width do w = g_char_width // zero-width → 1 cell
+				fill_rect({x, y + g_line_height - thick, w, thick}, col)
+			}
+			if seg_end >= hi do break
+			seg = le + 1
+		}
+	}
+}
+
 draw_editor :: proc(ed: ^Editor, p: Pane_Layout, is_active: bool) {
 	first_visible := max(0, int(ed.scroll_y / g_line_height))
 	last_visible  := first_visible + int(p.text_h / g_line_height) + 1
@@ -1310,6 +1374,10 @@ draw_editor :: proc(ed: ^Editor, p: Pane_Layout, is_active: bool) {
 			fill_rect({x, y, w, g_line_height}, faint)
 		}
 	}
+
+	// LSP diagnostics: underline error/warning ranges (under the text,
+	// before the caret).
+	draw_lsp_diagnostics(ed, p, first_visible, last_visible)
 
 	// Caret. Inactive panes show a hollow outline of the active position
 	// (where the cursor *would* go if focus moved here); the active pane
@@ -1480,6 +1548,10 @@ draw_titlebar :: proc(l: Layout) {
 	draw_text(cstr, x, y, g_theme.status_text_color, g_theme.gutter_bg_color)
 }
 
+// Screen rect of the LSP status indicator (set each frame in draw_status_bar;
+// zero when hidden). Clicking it restarts the server.
+g_lsp_status_rect: sdl.FRect
+
 draw_status_bar :: proc(ed: ^Editor, l: Layout) {
 	row_h := g_config.font.size + STATUS_PAD_Y * 2
 	// Top row (paths) gets a subtly lighter background so the eye can
@@ -1603,6 +1675,31 @@ draw_status_bar :: proc(ed: ^Editor, l: Layout) {
 
 	draw_text(left_cstr,  STATUS_PAD_X,                        bot_y, g_theme.status_text_color, g_theme.status_bg_color)
 	draw_text(right_cstr, l.screen_w - STATUS_PAD_X - right_w, bot_y, g_theme.status_dim_color,  g_theme.status_bg_color)
+
+	// LSP server indicator, just left of the right-hand block: a small
+	// state-colored square dot + the server name. The dot is drawn (not a
+	// font glyph) so it renders regardless of the UI font's coverage. Click
+	// it to restart the server. Hidden for non-LSP files.
+	g_lsp_status_rect = {}
+	if lsp_text, lsp_color, show := lsp_status_text(ed); show {
+		lsp_cstr := strings.clone_to_cstring(lsp_text, context.temp_allocator)
+		lsp_w_px, lsp_h_px: c.int
+		ttf.GetStringSize(g_font, lsp_cstr, 0, &lsp_w_px, &lsp_h_px)
+		lsp_w := f32(lsp_w_px) / g_density
+		text_h := f32(lsp_h_px) / g_density // full line height; taller than font.size
+
+		dot_sz  := g_config.font.size * 0.45
+		dot_gap := g_char_width * 0.5
+		total_w := dot_sz + dot_gap + lsp_w
+		gap: f32 = g_char_width * 2
+		lsp_x := l.screen_w - STATUS_PAD_X - right_w - gap - total_w
+
+		// Center the dot against the text's rendered height, not font.size.
+		dot_y := bot_y + (text_h - dot_sz) * 0.5
+		fill_rect({snap_px(lsp_x), snap_px(dot_y), dot_sz, dot_sz}, lsp_color)
+		draw_text(lsp_cstr, lsp_x + dot_sz + dot_gap, bot_y, lsp_color, g_theme.status_bg_color)
+		g_lsp_status_rect = {lsp_x, bot_y, total_w, text_h}
+	}
 }
 
 update_window_title :: proc(ed: ^Editor) {
@@ -2146,6 +2243,10 @@ draw_frame :: proc() {
 
 	draw_titlebar(l)
 	draw_status_bar(active_editor(), l)
+	draw_signature(active_editor(), l.panes[g_active_idx])
+	draw_hover(active_editor(), l.panes[g_active_idx])
+	draw_completion(active_editor(), l.panes[g_active_idx])
+	draw_def_picker(active_editor(), l.panes[g_active_idx])
 	draw_menu()
 	draw_help(l)
 	draw_finder(l)
@@ -2225,6 +2326,11 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 			// Re-run the finder search so new files appear live.
 			finder_on_fff_event()
 		}
+		if ev.user.code == LSP_EVENT {
+			// A language-server reader thread queued messages — drain +
+			// dispatch (responses, diagnostics, etc.).
+			lsp_pump()
+		}
 		return
 	case .QUIT:
 		if try_quit_all() do running^ = false
@@ -2246,6 +2352,16 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		if g_sidebar_active && !g_finder_visible do return
 		if !cmd_or_ctrl(sdl.GetModState()) do handle_text_input(active_editor(), ev.text.text)
 	case .MOUSE_BUTTON_DOWN:
+		// Click the LSP status indicator → restart that server. Pad the hit
+		// area a little vertically since the text rect is thin.
+		if ev.button.button == sdl.BUTTON_LEFT && g_lsp_status_rect.w > 0 {
+			rr := g_lsp_status_rect
+			if ev.button.x >= rr.x && ev.button.x <= rr.x + rr.w &&
+			   ev.button.y >= rr.y - STATUS_PAD_Y && ev.button.y <= rr.y + rr.h + STATUS_PAD_Y {
+				lsp_restart(active_editor().language)
+				return
+			}
+		}
 		// Finder modal swallows clicks; outside-click dismisses,
 		// inside-click selects (and double-click activates).
 		if finder_handle_button(ev.button, l) do return
@@ -2298,9 +2414,34 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 			g_resize_divider = div
 			return
 		}
+		// Definition chooser is modal: a click selects a row or dismisses.
+		if def_picker_active() {
+			tidx := pane_at_x(ev.button.x, l)
+			if tidx >= 0 && tidx < len(l.panes) {
+				if def_picker_handle_click(ev.button.x, ev.button.y, l.panes[tidx]) do return
+			}
+		}
+		// Completion popup: a click on a row selects + inserts it.
+		if completion_active() {
+			tidx := pane_at_x(ev.button.x, l)
+			if tidx >= 0 && tidx < len(l.panes) {
+				if completion_handle_click(ev.button.x, ev.button.y, l.panes[tidx]) do return
+			}
+		}
 		idx := pane_at_x(ev.button.x, l)
 		g_active_idx = idx
 		g_drag_idx   = idx
+		// Cmd/Ctrl + click → go to definition at the clicked symbol.
+		if ev.button.button == sdl.BUTTON_LEFT && cmd_or_ctrl(sdl.GetModState()) {
+			ced := &g_editors[idx]
+			if lsp_lang_supported(ced.language) && len(ced.file_path) > 0 {
+				pos := mouse_to_buffer_pos(ced, ev.button.x, ev.button.y, l.panes[idx])
+				ced.cursor = pos
+				ced.anchor = pos
+				hover_clear()
+				if lsp_definition_request_at(ced, pos) do return
+			}
+		}
 		handle_mouse_button(&g_editors[idx], ev.button, l.panes[idx])
 	case .MOUSE_BUTTON_UP:
 		// Finder swallows the up so it doesn't fall through to a pane.
@@ -2334,6 +2475,35 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		}
 		g_drag_idx = -1
 	case .MOUSE_MOTION:
+		// Cmd/Ctrl-hover: underline the symbol under the cursor + request
+		// hover info (the "click to go to definition" affordance). Doesn't
+		// consume the event — normal motion handling continues below.
+		// Dropdown popups: hovering a row highlights it. Non-consuming.
+		if completion_active() || def_picker_active() {
+			midx := pane_at_x(ev.motion.x, l)
+			if midx >= 0 && midx < len(l.panes) {
+				completion_handle_motion(ev.motion.x, ev.motion.y, l.panes[midx])
+				def_picker_handle_motion(ev.motion.x, ev.motion.y, l.panes[midx])
+			}
+		}
+		// File-tree row hover.
+		sidebar_handle_motion(ev.motion.x, ev.motion.y, l)
+		// Finder result-row hover.
+		finder_handle_motion(ev.motion.x, ev.motion.y, l)
+
+		if cmd_or_ctrl(sdl.GetModState()) && !g_finder_visible {
+			hidx := pane_at_x(ev.motion.x, l)
+			if hidx >= 0 && hidx < len(l.panes) {
+				hed := &g_editors[hidx]
+				if lsp_lang_supported(hed.language) && len(hed.file_path) > 0 {
+					hpos := mouse_to_buffer_pos(hed, ev.motion.x, ev.motion.y, l.panes[hidx])
+					hover_set_target(hed, hpos)
+				} else do hover_clear()
+			}
+		} else if g_hover.cmd_active {
+			hover_clear()
+		}
+
 		// In-flight scrollbar drag wins over everything else; route the
 		// motion straight to the terminal so the thumb tracks the mouse
 		// even if it wanders out of the strip.
@@ -2547,6 +2717,11 @@ main :: proc() {
 		delete(g_editors)
 		delete(g_pane_ratios)
 		finder_destroy()
+		completion_destroy()
+		signature_destroy()
+		hover_destroy()
+		def_picker_destroy()
+		lsp_shutdown_all()
 		sidebar_destroy()
 		workspace_destroy()
 		dot_destroy()
@@ -2613,10 +2788,21 @@ main :: proc() {
 		g_swallow_text_input = false
 
 		flush_pending_dialogs(active_editor())
+		// Drain LSP messages every iteration too, not only on LSP_EVENT — a
+		// single reader-thread wake (e.g. the handshake reply) can race the
+		// main loop, leaving the state stale until the next input event.
+		// Pumping here catches it within the idle tick (cheap when empty).
+		lsp_pump()
+		lsp_tick() // flush debounced didChange after the user pauses typing
 		// Layout may have shifted (open/close pane, resize), so recompute.
 		l = compute_layout()
 		ed := active_editor()
-		if ed.cursor != prev_cursor do auto_scroll_to_caret(ed, l.panes[g_active_idx])
+		if ed.cursor != prev_cursor {
+			auto_scroll_to_caret(ed, l.panes[g_active_idx])
+			lsp_status_at_cursor(ed) // surface the diagnostic under the cursor
+			completion_on_cursor_moved(ed) // dismiss / narrow the popup
+			signature_on_cursor_moved(ed)
+		}
 		// Clamp every pane — wheel events may have scrolled an inactive
 		// pane past its content bounds, and we want it pinned the next
 		// time a frame draws.

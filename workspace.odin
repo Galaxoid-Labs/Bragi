@@ -42,6 +42,7 @@ set_workspace :: proc(path: string) -> bool {
 	// and refresh the file tree for the new root.
 	finder_set_workspace_root(g_workspace_root)
 	sidebar_on_workspace_changed()
+	lsp_on_workspace_changed()
 	return true
 }
 

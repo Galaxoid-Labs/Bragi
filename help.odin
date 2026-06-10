@@ -133,6 +133,8 @@ when ODIN_OS == .Darwin {
 	HELP_FILES := [?]Help_Entry{
 		{MOD + "+F",       "fuzzy file finder (type to search the project · Up/Down · Enter opens)"},
 		{MOD + "+E",       "toggle file-tree sidebar (j/k/h/l · Enter opens · i = hidden files)"},
+		{"gd",             "go to definition (LSP, .jai in a workspace)"},
+		{MOD + "+Space",   "autocompletion (Insert mode · Tab/Enter accept · Esc dismiss)"},
 		{MOD + "+Shift+O", "open a folder as the workspace (also :cd <path> · drop a folder)"},
 		{MOD + " +/-",     "zoom editor font in / out  (" + MOD + " 0 resets)"},
 		{":w",            "save"},
@@ -154,6 +156,8 @@ when ODIN_OS == .Darwin {
 	HELP_FILES := [?]Help_Entry{
 		{MOD + "+F",       "fuzzy file finder (type to search the project · Up/Down · Enter opens)"},
 		{MOD + "+E",       "toggle file-tree sidebar (j/k/h/l · Enter opens · i = hidden files)"},
+		{"gd",             "go to definition (LSP, .jai in a workspace)"},
+		{MOD + "+Space",   "autocompletion (Insert mode · Tab/Enter accept · Esc dismiss)"},
 		{MOD + "+Shift+O", "open a folder as the workspace (also :cd <path> · drop a folder)"},
 		{MOD + " +/-",     "zoom editor font in / out  (" + MOD + " 0 resets)"},
 		{":w",            "save"},

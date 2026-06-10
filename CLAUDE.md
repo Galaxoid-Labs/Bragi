@@ -116,6 +116,32 @@ Both have identical advance width so cell math is unchanged.
   (MENU_* colors, blue dirs, UI font — does NOT scale with editor zoom).
   Mouse (click dir=expand, file=open) + keyboard (j/k/h/l, Enter, Esc)
   when focused.
+- **`lsp.odin`** — Language Server Protocol client. **jai-lsp only for
+  now** (ols/.odin later). One server process per language, spawned
+  lazily when a `.jai` file opens in a workspace. JSON-RPC over the
+  child's stdio (`Content-Length` framing); a reader thread parses
+  frames and pushes `LSP_EVENT`; `lsp_pump` (main thread) dispatches
+  responses (by id→method in `pending`) and notifications. Handshake
+  negotiates **utf-8**, so LSP `character` == byte count from line start
+  → position converters (`lsp_byte_to_pos`/`lsp_pos_to_byte`) are plain
+  byte math (utf-16 variant lands with ols). Document sync: didOpen on
+  load, debounced full-text didChange (`lsp_note_edit` timestamps edits,
+  `lsp_tick` flushes after 250 ms), didSave, didClose. Diagnostics store
+  (`g_lsp_diagnostics`, path→diags) from publishDiagnostics, rendered as
+  underlines (`draw_lsp_diagnostics`) + status-bar message on the cursor
+  line. Servers/paths resolve from `[lsp]` config → next-to-exe → PATH.
+  Teardown mirrors `fff_teardown` (quit flag, close stdin to EOF the
+  reader, `WaitThread`, reap).
+- **`lsp_posix.odin`** / **`lsp_windows.odin`** — process spawn with
+  PLAIN stdio pipes (not a PTY): POSIX `pipe`+`fork`+`dup2`+`execvp`
+  (reuses pty.odin's libc bindings); Windows is a stub for now.
+- **`completion.odin`** — the autocompletion popup (intellisense).
+  Insert-mode only; requests `textDocument/completion` once at the word
+  start (`completion_trigger`), narrows locally as you type
+  (`completion_refilter`), Tab/Enter accept (`editor_replace_range`,
+  single undo), Esc dismiss, Up/Down move, Ctrl+Space manual. Anchored
+  at the caret, finder-styled. Go-to-definition (`gd`, Normal mode) lives
+  in `lsp.odin` (`lsp_definition_request`/`lsp_jump_to`).
 - **`dot.odin`** — `.` (repeat last edit) recorder.
 - **`config.odin`** — INI loader, theme + editor settings.
 - **`vterm.odin`** — Foreign bindings for libvterm 0.3.x. Links

@@ -34,6 +34,8 @@ Editor :: struct {
 	file_path:  string, // owned; "" means no file
 	dirty:      bool,
 	language:   Language,
+	lsp_open:   bool,    // didOpen has been sent to the language server for this file
+	lsp_sent_version: u64, // buffer.version at the last didChange we sent
 	eol:        EOL,
 	eol_mixed:  bool, // transient — set by load_file when input had mixed endings
 
@@ -90,6 +92,7 @@ editor_make :: proc() -> Editor {
 }
 
 editor_destroy :: proc(ed: ^Editor) {
+	lsp_on_editor_closed(ed) // notify the server before file_path is freed
 	piece_buffer_destroy(&ed.buffer)
 	undo_group_destroy(&ed.pending)
 	undo_stack_destroy(&ed.undo_stack)
@@ -227,6 +230,7 @@ bisect_first_gt :: proc(line_starts: []int, value: int) -> int {
 // and rely on the lazy full rebuild in ensure_line_starts.
 editor_buffer_insert :: proc(ed: ^Editor, pos: int, bytes: []u8) {
 	if len(bytes) == 0 do return
+	lsp_note_edit() // timestamp this edit for the debounced didChange
 	caches_valid := ed.line_starts_ver == ed.buffer.version && len(ed.line_starts) > 0
 	piece_buffer_insert(&ed.buffer, pos, bytes)
 	if !caches_valid do return
@@ -270,6 +274,7 @@ editor_buffer_insert :: proc(ed: ^Editor, pos: int, bytes: []u8) {
 
 editor_buffer_delete :: proc(ed: ^Editor, pos: int, count: int) {
 	if count <= 0 do return
+	lsp_note_edit() // timestamp this edit for the debounced didChange
 	caches_valid := ed.line_starts_ver == ed.buffer.version && len(ed.line_starts) > 0
 	piece_buffer_delete(&ed.buffer, pos, count)
 	if !caches_valid do return
@@ -411,6 +416,26 @@ do_delete_range :: proc(ed: ^Editor, pos, count: int, new_cursor: int) {
 	ed.cursor = new_cursor
 	ed.anchor = new_cursor
 	ed.dirty = true
+}
+
+// Replace the byte range [lo,hi) with `s`, recording it in the undo log
+// and leaving the cursor after the inserted text. Used to apply an LSP
+// completion's textEdit as one edit.
+editor_replace_range :: proc(ed: ^Editor, lo, hi: int, s: string) {
+	if hi > lo {
+		bytes := make([]u8, hi - lo, context.temp_allocator)
+		for i in 0 ..< hi - lo do bytes[i] = piece_buffer_byte_at(&ed.buffer, lo + i)
+		editor_buffer_delete(ed, lo, hi - lo)
+		record_delete(ed, lo, bytes, lo, lo)
+	}
+	new_cursor := lo + len(s)
+	if len(s) > 0 {
+		editor_buffer_insert(ed, lo, transmute([]u8)s)
+		record_insert(ed, lo, transmute([]u8)s, new_cursor, new_cursor)
+	}
+	ed.cursor  = new_cursor
+	ed.anchor  = new_cursor
+	ed.dirty   = true
 }
 
 @(private="file")

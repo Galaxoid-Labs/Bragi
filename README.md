@@ -45,6 +45,15 @@ A small, GPU-accelerated, vim-flavoured text/code editor written in
   keys, hex colors, booleans), plus a **Generic** fallback (strings /
   numbers / `//` and `/* */` comments) for everything else. Detection
   by file extension; switch manually with `:syntax <name>`.
+- **Intellisense via LSP** — open a `.jai` or `.odin` file inside a
+  workspace and Bragi drives **jai-lsp** / **ols** over the Language
+  Server Protocol: **autocompletion** as you type (Tab/Enter accept,
+  `Ctrl+Space` invoke), **signature help** on `(`, **hover** info
+  (`Cmd`/`Ctrl`-hover), **go-to-definition** (`gd`, or `Cmd`/`Ctrl`-click;
+  a picker appears when there's more than one), and **diagnostics**
+  (underlines + the message on the cursor's line). A status-bar dot shows
+  the server state — click it to restart. Both servers ship in the
+  release; see [Language servers](#language-servers-lsp).
 - **Search** — `/foo` / `?foo` (literal, no regex), `n` / `N` to page,
   `[k/m]` match counter in the status bar, faint match highlights for
   every visible occurrence, `\c` / `\C` per-pattern case overrides.
@@ -267,11 +276,65 @@ buffer pre-populated with the commented default template, and saving
 writes it to the right path. INI mode is auto-detected, so colors,
 sections, and hex values are highlighted as you edit.
 
-The template covers `[font]`, `[editor_font]`, `[editor]`, and
+The template covers `[font]`, `[editor_font]`, `[editor]`, `[lsp]`, and
 `[theme]`. `[editor_font]` overrides the code area's font independently
 of the UI (`[font]`); blank keys inherit `[font]`. Every visible
 color in the editor — syntax token colors, gutter, status bar,
 selection, search, scrollbar — is themeable via `[theme]`.
+
+## Language servers (LSP)
+
+Open a `.jai` or `.odin` file **inside a workspace** (a folder opened via
+`bragi <dir>`, the Open Folder dialog, or `:cd`) and Bragi launches the
+matching server, one process per language:
+
+| Language | Server | Notes |
+|----------|--------|-------|
+| Jai  | [jai-lsp](https://github.com/Galaxoid-Labs/jai-lsp) | negotiates **utf-8** |
+| Odin | [ols](https://github.com/DanielGavin/ols)           | uses **utf-16** |
+
+**Features** (identical for both): autocompletion (narrows as you type;
+`Ctrl`/`Cmd+Space` to invoke; Tab/Enter accept; click a row to insert),
+signature help on `(` with the active argument highlighted, hover info via
+`Cmd`/`Ctrl`-hover (also underlines the symbol), go-to-definition with
+`gd` or `Cmd`/`Ctrl`-click — a chooser pops when a symbol resolves to more
+than one location — and diagnostics as underlines plus a status-bar message
+on the cursor's line.
+
+**Server status** — a colored dot + name sits in the status bar (green
+ready · yellow starting · red crashed · dim not-running). **Click it** to
+restart, or use `:lsp restart` / `:lsp stop` / `:lsp start`.
+
+### Where the binaries come from
+
+Resolved in order: **`[lsp]` config path → next to the Bragi executable →
+`PATH`**. Release builds bundle both servers next to the binary, so it
+works with **zero config**. Running from a source checkout, Bragi also
+finds the arch-suffixed binaries under `vendor/jai-lsp/` and
+`vendor/odin-lsp/` automatically. Override the path explicitly if you want
+your own build:
+
+```ini
+[lsp]
+jai          = /path/to/jai-lsp        # else: bundled → PATH
+odin         = /path/to/ols            # else: bundled → PATH
+jai_entry    = /path/to/main.jai       # jai-lsp's type-check entry (diagnostics)
+jai_compiler = /path/to/jai-macos      # → JAI_COMPILER, for jai diagnostics + rich hover
+```
+
+### Caveats
+
+- **Jai diagnostics + rich (typed) hover** need jai-lsp to run the Jai
+  compiler — set `jai_compiler` to your `jai-macos` / `jai-linux` /
+  `jai.exe` (it's passed as `JAI_COMPILER`). Completion, signatures, and
+  go-to-definition work without it (they use the workspace scan).
+- **Odin** completion/hover/def work out of the box; collection-aware
+  features and diagnostics want an `ols.json` in the workspace root and
+  `odin` on `PATH` (ols's standard config — not bundled).
+- **macOS Gatekeeper** SIGKILLs unsigned helper binaries on first spawn.
+  Release `.app`s codesign the bundled servers under the app identity; a
+  raw downloaded binary needs a one-time allow in System Settings →
+  Privacy & Security.
 
 ## Quick reference
 
@@ -311,11 +374,17 @@ n N                 next / prev match (wraps)
 :termclose          close the terminal pane
 :reload :re         reload the current file from disk
 :config             open / create the user config.ini
+:lsp [restart|stop|start]  manage the language server (bare :lsp restarts)
 :h  :help           open the categorised cheat sheet
 
 Cmd/Ctrl+F          fuzzy file finder
 Cmd/Ctrl+E          toggle the file-tree sidebar
 Cmd/Ctrl+J          toggle the terminal pane
+gd                  go to definition (LSP, Normal mode)
+Cmd/Ctrl+click      go to definition at the clicked symbol
+Cmd/Ctrl+hover      underline a symbol + show hover info
+Ctrl+Space          invoke autocompletion (Insert mode)
+Tab / Enter         accept completion · Esc dismiss
 Cmd/Ctrl + = / -    zoom editor font in / out  (Cmd/Ctrl 0 resets)
 Cmd+O / Shift+O     open file / open folder (workspace)
 Cmd+S / Shift+S     save / save as
@@ -352,7 +421,8 @@ Bragi is **GPL-3.0-only** — see [`LICENSE`](LICENSE) for the full text.
 Copyright © 2026 Galaxoid Labs.
 
 Bundled third-party software (libvterm, SDL3, SDL3_ttf,
-[fff](https://github.com/dmtrKovalenko/fff), Fira Code, Fira Code Nerd
+[fff](https://github.com/dmtrKovalenko/fff),
+[ols](https://github.com/DanielGavin/ols), Fira Code, Fira Code Nerd
 Font, Odin runtime) is distributed under permissive licenses; the
 verbatim notices live in [`licenses/`](licenses/) and
 [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md), and ride along
@@ -362,3 +432,8 @@ The fuzzy file finder is powered by **[fff](https://github.com/dmtrKovalenko/fff
 by Dmitriy Kovalenko (MIT) — its prebuilt libraries are vendored under
 [`vendor/fff/`](vendor/fff/) and bundled into every release. Thanks to
 the fff project for a fast, accurate file-search engine.
+
+Odin intellisense is powered by **[ols](https://github.com/DanielGavin/ols)**,
+the Odin Language Server by Daniel Gavin and contributors (MIT) — the
+prebuilt binary is vendored under [`vendor/odin-lsp/`](vendor/odin-lsp/)
+and bundled into every release. Thanks to the ols project.
