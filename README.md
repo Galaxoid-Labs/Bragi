@@ -319,6 +319,14 @@ signature help on `(` with the active argument highlighted, hover info via
 than one location — and diagnostics as underlines plus a status-bar message
 on the cursor's line.
 
+**Formatting** — `Cmd`/`Ctrl+Shift+F`, `:fmt`, or right-click → *Format
+Document* reformats the file through the server's formatter (jai-lsp; ols
+via its in-process `odin/printer` — no separate `odinfmt` binary needed).
+Applied as a single undo. Set `[lsp] format_on_save = true` to run it
+automatically on `:w` / `Cmd`/`Ctrl+S` (only for files whose server
+advertises formatting; `:wq` and quit-time saves skip it). An optional
+`odinfmt.json` in the tree tunes Odin style.
+
 **Server status** — a colored dot + name sits in the status bar (green
 ready · yellow starting · red crashed · dim not-running). **Click it** to
 restart, or use `:lsp restart` / `:lsp stop` / `:lsp start`.
@@ -338,6 +346,7 @@ jai          = /path/to/jai-lsp        # else: bundled → PATH
 odin         = /path/to/ols            # else: bundled → PATH
 jai_entry    = /path/to/main.jai       # jai-lsp's type-check entry (diagnostics)
 jai_compiler = /path/to/jai-macos      # → JAI_COMPILER, for jai diagnostics + rich hover
+format_on_save = false                 # run the LSP formatter on :w / Cmd+S
 ```
 
 ### Caveats
@@ -401,6 +410,7 @@ Cmd/Ctrl+J          toggle the terminal pane
 gd                  go to definition (LSP, Normal mode)
 Cmd/Ctrl+click      go to definition at the clicked symbol
 Cmd/Ctrl+hover      underline a symbol + show hover info
+Cmd/Ctrl+Shift+F    format the document (LSP) · also :fmt
 Ctrl+Space          invoke autocompletion (Insert mode)
 Tab / Enter         accept completion · Esc dismiss
 Cmd/Ctrl + = / -    zoom editor font in / out  (Cmd/Ctrl 0 resets)

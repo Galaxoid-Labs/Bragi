@@ -12,9 +12,12 @@ import "core:sys/posix"
 // pre-registered EVFILT_USER event lets `file_watch_shutdown` wake
 // the watcher thread cleanly.
 
-@(private="file") WAKE_IDENT :: uintptr(0xDEADBEEF)
-@(private="file") g_kq:       kqueue.KQ = -1
-@(private="file") g_dir_fds:  map[string]posix.FD
+@(private = "file")
+WAKE_IDENT :: uintptr(0xDEADBEEF)
+@(private = "file")
+g_kq: kqueue.KQ = -1
+@(private = "file")
+g_dir_fds: map[string]posix.FD
 
 file_watch_backend_init :: proc() -> bool {
 	kq, err := kqueue.kqueue()
@@ -25,9 +28,9 @@ file_watch_backend_init :: proc() -> bool {
 	// edge-triggered so a single Trigger fires exactly once per
 	// kevent() return rather than re-firing on every wait.
 	wake: kqueue.KEvent
-	wake.ident  = WAKE_IDENT
+	wake.ident = WAKE_IDENT
 	wake.filter = .User
-	wake.flags  = {.Add, .Clear}
+	wake.flags = {.Add, .Clear}
 	if _, kerr := kqueue.kevent(g_kq, []kqueue.KEvent{wake}, nil, nil); kerr != .NONE {
 		posix.close(posix.FD(g_kq))
 		g_kq = -1
@@ -40,7 +43,7 @@ file_watch_backend_init :: proc() -> bool {
 
 file_watch_backend_shutdown :: proc() {
 	for _, fd in g_dir_fds do posix.close(fd)
-	for k in g_dir_fds   do delete(k)
+	for k in g_dir_fds do delete(k)
 	delete(g_dir_fds)
 	g_dir_fds = nil
 	if g_kq >= 0 {
@@ -61,9 +64,9 @@ file_watch_backend_add :: proc(dir: string) {
 	if fd < 0 do return
 
 	kev: kqueue.KEvent
-	kev.ident  = uintptr(fd)
+	kev.ident = uintptr(fd)
 	kev.filter = .VNode
-	kev.flags  = {.Add, .Clear}
+	kev.flags = {.Add, .Clear}
 	kev.fflags.vnode = {.Write, .Extend, .Rename, .Delete}
 	if _, err := kqueue.kevent(g_kq, []kqueue.KEvent{kev}, nil, nil); err != .NONE {
 		posix.close(fd)
@@ -74,7 +77,7 @@ file_watch_backend_add :: proc(dir: string) {
 
 file_watch_backend_wake :: proc() {
 	kev: kqueue.KEvent
-	kev.ident  = WAKE_IDENT
+	kev.ident = WAKE_IDENT
 	kev.filter = .User
 	kev.fflags.user = {.Trigger}
 	_, _ = kqueue.kevent(g_kq, []kqueue.KEvent{kev}, nil, nil)

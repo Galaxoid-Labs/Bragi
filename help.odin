@@ -15,9 +15,9 @@ import ttf "vendor:sdl3/ttf"
 // but laid out as a tabbed reference. Captures Esc and outside-clicks
 // to dismiss.
 
-g_help_visible:  bool
+g_help_visible: bool
 g_help_category: int = 0
-g_help_scroll:   f32 = 0   // within-category scroll, in case a tab overflows
+g_help_scroll: f32 = 0 // within-category scroll, in case a tab overflows
 
 // Hardcoded; bumped manually alongside `deploy.ini`'s `version` field.
 // A future improvement could thread this through a generated file at
@@ -26,28 +26,37 @@ g_help_scroll:   f32 = 0   // within-category scroll, in case a tab overflows
 BRAGI_VERSION :: "0.1.0"
 
 HELP_MODAL_W_MAX :: f32(960)
-HELP_MODAL_PAD   :: f32(20)
-HELP_LINE_GAP    :: f32(6)
-HELP_SECTION_GAP :: f32(16)   // extra space above a section header
-HELP_KEY_COL_W   :: f32(180)
-HELP_TAB_H       :: f32(34)
-HELP_TAB_PAD_X   :: f32(14)
-HELP_TAB_GAP     :: f32(8)
+HELP_MODAL_PAD :: f32(20)
+HELP_LINE_GAP :: f32(6)
+HELP_SECTION_GAP :: f32(16) // extra space above a section header
+HELP_KEY_COL_W :: f32(180)
+HELP_TAB_H :: f32(34)
+HELP_TAB_PAD_X :: f32(14)
+HELP_TAB_GAP :: f32(8)
 HELP_TAB_UNDERLINE_H :: f32(2)
-HELP_SB_W        :: f32(8)
-HELP_DIM_BG      :: sdl.Color{0, 0, 0, 140}
-HELP_CHIP_PAD_X  :: f32(7)
-HELP_CHIP_PAD_Y  :: f32(2)
+HELP_SB_W :: f32(8)
+HELP_DIM_BG :: sdl.Color{0, 0, 0, 140}
+HELP_CHIP_PAD_X :: f32(7)
+HELP_CHIP_PAD_Y :: f32(2)
 
-@(private="file") HELP_TEXT_COLOR     :: sdl.Color{220, 220, 220, 255}
-@(private="file") HELP_TEXT_DIM       :: sdl.Color{135, 140, 155, 255}
-@(private="file") HELP_TEXT_BRIGHT    :: sdl.Color{235, 240, 248, 255}
-@(private="file") HELP_KEY_COLOR      :: sdl.Color{ 97, 175, 239, 255} // blue
-@(private="file") HELP_SECTION_COLOR  :: sdl.Color{198, 120, 221, 255} // purple
-@(private="file") HELP_CHIP_BG        :: sdl.Color{ 36,  36,  44, 255}
-@(private="file") HELP_CHIP_BORDER    :: sdl.Color{ 64,  68,  82, 255}
-@(private="file") HELP_TAB_BG         :: sdl.Color{ 28,  28,  36, 255}
-@(private="file") HELP_TAB_BG_HOT     :: sdl.Color{ 44,  46,  56, 255}
+@(private = "file")
+HELP_TEXT_COLOR :: sdl.Color{220, 220, 220, 255}
+@(private = "file")
+HELP_TEXT_DIM :: sdl.Color{135, 140, 155, 255}
+@(private = "file")
+HELP_TEXT_BRIGHT :: sdl.Color{235, 240, 248, 255}
+@(private = "file")
+HELP_KEY_COLOR :: sdl.Color{97, 175, 239, 255} // blue
+@(private = "file")
+HELP_SECTION_COLOR :: sdl.Color{198, 120, 221, 255} // purple
+@(private = "file")
+HELP_CHIP_BG :: sdl.Color{36, 36, 44, 255}
+@(private = "file")
+HELP_CHIP_BORDER :: sdl.Color{64, 68, 82, 255}
+@(private = "file")
+HELP_TAB_BG :: sdl.Color{28, 28, 36, 255}
+@(private = "file")
+HELP_TAB_BG_HOT :: sdl.Color{44, 46, 56, 255}
 
 // ──────────────────────────────────────────────────────────────────
 // Data: categorised entries
@@ -63,63 +72,63 @@ Help_Category :: struct {
 	entries: []Help_Entry,
 }
 
-@(private="file")
-HELP_MODES := [?]Help_Entry{
-	{"Esc",     "return to NORMAL · also dismisses help / menu"},
-	{"i",       "INSERT before the cursor"},
-	{"a",       "INSERT after the cursor"},
-	{"I",       "INSERT at line-start"},
-	{"A",       "INSERT at line-end"},
-	{"o",       "new line below + INSERT"},
-	{"O",       "new line above + INSERT"},
-	{"v",       "enter VISUAL"},
-	{"V",       "enter VISUAL-LINE"},
+@(private = "file")
+HELP_MODES := [?]Help_Entry {
+	{"Esc", "return to NORMAL · also dismisses help / menu"},
+	{"i", "INSERT before the cursor"},
+	{"a", "INSERT after the cursor"},
+	{"I", "INSERT at line-start"},
+	{"A", "INSERT at line-end"},
+	{"o", "new line below + INSERT"},
+	{"O", "new line above + INSERT"},
+	{"v", "enter VISUAL"},
+	{"V", "enter VISUAL-LINE"},
 }
 
-@(private="file")
-HELP_MOTION := [?]Help_Entry{
+@(private = "file")
+HELP_MOTION := [?]Help_Entry {
 	{"h j k l", "left / down / up / right"},
-	{"w b e",   "word forward / back / to end"},
-	{"0 $ ^",   "line start / end / first non-blank"},
-	{"gg G",    "first / last line"},
-	{"<n>G",    "jump to line n  (also :n)"},
-	{"%",       "jump to matching bracket   ( ) [ ] { }"},
-	{"",        "Scrolling"},
-	{"Ctrl+D",  "half-page down"},
-	{"Ctrl+U",  "half-page up"},
-	{"zz",      "center cursor's line on screen"},
-	{"zt",      "scroll cursor's line to top"},
-	{"zb",      "scroll cursor's line to bottom"},
+	{"w b e", "word forward / back / to end"},
+	{"0 $ ^", "line start / end / first non-blank"},
+	{"gg G", "first / last line"},
+	{"<n>G", "jump to line n  (also :n)"},
+	{"%", "jump to matching bracket   ( ) [ ] { }"},
+	{"", "Scrolling"},
+	{"Ctrl+D", "half-page down"},
+	{"Ctrl+U", "half-page up"},
+	{"zz", "center cursor's line on screen"},
+	{"zt", "scroll cursor's line to top"},
+	{"zb", "scroll cursor's line to bottom"},
 }
 
-@(private="file")
-HELP_EDIT := [?]Help_Entry{
-	{"dd yy cc","delete / yank / change current line"},
-	{"dw d3w",  "operator + motion  (counts compose either side)"},
-	{"D C Y",   "d$ / c$ / y$"},
-	{"x X",     "delete char forward / backward"},
-	{"p P",     "paste after / before"},
-	{"u",       "undo  ·  " + MOD + "+Shift+Z to redo"},
-	{".",       "repeat last change (insert run, op+motion, x, p, …)"},
-	{">> <<",   "indent / outdent current line"},
-	{"",        "Visual mode (after v / V)"},
-	{"motion",  "any motion key extends the selection"},
-	{"d c y",   "delete / change / yank the selection then exit"},
-	{"> <",     "indent / outdent every line in the selection"},
-	{"v V",     "exit VISUAL / VISUAL-LINE"},
-	{"Esc",     "exit visual without operating"},
+@(private = "file")
+HELP_EDIT := [?]Help_Entry {
+	{"dd yy cc", "delete / yank / change current line"},
+	{"dw d3w", "operator + motion  (counts compose either side)"},
+	{"D C Y", "d$ / c$ / y$"},
+	{"x X", "delete char forward / backward"},
+	{"p P", "paste after / before"},
+	{"u", "undo  ·  " + MOD + "+Shift+Z to redo"},
+	{".", "repeat last change (insert run, op+motion, x, p, …)"},
+	{">> <<", "indent / outdent current line"},
+	{"", "Visual mode (after v / V)"},
+	{"motion", "any motion key extends the selection"},
+	{"d c y", "delete / change / yank the selection then exit"},
+	{"> <", "indent / outdent every line in the selection"},
+	{"v V", "exit VISUAL / VISUAL-LINE"},
+	{"Esc", "exit visual without operating"},
 }
 
-@(private="file")
-HELP_SEARCH := [?]Help_Entry{
+@(private = "file")
+HELP_SEARCH := [?]Help_Entry {
 	{"/pattern", "search forward (literal)"},
 	{"?pattern", "search backward"},
-	{"n N",      "next / previous match (wraps)"},
-	{"[k/m]",    "status bar shows match index while on a hit"},
-	{"\\c \\C",  "force case-insensitive / sensitive (in pattern)"},
-	{":noh",     "clear active search pattern"},
-	{"",         "Substitute"},
-	{":s/p/r/",  "substitute on current line  (g=all  i=icase  I=case)"},
+	{"n N", "next / previous match (wraps)"},
+	{"[k/m]", "status bar shows match index while on a hit"},
+	{"\\c \\C", "force case-insensitive / sensitive (in pattern)"},
+	{":noh", "clear active search pattern"},
+	{"", "Substitute"},
+	{":s/p/r/", "substitute on current line  (g=all  i=icase  I=case)"},
 	{":%s/p/r/", "substitute across the whole buffer"},
 }
 
@@ -129,108 +138,116 @@ HELP_SEARCH := [?]Help_Entry{
 // a plain Ctrl+W and switch focus with Ctrl+[ / Ctrl+]. A `when` element can't
 // sit inside an array literal, so the whole table is selected per-platform.
 when ODIN_OS == .Darwin {
-	@(private="file")
-	HELP_FILES := [?]Help_Entry{
-		{MOD + "+F",       "fuzzy file finder (type to search the project · Up/Down · Enter opens)"},
-		{MOD + "+E",       "toggle file-tree sidebar (j/k/h/l · Enter opens · i = hidden files)"},
-		{"gd",             "go to definition (LSP, .jai in a workspace)"},
-		{MOD + "+Space",   "autocompletion (Insert mode · Tab/Enter accept · Esc dismiss)"},
+	@(private = "file")
+	HELP_FILES := [?]Help_Entry {
+		{MOD + "+F", "fuzzy file finder (type to search the project · Up/Down · Enter opens)"},
+		{MOD + "+E", "toggle file-tree sidebar (j/k/h/l · Enter opens · i = hidden files)"},
+		{"gd", "go to definition (LSP, .jai in a workspace)"},
+		{MOD + "+Space", "autocompletion (Insert mode · Tab/Enter accept · Esc dismiss)"},
+		{MOD + "+Shift+F", "format document (LSP · also :fmt · [lsp] format_on_save)"},
 		{MOD + "+Shift+O", "open a folder as the workspace (also :cd <path> · drop a folder)"},
-		{MOD + " +/-",     "zoom editor font in / out  (" + MOD + " 0 resets)"},
-		{":w",            "save"},
-		{":q",            "close pane (last file → welcome screen)"},
-		{":wq",           "save + close"},
-		{":q!",           "force-close pane (last file → welcome; again → quit)"},
-		{":42",           "jump to line 42"},
-		{":syntax X",     "switch tokenizer  (none generic odin c cpp go jai swift rust bash ini)"},
-		{":config",       "open / create the user config.ini"},
-		{"",              "Panes"},
-		{"Ctrl+W h / l",  "focus pane left / right"},
-		{"Ctrl+W c / q",  "close active pane"},
+		{MOD + " +/-", "zoom editor font in / out  (" + MOD + " 0 resets)"},
+		{":w", "save"},
+		{":q", "close pane (last file → welcome screen)"},
+		{":wq", "save + close"},
+		{":q!", "force-close pane (last file → welcome; again → quit)"},
+		{":42", "jump to line 42"},
+		{
+			":syntax X",
+			"switch tokenizer  (none generic odin c cpp go jai swift rust gdscript bash ini)",
+		},
+		{":config", "open / create the user config.ini"},
+		{"", "Panes"},
+		{"Ctrl+W h / l", "focus pane left / right"},
+		{"Ctrl+W c / q", "close active pane"},
 		{"Cmd+[ / Cmd+]", "focus prev / next pane (single-chord)"},
-		{"drag border",   "resize adjacent panes"},
-		{"click pane",    "focus that pane"},
+		{"drag border", "resize adjacent panes"},
+		{"click pane", "focus that pane"},
 	}
 } else {
-	@(private="file")
-	HELP_FILES := [?]Help_Entry{
-		{MOD + "+F",       "fuzzy file finder (type to search the project · Up/Down · Enter opens)"},
-		{MOD + "+E",       "toggle file-tree sidebar (j/k/h/l · Enter opens · i = hidden files)"},
-		{"gd",             "go to definition (LSP, .jai in a workspace)"},
-		{MOD + "+Space",   "autocompletion (Insert mode · Tab/Enter accept · Esc dismiss)"},
+	@(private = "file")
+	HELP_FILES := [?]Help_Entry {
+		{MOD + "+F", "fuzzy file finder (type to search the project · Up/Down · Enter opens)"},
+		{MOD + "+E", "toggle file-tree sidebar (j/k/h/l · Enter opens · i = hidden files)"},
+		{"gd", "go to definition (LSP, .jai in a workspace)"},
+		{MOD + "+Space", "autocompletion (Insert mode · Tab/Enter accept · Esc dismiss)"},
+		{MOD + "+Shift+F", "format document (LSP · also :fmt · [lsp] format_on_save)"},
 		{MOD + "+Shift+O", "open a folder as the workspace (also :cd <path> · drop a folder)"},
-		{MOD + " +/-",     "zoom editor font in / out  (" + MOD + " 0 resets)"},
-		{":w",            "save"},
-		{":q",            "close pane (last file → welcome screen)"},
-		{":wq",           "save + close"},
-		{":q!",           "force-close pane (last file → welcome; again → quit)"},
-		{":42",           "jump to line 42"},
-		{":syntax X",     "switch tokenizer  (none generic odin c cpp go jai swift rust bash ini)"},
-		{":config",       "open / create the user config.ini"},
-		{"",                "Panes"},
-		{"Ctrl+W",          "close active pane"},
+		{MOD + " +/-", "zoom editor font in / out  (" + MOD + " 0 resets)"},
+		{":w", "save"},
+		{":q", "close pane (last file → welcome screen)"},
+		{":wq", "save + close"},
+		{":q!", "force-close pane (last file → welcome; again → quit)"},
+		{":42", "jump to line 42"},
+		{
+			":syntax X",
+			"switch tokenizer  (none generic odin c cpp go jai swift rust gdscript bash ini)",
+		},
+		{":config", "open / create the user config.ini"},
+		{"", "Panes"},
+		{"Ctrl+W", "close active pane"},
 		{"Ctrl+[ / Ctrl+]", "focus prev / next pane"},
-		{"drag border",     "resize adjacent panes"},
-		{"click pane",      "focus that pane"},
+		{"drag border", "resize adjacent panes"},
+		{"click pane", "focus that pane"},
 	}
 }
 
-@(private="file")
-HELP_TERMINAL := [?]Help_Entry{
-	{MOD + "+J",     "toggle the bottom terminal pane"},
-	{":term",        "open / focus the terminal"},
-	{":termclose",   "close the terminal pane"},
-	{"wheel",        "over the terminal: scroll the scrollback (4096-line ring)"},
-	{"drag thumb",   "drag the terminal scrollbar · click track to jump"},
-	{"any keystroke","snaps the view back to live"},
-	{"clear",        "wipes scrollback (Ghostty-style)"},
-	{"exit",         "closes the pane"},
+@(private = "file")
+HELP_TERMINAL := [?]Help_Entry {
+	{MOD + "+J", "toggle the bottom terminal pane"},
+	{":term", "open / focus the terminal"},
+	{":termclose", "close the terminal pane"},
+	{"wheel", "over the terminal: scroll the scrollback (4096-line ring)"},
+	{"drag thumb", "drag the terminal scrollbar · click track to jump"},
+	{"any keystroke", "snaps the view back to live"},
+	{"clear", "wipes scrollback (Ghostty-style)"},
+	{"exit", "closes the pane"},
 }
 
-@(private="file")
-HELP_CMD := [?]Help_Entry{
-	{MOD + "+O",        "open file (new pane unless current is blank)"},
-	{MOD + "+S",        "save  (falls through to Save As if untitled)"},
-	{MOD + "+Shift+S",  "save as"},
-	{MOD + "+Z",        "undo"},
-	{MOD + "+Shift+Z",  "redo"},
-	{MOD + "+A",        "select all"},
-	{MOD + "+C",        "copy"},
-	{MOD + "+X",        "cut"},
-	{MOD + "+V",        "paste"},
-	{MOD + "+W",        "close pane (welcome screen once the last file is gone)"},
+@(private = "file")
+HELP_CMD := [?]Help_Entry {
+	{MOD + "+O", "open file (new pane unless current is blank)"},
+	{MOD + "+S", "save  (falls through to Save As if untitled)"},
+	{MOD + "+Shift+S", "save as"},
+	{MOD + "+Z", "undo"},
+	{MOD + "+Shift+Z", "redo"},
+	{MOD + "+A", "select all"},
+	{MOD + "+C", "copy"},
+	{MOD + "+X", "cut"},
+	{MOD + "+V", "paste"},
+	{MOD + "+W", "close pane (welcome screen once the last file is gone)"},
 	{MOD + "+[ / " + MOD + "+]", "focus prev / next pane"},
-	{MOD + "+Q",        "quit (chains the unsaved-changes prompt)"},
+	{MOD + "+Q", "quit (chains the unsaved-changes prompt)"},
 }
 
-@(private="file")
-HELP_ABOUT := [?]Help_Entry{
-	{"Bragi",     BRAGI_VERSION + "  ·  GPL-3.0-only"},
+@(private = "file")
+HELP_ABOUT := [?]Help_Entry {
+	{"Bragi", BRAGI_VERSION + "  ·  GPL-3.0-only"},
 	{"Copyright", "© 2026 Galaxoid Labs"},
-	{"Source",    "github.com/Galaxoid-Labs/Bragi"},
-	{"",          "Built with"},
-	{"Odin",      "© Ginger Bill — zlib-style"},
-	{"SDL3",      "© Sam Lantinga — zlib"},
-	{"SDL3_ttf",  "© Sam Lantinga — zlib"},
-	{"libvterm",  "© Paul Evans — MIT"},
+	{"Source", "github.com/Galaxoid-Labs/Bragi"},
+	{"", "Built with"},
+	{"Odin", "© Ginger Bill — zlib-style"},
+	{"SDL3", "© Sam Lantinga — zlib"},
+	{"SDL3_ttf", "© Sam Lantinga — zlib"},
+	{"libvterm", "© Paul Evans — MIT"},
 	{"Fira Code", "© Fira Code Project Authors — SIL OFL 1.1"},
 	{"Nerd Font", "© Ryan L McIntyre / Nerd Fonts — SIL OFL 1.1 / MIT"},
-	{"",        "Verbatim license text ships in the bundle"},
-	{"macOS",   "Bragi.app/Contents/Resources/licenses/"},
-	{"Linux",   "/usr/share/doc/bragi/licenses/"},
+	{"", "Verbatim license text ships in the bundle"},
+	{"macOS", "Bragi.app/Contents/Resources/licenses/"},
+	{"Linux", "/usr/share/doc/bragi/licenses/"},
 	{"Windows", "licenses/ — next to Bragi.exe"},
 }
 
-@(private="file")
-HELP_CATEGORIES := [?]Help_Category{
-	{"Modes",    HELP_MODES[:]},
-	{"Motion",   HELP_MOTION[:]},
-	{"Edit",     HELP_EDIT[:]},
-	{"Search",   HELP_SEARCH[:]},
-	{"Files",    HELP_FILES[:]},
+@(private = "file")
+HELP_CATEGORIES := [?]Help_Category {
+	{"Modes", HELP_MODES[:]},
+	{"Motion", HELP_MOTION[:]},
+	{"Edit", HELP_EDIT[:]},
+	{"Search", HELP_SEARCH[:]},
+	{"Files", HELP_FILES[:]},
 	{"Terminal", HELP_TERMINAL[:]},
-	{MOD,        HELP_CMD[:]},
-	{"About",    HELP_ABOUT[:]},
+	{MOD, HELP_CMD[:]},
+	{"About", HELP_ABOUT[:]},
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -239,10 +256,10 @@ HELP_CATEGORIES := [?]Help_Category{
 
 help_show :: proc() {
 	g_help_visible = true
-	g_help_scroll  = 0
+	g_help_scroll = 0
 }
 
-help_hide :: proc() { g_help_visible = false }
+help_hide :: proc() {g_help_visible = false}
 
 // Switch to category at `idx`. Out-of-range no-ops; resets scroll.
 help_set_category :: proc(idx: int) {
@@ -263,7 +280,11 @@ help_step_category :: proc(delta: int) {
 // scrolling; the helper exists for the few that overflow on a tall
 // modal or a small window.
 help_scroll_by :: proc(dy: f32) {
-	g_help_scroll = clamp(g_help_scroll + dy, 0, max(0, help_category_content_h() - help_content_viewport_h()))
+	g_help_scroll = clamp(
+		g_help_scroll + dy,
+		0,
+		max(0, help_category_content_h() - help_content_viewport_h()),
+	)
 }
 
 help_scroll_to_end :: proc() {
@@ -300,14 +321,21 @@ help_rect :: proc(l: Layout) -> sdl.FRect {
 	return sdl.FRect{x, y, w, h}
 }
 
-@(private="file")
+@(private = "file")
 help_total_h :: proc(modal_w: f32) -> f32 {
 	// Title + tab strip (may wrap) + active-category content + bottom pad.
 	tabs_h := help_tab_strip_h(modal_w)
-	return HELP_MODAL_PAD * 2 + g_config.font.size + HELP_LINE_GAP + tabs_h + HELP_LINE_GAP + help_category_content_h()
+	return(
+		HELP_MODAL_PAD * 2 +
+		g_config.font.size +
+		HELP_LINE_GAP +
+		tabs_h +
+		HELP_LINE_GAP +
+		help_category_content_h() \
+	)
 }
 
-@(private="file")
+@(private = "file")
 help_category_content_h :: proc() -> f32 {
 	cat := HELP_CATEGORIES[g_help_category]
 	line_h := g_config.font.size + HELP_LINE_GAP
@@ -324,7 +352,7 @@ help_category_content_h :: proc() -> f32 {
 
 // What the on-screen content area looks like, in pixels, given the
 // current modal rect. Used to clamp the scrollbar.
-@(private="file")
+@(private = "file")
 help_content_viewport_h :: proc() -> f32 {
 	wi, hi: c.int
 	sdl.GetWindowSize(g_window, &wi, &hi)
@@ -338,7 +366,7 @@ help_content_viewport_h :: proc() -> f32 {
 
 // Width of one tab in logical pixels. Includes its padding but not
 // the inter-tab gap.
-@(private="file")
+@(private = "file")
 help_tab_w :: proc(idx: int) -> f32 {
 	cat := HELP_CATEGORIES[idx]
 	label := fmt.tprintf("%d %s", idx + 1, cat.name)
@@ -350,7 +378,7 @@ help_tab_w :: proc(idx: int) -> f32 {
 
 // Height of the tab strip in logical pixels. Tabs wrap onto a new
 // row when their cumulative width exceeds the inner modal width.
-@(private="file")
+@(private = "file")
 help_tab_strip_h :: proc(modal_w: f32) -> f32 {
 	inner_w := modal_w - HELP_MODAL_PAD * 2
 	x: f32 = 0
@@ -368,7 +396,7 @@ help_tab_strip_h :: proc(modal_w: f32) -> f32 {
 
 // Hit-test for the tab strip. Returns the tab index under (x, y) or
 // -1 if none. Mirrors `draw_help_tabs` exactly.
-@(private="file")
+@(private = "file")
 help_tab_at :: proc(x, y: f32, l: Layout) -> int {
 	r := help_rect(l)
 	tabs_y0 := r.y + HELP_MODAL_PAD + g_config.font.size + HELP_LINE_GAP
@@ -392,7 +420,6 @@ help_tab_at :: proc(x, y: f32, l: Layout) -> int {
 // ──────────────────────────────────────────────────────────────────
 // Drawing
 // ──────────────────────────────────────────────────────────────────
-
 draw_help :: proc(l: Layout) {
 	if !g_help_visible do return
 
@@ -404,16 +431,17 @@ draw_help :: proc(l: Layout) {
 
 	// Border (four 1-px strips).
 	bw: f32 = 1
-	fill_rect({r.x,            r.y,                r.w, bw },  MENU_BORDER_COLOR)
-	fill_rect({r.x,            r.y + r.h - bw,     r.w, bw },  MENU_BORDER_COLOR)
-	fill_rect({r.x,            r.y,                bw,  r.h},  MENU_BORDER_COLOR)
-	fill_rect({r.x + r.w - bw, r.y,                bw,  r.h},  MENU_BORDER_COLOR)
+	fill_rect({r.x, r.y, r.w, bw}, MENU_BORDER_COLOR)
+	fill_rect({r.x, r.y + r.h - bw, r.w, bw}, MENU_BORDER_COLOR)
+	fill_rect({r.x, r.y, bw, r.h}, MENU_BORDER_COLOR)
+	fill_rect({r.x + r.w - bw, r.y, bw, r.h}, MENU_BORDER_COLOR)
 
 	// Title row.
 	title_y := r.y + HELP_MODAL_PAD
 	title_cstr := strings.clone_to_cstring(
 		"Bragi — keyboard reference   (Esc to close · 1-8 / h l / click to switch)",
-		context.temp_allocator)
+		context.temp_allocator,
+	)
 	draw_text(title_cstr, r.x + HELP_MODAL_PAD, title_y, HELP_TEXT_DIM, MENU_BG_COLOR)
 
 	// Tab strip.
@@ -422,7 +450,7 @@ draw_help :: proc(l: Layout) {
 
 	// Active-category content. Clipped so overflow scrolls cleanly.
 	content_y0 := tabs_y0 + tabs_h + HELP_LINE_GAP
-	content_clip := sdl.Rect{
+	content_clip := sdl.Rect {
 		i32(r.x + bw),
 		i32(content_y0),
 		i32(r.w - bw * 2),
@@ -470,7 +498,7 @@ draw_help :: proc(l: Layout) {
 // Render a tab row. No bg fills, no borders — just text with an
 // underline under the active tab. Hovered tabs brighten slightly so
 // the click target reads. Returns the total height used (logical px).
-@(private="file")
+@(private = "file")
 draw_help_tabs :: proc(x_start, y_start, x_end: f32) -> f32 {
 	x := x_start
 	y := y_start
@@ -485,14 +513,14 @@ draw_help_tabs :: proc(x_start, y_start, x_end: f32) -> f32 {
 		}
 
 		is_active := i == g_help_category
-		hovered   := mx >= x && mx < x + w && my >= y && my < y + HELP_TAB_H
+		hovered := mx >= x && mx < x + w && my >= y && my < y + HELP_TAB_H
 
 		fg := HELP_TEXT_DIM
-		if hovered   do fg = HELP_TEXT_COLOR
+		if hovered do fg = HELP_TEXT_COLOR
 		if is_active do fg = HELP_TEXT_BRIGHT
 
 		label := fmt.tprintf("%d %s", i + 1, cat.name)
-		cstr  := strings.clone_to_cstring(label, context.temp_allocator)
+		cstr := strings.clone_to_cstring(label, context.temp_allocator)
 		text_y := y + (HELP_TAB_H - g_config.font.size) * 0.5
 		text_w := draw_text(cstr, x + HELP_TAB_PAD_X, text_y, fg, MENU_BG_COLOR)
 
@@ -500,7 +528,15 @@ draw_help_tabs :: proc(x_start, y_start, x_end: f32) -> f32 {
 			// Accent underline directly below the label, only as wide
 			// as the rendered text — looks like a tab marker rather
 			// than a chip outline.
-			fill_rect({x + HELP_TAB_PAD_X, text_y + g_config.font.size + 2, text_w, HELP_TAB_UNDERLINE_H}, HELP_KEY_COLOR)
+			fill_rect(
+				{
+					x + HELP_TAB_PAD_X,
+					text_y + g_config.font.size + 2,
+					text_w,
+					HELP_TAB_UNDERLINE_H,
+				},
+				HELP_KEY_COLOR,
+			)
 		}
 
 		x += w + HELP_TAB_GAP
@@ -512,7 +548,7 @@ draw_help_tabs :: proc(x_start, y_start, x_end: f32) -> f32 {
 // fill, no border — the underline is enough visual weight to mark
 // "this is a key" without the chip-box noise. Returns the rendered
 // width so the caller knows where the description starts.
-@(private="file")
+@(private = "file")
 draw_key_chip :: proc(text: string, x, y: f32) -> f32 {
 	if len(text) == 0 do return 0
 	cstr := strings.clone_to_cstring(text, context.temp_allocator)

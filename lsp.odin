@@ -5,6 +5,7 @@ import sysc "core:c"
 import "core:encoding/json"
 import "core:fmt"
 import "core:os"
+import "core:slice"
 import "core:strings"
 import "core:unicode/utf8"
 import sdl "vendor:sdl3"
@@ -52,6 +53,7 @@ LSP_Client :: struct {
 	encoding:   LSP_Encoding,
 	state:      LSP_State,
 	ever_ready: bool, // reached Ready once — tells a crash apart from a failed spawn
+	can_format: bool, // server advertised documentFormattingProvider
 
 	pipes:    LSP_Pipes,
 	reader:   ^sdl.Thread,
@@ -473,6 +475,8 @@ lsp_route_response :: proc(c: ^LSP_Client, method: string, obj: json.Object) {
 		signature_on_response(obj)
 	case "textDocument/hover":
 		hover_on_response(obj)
+	case "textDocument/formatting":
+		lsp_formatting_response(obj)
 	}
 }
 
@@ -573,6 +577,167 @@ lsp_definition_request :: proc(ed: ^Editor) -> bool {
 	return true
 }
 
+// ──────────────────────────────────────────────────────────────────
+// Document formatting (textDocument/formatting)
+// ──────────────────────────────────────────────────────────────────
+
+// One in-flight format at a time. `save_after` writes the file once the edits
+// apply (format-on-save); `deadline_ns` forces that save if the server never
+// answers — a wedged formatter must never swallow the user's save.
+@(private="file")
+g_lsp_format: struct {
+	active:      bool,
+	path:        string, // owned; target document
+	version:     u64,    // ed.buffer.version at request time (staleness guard)
+	save_after:  bool,
+	deadline_ns: i64,
+}
+
+LSP_FORMAT_SAVE_TIMEOUT_NS :: i64(2_000_000_000) // 2 s
+
+// True when a ready server for `lang` advertised documentFormattingProvider.
+lsp_can_format :: proc(lang: Language) -> bool {
+	c := g_lsp_clients[lang]
+	return c != nil && c.state == .Ready && c.can_format
+}
+
+@(private="file")
+lsp_format_clear :: proc() {
+	if len(g_lsp_format.path) > 0 do delete(g_lsp_format.path)
+	g_lsp_format = {}
+}
+
+@(private="file")
+lsp_editor_by_path :: proc(path: string) -> ^Editor {
+	for &ed in g_editors {
+		if lsp_path_eq(ed.file_path, path) do return &ed
+	}
+	return nil
+}
+
+// Send textDocument/formatting for the editor's document. `save_after` writes
+// the file once the returned edits are applied (format-on-save). Returns false
+// (nothing sent) when no ready formatter exists — the caller then saves
+// directly. Only one format is tracked at a time; a new request supersedes any
+// in-flight one.
+lsp_format_request :: proc(ed: ^Editor, save_after: bool) -> bool {
+	c := g_lsp_clients[ed.language]
+	if c == nil || c.state != .Ready || !c.can_format || !ed.lsp_open do return false
+	if len(ed.file_path) == 0 do return false
+	lsp_flush_pending_change(ed)
+
+	uri := lsp_path_to_uri(ed.file_path)
+	tab := g_config.editor.tab_size
+	if tab <= 0 do tab = 4
+	params := fmt.tprintf(
+		`{{"textDocument":{{"uri":"%s"}},"options":{{"tabSize":%d,"insertSpaces":true,"trimTrailingWhitespace":true,"insertFinalNewline":true,"trimFinalNewlines":true}}}}`,
+		uri, tab,
+	)
+
+	lsp_format_clear()
+	g_lsp_format.active     = true
+	g_lsp_format.path       = strings.clone(ed.file_path)
+	g_lsp_format.version    = ed.buffer.version
+	g_lsp_format.save_after = save_after
+	if save_after do g_lsp_format.deadline_ns = i64(sdl.GetTicksNS()) + LSP_FORMAT_SAVE_TIMEOUT_NS
+	lsp_send_request(c, "textDocument/formatting", params)
+	return true
+}
+
+// Save `ed`, formatting first when [lsp] format_on_save is on and a formatter
+// is ready — the actual write is deferred to lsp_formatting_response. Returns
+// true if the save was performed or handed off to the formatter. Scoped to the
+// interactive saves (`:w`, Cmd+S); the quit/close-with-save flows keep using
+// editor_save_file directly so a write is never deferred across a round-trip
+// mid-shutdown.
+lsp_save_with_format :: proc(ed: ^Editor) -> bool {
+	if g_config.lsp.format_on_save && lsp_can_format(ed.language) && ed.lsp_open {
+		if lsp_format_request(ed, true) do return true
+	}
+	return editor_save_file(ed)
+}
+
+@(private="file")
+Text_Edit :: struct {
+	lo, hi: int,
+	text:   string, // aliases the live JSON body (applied before dispatch frees it)
+	idx:    int,
+}
+
+// Apply a result's TextEdit[] to `ed` as one undo group. Byte ranges are
+// resolved against the CURRENT buffer up front, then applied highest-offset-
+// first so earlier offsets stay valid. Returns whether anything was applied.
+@(private="file")
+lsp_apply_text_edits :: proc(ed: ^Editor, obj: json.Object) -> bool {
+	rv, has := obj["result"]
+	if !has do return false
+	arr, ok := rv.(json.Array) // null result → no array → nothing to do
+	if !ok do return false
+
+	edits: [dynamic]Text_Edit
+	edits.allocator = context.temp_allocator
+	for e, i in arr {
+		eo, ok2 := e.(json.Object)
+		if !ok2 do continue
+		sl, sc, el, ec := lsp_range_fields(eo)
+		lo := lsp_pos_to_byte(ed, sl, sc)
+		hi := lsp_pos_to_byte(ed, el, ec)
+		if hi < lo do hi = lo
+		append(&edits, Text_Edit{lo = lo, hi = hi, text = lsp_obj_str(eo, "newText"), idx = i})
+	}
+	if len(edits) == 0 do return false
+
+	// Apply last-to-first. For equal positions, array order a,b must read
+	// "a b", which means applying b before a (descending idx).
+	slice.sort_by(edits[:], proc(a, b: Text_Edit) -> bool {
+		if a.lo != b.lo do return a.lo > b.lo
+		return a.idx > b.idx
+	})
+
+	// Preserve the cursor by (line, col) across the reformat.
+	cl, cc := editor_pos_to_line_col(ed, ed.cursor)
+
+	commit_pending(ed) // close any open typing group
+	for e in edits {
+		editor_replace_range(ed, e.lo, e.hi, e.text)
+	}
+	commit_pending(ed) // whole reformat collapses to one undo
+
+	n := piece_buffer_len(&ed.buffer)
+	off := editor_pos_at_line_col(ed, cl, cc)
+	if off > n do off = n
+	ed.cursor = off
+	ed.anchor = off
+	return true
+}
+
+// result: TextEdit[] | null. Apply to the target document (single undo), then
+// save if this was a format-on-save. Stale edits (buffer changed since the
+// request) are discarded; a pending save still writes the current text.
+@(private="file")
+lsp_formatting_response :: proc(obj: json.Object) {
+	if !g_lsp_format.active do return
+	defer lsp_format_clear()
+
+	save_after := g_lsp_format.save_after
+	ed         := lsp_editor_by_path(g_lsp_format.path)
+	if ed == nil do return // document closed before the response arrived
+
+	stale   := ed.buffer.version != g_lsp_format.version
+	applied := false
+	if !stale do applied = lsp_apply_text_edits(ed, obj)
+
+	if save_after {
+		editor_save_file(ed)
+	} else if applied {
+		set_status_message("formatted", .Info)
+	} else if stale {
+		set_status_message("formatting skipped — document changed", .Info)
+	} else {
+		set_status_message("no formatting changes", .Info)
+	}
+}
+
 // Handle a definition response: location(s) → jump to the first.
 @(private="file")
 lsp_definition_response :: proc(obj: json.Object) {
@@ -658,7 +823,7 @@ lsp_jump_to :: proc(path: string, line, character: int) {
 @(private="file")
 lsp_on_initialize_result :: proc(c: ^LSP_Client, obj: json.Object) {
 	enc := "utf-16"
-	cap_compl, cap_def, cap_hover: bool
+	cap_compl, cap_def, cap_hover, cap_format: bool
 	if rv, has := obj["result"]; has {
 		if res, ok := rv.(json.Object); ok {
 			if cv, hc := res["capabilities"]; hc {
@@ -666,21 +831,23 @@ lsp_on_initialize_result :: proc(c: ^LSP_Client, obj: json.Object) {
 					if e, he := caps["positionEncoding"]; he {
 						if s, ok3 := e.(json.String); ok3 do enc = string(s)
 					}
-					cap_compl = "completionProvider" in caps
-					cap_def   = "definitionProvider" in caps
-					cap_hover = "hoverProvider" in caps
+					cap_compl  = "completionProvider" in caps
+					cap_def    = "definitionProvider" in caps
+					cap_hover  = "hoverProvider" in caps
+					cap_format = "documentFormattingProvider" in caps
 				}
 			}
 		}
 	}
 	c.encoding   = enc == "utf-8" ? .UTF8 : .UTF16
+	c.can_format = cap_format
 	c.state      = .Ready
 	c.ever_ready = true
 	lsp_send_notification(c, "initialized", "{}")
 
 	fmt.eprintfln(
-		"LSP[%s] ready: encoding=%s completion=%v definition=%v hover=%v",
-		lsp_lang_name(c.lang), enc, cap_compl, cap_def, cap_hover,
+		"LSP[%s] ready: encoding=%s completion=%v definition=%v hover=%v format=%v",
+		lsp_lang_name(c.lang), enc, cap_compl, cap_def, cap_hover, cap_format,
 	)
 
 	// Open every already-loaded matching document.
@@ -778,6 +945,15 @@ lsp_note_edit :: proc() {
 // Called once per main-loop iteration. After the user pauses typing,
 // flush a full-text didChange for every changed open document.
 lsp_tick :: proc() {
+	// Format-on-save watchdog: if the formatter never answered, save anyway
+	// so a wedged server can't swallow the user's save.
+	if g_lsp_format.active && g_lsp_format.save_after &&
+	   i64(sdl.GetTicksNS()) >= g_lsp_format.deadline_ns {
+		ed := lsp_editor_by_path(g_lsp_format.path)
+		lsp_format_clear()
+		if ed != nil do editor_save_file(ed)
+	}
+
 	if g_lsp_last_edit_ns == 0 do return
 	if i64(sdl.GetTicksNS()) - g_lsp_last_edit_ns < LSP_DEBOUNCE_NS do return
 	g_lsp_last_edit_ns = 0
@@ -899,9 +1075,14 @@ lsp_send_request :: proc(c: ^LSP_Client, method: string, params_json: string) ->
 lsp_send_initialize :: proc(c: ^LSP_Client) {
 	uri  := lsp_path_to_uri(c.root)
 	name := lsp_json_escape(path_basename(c.root))
+	// ols only advertises documentFormattingProvider when enable_format is set
+	// (its intrinsic default is false — the VS Code client is what turns it on
+	// via initializationOptions). Hand it the same so :fmt / format-on-save
+	// work for .odin. jai-lsp ignores unknown init options.
+	init_opts := c.lang == .Odin ? `{"enable_format":true}` : `{}`
 	params := fmt.tprintf(
-		`{{"processId":null,"rootUri":"%s","workspaceFolders":[{{"uri":"%s","name":"%s"}}],"capabilities":{{"general":{{"positionEncodings":["utf-8","utf-16"]}},"textDocument":{{"synchronization":{{"didSave":true}},"completion":{{}},"definition":{{}},"hover":{{"contentFormat":["plaintext","markdown"]}},"publishDiagnostics":{{}}}},"workspace":{{"workspaceFolders":true,"configuration":true}}}}}}`,
-		uri, uri, name,
+		`{{"processId":null,"rootUri":"%s","workspaceFolders":[{{"uri":"%s","name":"%s"}}],"initializationOptions":%s,"capabilities":{{"general":{{"positionEncodings":["utf-8","utf-16"]}},"textDocument":{{"synchronization":{{"didSave":true}},"completion":{{}},"definition":{{}},"hover":{{"contentFormat":["plaintext","markdown"]}},"formatting":{{}},"publishDiagnostics":{{}}}},"workspace":{{"workspaceFolders":true,"configuration":true}}}}}}`,
+		uri, uri, name, init_opts,
 	)
 	lsp_send_request(c, "initialize", params)
 }

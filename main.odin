@@ -704,7 +704,15 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 	// Cmd+F (macOS) / Ctrl+F (everywhere else) toggles the directory
 	// navigator. Detected before any modal/mode logic so it works
 	// from anywhere — even Insert mode.
-	if ev.key == sdl.K_F && ev.mod & (sdl.KMOD_GUI | sdl.KMOD_CTRL) != {} {
+	// Cmd/Ctrl+Shift+F formats the document via the language server. Checked
+	// before the (Shift-less) finder chord so they don't collide.
+	if ev.key == sdl.K_F && ev.mod & (sdl.KMOD_GUI | sdl.KMOD_CTRL) != {} && shift_held(ev.mod) {
+		if !lsp_format_request(ed, false) {
+			set_status_message("formatting not available for this file", .Info)
+		}
+		return
+	}
+	if ev.key == sdl.K_F && ev.mod & (sdl.KMOD_GUI | sdl.KMOD_CTRL) != {} && !shift_held(ev.mod) {
 		if g_finder_visible do finder_hide()
 		else                do finder_show()
 		return
@@ -850,7 +858,7 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 		case sdl.K_S:
 			if shift_held(mods) {
 				save_as_dialog(ed)
-			} else if !editor_save_file(ed) {
+			} else if !lsp_save_with_format(ed) {
 				// No file path yet — fall through to Save As so the user can pick one.
 				save_as_dialog(ed)
 			}

@@ -17,6 +17,7 @@ Menu_Action :: enum {
 	Open,
 	Save,
 	Save_As,
+	Format,
 }
 
 Menu_Item :: struct {
@@ -37,6 +38,7 @@ when ODIN_OS == .Darwin {
 	SC_OPEN       :: "⌘O"
 	SC_SAVE       :: "⌘S"
 	SC_SAVE_AS    :: "⌘⇧S"
+	SC_FORMAT     :: "⌘⇧F"
 } else {
 	SC_CUT        :: "Ctrl+X"
 	SC_COPY       :: "Ctrl+C"
@@ -47,6 +49,7 @@ when ODIN_OS == .Darwin {
 	SC_OPEN       :: "Ctrl+O"
 	SC_SAVE       :: "Ctrl+S"
 	SC_SAVE_AS    :: "Ctrl+Shift+S"
+	SC_FORMAT     :: "Ctrl+Shift+F"
 }
 
 CONTEXT_MENU := []Menu_Item{
@@ -58,6 +61,8 @@ CONTEXT_MENU := []Menu_Item{
 	{is_separator = true},
 	{label = "Undo",       shortcut = SC_UNDO,       action = .Undo},
 	{label = "Redo",       shortcut = SC_REDO,       action = .Redo},
+	{is_separator = true},
+	{label = "Format Document", shortcut = SC_FORMAT, action = .Format},
 	{is_separator = true},
 	{label = "Open...",    shortcut = SC_OPEN,       action = .Open},
 	{label = "Save",       shortcut = SC_SAVE,       action = .Save},
@@ -156,6 +161,8 @@ menu_action_enabled :: proc(ed: ^Editor, action: Menu_Action) -> bool {
 		return len(ed.redo_stack) > 0
 	case .Open, .Save, .Save_As:
 		return true
+	case .Format:
+		return lsp_can_format(ed.language)
 	}
 	return true
 }
@@ -210,6 +217,8 @@ menu_dispatch :: proc(ed: ^Editor, action: Menu_Action) {
 	case .Save_As:    save_as_dialog(ed)
 	case .Save:
 		if !editor_save_file(ed) do save_as_dialog(ed)
+	case .Format:
+		lsp_format_request(ed, false)
 	}
 }
 

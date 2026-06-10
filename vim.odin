@@ -986,7 +986,11 @@ vim_execute_command :: proc(ed: ^Editor, raw: string) {
 
 	switch cmd {
 	case "w":
-		editor_save_file(ed)
+		lsp_save_with_format(ed)
+	case "fmt", "format":
+		if !lsp_format_request(ed, false) {
+			set_status_message("formatting not available for this file", .Info)
+		}
 	case "q":
 		if !ed.dirty {
 			ed.want_quit = true

@@ -26,6 +26,7 @@ Lsp_Config :: struct {
 	odin_path:    string, // owned; override path to ols
 	jai_entry:    string, // owned; JAI_LSP_ENTRY_FILE override
 	jai_compiler: string, // owned; absolute path to the jai compiler → JAI_COMPILER env
+	format_on_save: bool, // run textDocument/formatting before each interactive save
 }
 
 Font_Config :: struct {
@@ -95,10 +96,13 @@ smartcase    = false
 # for Jai diagnostics + typed hover. (Odin's equivalent is the odin compiler
 # on PATH + an ols.json in the workspace.) jai_entry optionally pins jai-lsp's
 # type-check to a specific entry .jai. Saving this file applies changes live.
-jai          =
-odin         =
-jai_entry    =
-jai_compiler =
+# format_on_save runs the language server's formatter (jai-lsp / ols) on :w
+# and Cmd/Ctrl+S — only for files whose server advertises formatting.
+jai            =
+odin           =
+jai_entry      =
+jai_compiler   =
+format_on_save = false
 
 [theme]
 # Each value is #RRGGBB or #RRGGBBAA.
@@ -267,6 +271,7 @@ config_load :: proc() {
 		load_string(section, "odin",         &g_config.lsp.odin_path)
 		load_string(section, "jai_entry",    &g_config.lsp.jai_entry)
 		load_string(section, "jai_compiler", &g_config.lsp.jai_compiler)
+		load_bool(section,   "format_on_save", &g_config.lsp.format_on_save)
 	}
 }
 

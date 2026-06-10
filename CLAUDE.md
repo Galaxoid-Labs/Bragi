@@ -129,7 +129,17 @@ Both have identical advance width so cell math is unchanged.
   `lsp_tick` flushes after 250 ms), didSave, didClose. Diagnostics store
   (`g_lsp_diagnostics`, path→diags) from publishDiagnostics, rendered as
   underlines (`draw_lsp_diagnostics`) + status-bar message on the cursor
-  line. Servers/paths resolve from `[lsp]` config → next-to-exe → PATH.
+  line. **Formatting**: `textDocument/formatting` (`lsp_format_request`),
+  capability-gated on `documentFormattingProvider` (`c.can_format`);
+  ols only advertises it when sent `initializationOptions.enable_format`
+  (done for `.Odin`). `lsp_apply_text_edits` resolves all `TextEdit`
+  ranges to byte offsets first, applies highest-offset-first as one undo
+  (`commit_pending` brackets). `format_on_save` (any LSP lang) defers the
+  write to the format response via `lsp_save_with_format` — scoped to
+  interactive saves (`:w` / Cmd+S), with a `lsp_tick` watchdog
+  (`LSP_FORMAT_SAVE_TIMEOUT_NS`) so a wedged server can't eat the save.
+  Triggers: Cmd/Ctrl+Shift+F, `:fmt`, right-click → Format Document.
+  Servers/paths resolve from `[lsp]` config → next-to-exe → PATH.
   Teardown mirrors `fff_teardown` (quit flag, close stdin to EOF the
   reader, `WaitThread`, reap).
 - **`lsp_posix.odin`** / **`lsp_windows.odin`** — process spawn with
