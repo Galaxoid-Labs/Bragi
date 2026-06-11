@@ -250,17 +250,30 @@ Both have identical advance width so cell math is unchanged.
   them — without an `ols.json`; `lsp_on_editor_opened` hints once on the
   first `.odin` open if it's unresolvable (`lsp_odin_root_resolvable`: no
   config, no `ODIN_ROOT` env, no `odin` on PATH). Mirrors the jai-lsp
-  `jai_compiler` → `JAI_COMPILER` + first-open hint.
+  `jai_compiler` → `JAI_COMPILER` + first-open hint — except `JAI_COMPILER`
+  also **auto-falls-back to `lsp_which("jai")`** (absolute path off PATH) when
+  unset, since jai-lsp's own bare-`jai` spawn resolves via `execvp` on POSIX but
+  is unreliable from a child process on Windows; member completion + diagnostics
+  need the compiler, so we don't leave it to chance. `JAI_LSP_ENTRY_FILE` is
+  normalized to forward slashes (`\`→`/`) before export, so it can't desync from
+  the forward-slashed `file:///C:/…` didOpen URI (`lsp_path_to_uri`) — a
+  back-slashed entry made jai-lsp fail to reconcile the compiled entry with the
+  open buffer on Windows. Note the entry must be the program's **compilation
+  root** (the file `#import`/`#load`ing the rest), not a `#run build()`
+  metaprogram — the latter only type-checks itself, leaving your source's AST
+  uncovered.
   Teardown mirrors `fff_teardown` (quit flag, close stdin to EOF the
   reader, `WaitThread`, reap).
 - **`lsp_posix.odin`** / **`lsp_windows.odin`** — process spawn with
   PLAIN stdio pipes (not a PTY): POSIX `pipe`+`fork`+`dup2`+`execvp`
   (reuses pty.odin's libc bindings); Windows `CreatePipe` +
   `CreateProcessW` with `STARTF_USESTDHANDLES` (child stderr → `NUL` so
-  server logs never corrupt the JSON-RPC stdout frames; `CREATE_NO_WINDOW`
-  so the GUI app never flashes a console). `LSP_Pipes`' `int` fields hold
-  Win32 HANDLEs (process handle in `pid`); env deltas go through
-  `SetEnvironmentVariableW` + inherited env rather than a hand-built block.
+  server logs never corrupt the JSON-RPC stdout frames — but a
+  `BRAGI_LSP_LOG=<path>` env var redirects them to that file instead, appended,
+  for debugging; `CREATE_NO_WINDOW` so the GUI app never flashes a console).
+  `LSP_Pipes`' `int` fields hold Win32 HANDLEs (process handle in `pid`); env
+  deltas go through `SetEnvironmentVariableW` + inherited env rather than a
+  hand-built block.
 - **`completion.odin`** — the autocompletion popup (intellisense).
   Insert-mode only; requests `textDocument/completion` once at the word
   start (`completion_trigger`), narrows locally as you type

@@ -434,16 +434,25 @@ Loaded when the folder opens as the workspace (Open Folder, `bragi <dir>`,
 `:cd`, or a dropped folder); the language server respawns to pick it up. All
 `[lsp]` keys are overridable. Setting `jai_entry` is what flips jai-lsp out of
 standalone mode into full type-checking, so it's the key that unlocks compiler
-diagnostics on save. **Saving** a `bragi.ini` from inside Bragi (editing an
-existing one or creating it via Save As) re-applies it and restarts the
-affected server immediately — no folder re-open or restart needed.
+diagnostics on save — and type-aware completion like struct member access
+(`thing.field`). **Point it at your program's compilation root** — the file
+with the actual entry point that `#import`/`#load`s the rest — not at a build
+metaprogram (a `first.jai` that only `#run`s a `build()` driver compiles
+*itself*, so its AST never covers your source, and member completion stays
+dead). jai-lsp type-checks the entry's tree; a buffer outside that tree gets no
+type info. **Saving** a `bragi.ini` from inside Bragi (editing an existing one
+or creating it via Save As) re-applies it and restarts the affected server
+immediately — no folder re-open or restart needed.
 
 ### Caveats
 
-- **Jai diagnostics + rich (typed) hover** need jai-lsp to run the Jai
-  compiler — set `jai_compiler` to your `jai-macos` / `jai-linux` /
-  `jai.exe` (it's passed as `JAI_COMPILER`). Completion, signatures, and
-  go-to-definition work without it (they use the workspace scan).
+- **Jai diagnostics, rich (typed) hover, and member completion** need jai-lsp
+  to run the Jai compiler. Bragi auto-resolves `jai` on your `PATH` and passes
+  it as `JAI_COMPILER`, so no config is needed if `jai` is on `PATH`; set
+  `jai_compiler` explicitly (your `jai-macos` / `jai-linux` / `jai.exe`) only if
+  it isn't. Basic completion, signatures, and go-to-definition work without the
+  compiler (they use the workspace scan); type-aware features (struct fields,
+  diagnostics) don't.
 - **Odin** completion/hover/def — including built-ins (`len`, `append`,
   `intrinsics`, …) via the bundled `builtin` folder — work out of the box.
   Resolving `core:` / `vendor:` imports (and the struct fields / locals that

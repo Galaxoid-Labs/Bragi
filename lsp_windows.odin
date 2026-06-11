@@ -1,6 +1,7 @@
 #+build windows
 package bragi
 
+import "core:os"
 import "core:strings"
 import win "core:sys/windows"
 
@@ -71,15 +72,24 @@ lsp_spawn :: proc(argv: []string, cwd: string, env: []string) -> (p: LSP_Pipes, 
 	win.SetHandleInformation(our_stdin_write, win.HANDLE_FLAG_INHERIT, 0)
 	win.SetHandleInformation(our_stdout_read, win.HANDLE_FLAG_INHERIT, 0)
 
-	// Child stderr → NUL (inheritable). Discards server logs; keeps the
-	// JSON-RPC stdout stream clean.
-	nul_name := win.utf8_to_wstring("NUL", context.temp_allocator)
+	// Child stderr → NUL (inheritable) by default: discards server logs and
+	// keeps the JSON-RPC stdout stream clean. For diagnostics, set
+	// BRAGI_LSP_LOG=<path> and the server's stderr is appended to that file
+	// instead (CREATE_ALWAYS would truncate per spawn; OPEN_ALWAYS + seek-to-end
+	// keeps a session's worth across restarts).
+	log_path := os.get_env("BRAGI_LSP_LOG", context.temp_allocator)
+	stderr_target: win.wstring = win.utf8_to_wstring("NUL", context.temp_allocator)
+	open_disp: win.DWORD = win.OPEN_EXISTING
+	if len(log_path) > 0 {
+		stderr_target = win.utf8_to_wstring(log_path, context.temp_allocator)
+		open_disp = win.OPEN_ALWAYS
+	}
 	child_stderr := win.CreateFileW(
-		nul_name,
-		win.GENERIC_WRITE,
-		win.FILE_SHARE_WRITE,
+		stderr_target,
+		win.FILE_APPEND_DATA,
+		win.FILE_SHARE_WRITE | win.FILE_SHARE_READ,
 		&sa, // inheritable
-		win.OPEN_EXISTING,
+		open_disp,
 		win.FILE_ATTRIBUTE_NORMAL,
 		nil,
 	)

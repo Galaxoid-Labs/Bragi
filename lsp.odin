@@ -130,20 +130,27 @@ lsp_odin_root_resolvable :: proc() -> bool {
 	return lsp_binary_on_path("odin")
 }
 
-// Scan PATH for an executable named `name` (`name.exe` on Windows).
+// Scan PATH for an executable named `name` (`name.exe` on Windows). Returns the
+// first matching absolute path (temp-allocated), or "" if not found.
 @(private="file")
-lsp_binary_on_path :: proc(name: string) -> bool {
+lsp_which :: proc(name: string) -> string {
 	path := os.get_env("PATH", context.temp_allocator)
-	if len(path) == 0 do return false
+	if len(path) == 0 do return ""
 	sep := ODIN_OS == .Windows ? ";" : ":"
 	exe := name
 	when ODIN_OS == .Windows do exe = fmt.tprintf("%s.exe", name)
 	for dir in strings.split(path, sep, context.temp_allocator) {
 		if len(dir) == 0 do continue
 		joiner := (strings.has_suffix(dir, "/") || strings.has_suffix(dir, "\\")) ? "" : (ODIN_OS == .Windows ? "\\" : "/")
-		if os.exists(fmt.tprintf("%s%s%s", dir, joiner, exe)) do return true
+		cand := fmt.tprintf("%s%s%s", dir, joiner, exe)
+		if os.exists(cand) do return cand
 	}
-	return false
+	return ""
+}
+
+@(private="file")
+lsp_binary_on_path :: proc(name: string) -> bool {
+	return len(lsp_which(name)) > 0
 }
 
 // Called as a pane/editor is torn down (editor.odin), before file_path is freed.
@@ -323,14 +330,26 @@ lsp_client_start :: proc(lang: Language, root: string) -> ^LSP_Client {
 	defer delete(env)
 	if lang == .Jai {
 		if entry := lsp_jai_entry(); len(entry) > 0 {
-			append(&env, fmt.tprintf("JAI_LSP_ENTRY_FILE=%s", entry))
+			// Hand jai-lsp the entry path with forward slashes. Bragi sends
+			// didOpen URIs as file:///C:/… (forward-slashed, lsp_path_to_uri);
+			// if the entry arrives back-slashed (the native form an absolute
+			// Windows `jai_entry` keeps, or filepath.join produces for a
+			// relative one) jai-lsp can fail to reconcile the entry it compiled
+			// with the buffer you're editing → no type-aware member completion.
+			// POSIX paths are already forward-slashed, so this is a no-op there.
+			slashed, _ := strings.replace_all(entry, "\\", "/", context.temp_allocator)
+			append(&env, fmt.tprintf("JAI_LSP_ENTRY_FILE=%s", slashed))
 		}
 		// jai-lsp reads JAI_COMPILER to find the type-checker (checker.jai).
-		// Without it, it falls back to a bare `jai` on PATH. Setting it
-		// here means no symlink / PATH tweak is needed for diagnostics +
-		// rich hover.
-		if len(g_config.lsp.jai_compiler) > 0 {
-			append(&env, fmt.tprintf("JAI_COMPILER=%s", g_config.lsp.jai_compiler))
+		// Without it, it falls back to spawning a bare `jai` — which resolves
+		// via execvp on POSIX but is fragile from a child process on Windows.
+		// So when the user hasn't pinned a compiler, resolve `jai` on PATH to
+		// an absolute path ourselves and pass that, so type-check / rich hover
+		// work with no symlink / PATH tweak on any platform.
+		compiler := g_config.lsp.jai_compiler
+		if len(compiler) == 0 do compiler = lsp_which("jai")
+		if len(compiler) > 0 {
+			append(&env, fmt.tprintf("JAI_COMPILER=%s", compiler))
 		}
 	}
 
