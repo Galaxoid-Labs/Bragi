@@ -946,7 +946,7 @@ lsp_jump_to :: proc(path: string, line, character: int) {
 @(private="file")
 lsp_on_initialize_result :: proc(c: ^LSP_Client, obj: json.Object) {
 	enc := "utf-16"
-	cap_compl, cap_def, cap_hover, cap_format: bool
+	cap_format := false
 	if rv, has := obj["result"]; has {
 		if res, ok := rv.(json.Object); ok {
 			if cv, hc := res["capabilities"]; hc {
@@ -954,9 +954,6 @@ lsp_on_initialize_result :: proc(c: ^LSP_Client, obj: json.Object) {
 					if e, he := caps["positionEncoding"]; he {
 						if s, ok3 := e.(json.String); ok3 do enc = string(s)
 					}
-					cap_compl  = "completionProvider" in caps
-					cap_def    = "definitionProvider" in caps
-					cap_hover  = "hoverProvider" in caps
 					cap_format = "documentFormattingProvider" in caps
 				}
 			}
@@ -967,11 +964,6 @@ lsp_on_initialize_result :: proc(c: ^LSP_Client, obj: json.Object) {
 	c.state      = .Ready
 	c.ever_ready = true
 	lsp_send_notification(c, "initialized", "{}")
-
-	fmt.eprintfln(
-		"LSP[%s] ready: encoding=%s completion=%v definition=%v hover=%v format=%v",
-		lsp_lang_name(c.lang), enc, cap_compl, cap_def, cap_hover, cap_format,
-	)
 
 	// Open every already-loaded matching document.
 	for &ed in g_editors {
@@ -1017,20 +1009,17 @@ lsp_handle_notification :: proc(c: ^LSP_Client, method: string, obj: json.Object
 			lsp_status_at_cursor(ae)
 		}
 
-	case "window/logMessage", "window/showMessage":
-		// Server-side logs (ols/jai-lsp emit startup + error notes here).
-		// Echo to the console; surface error/warning showMessages in the bar.
+	case "window/showMessage":
+		// Surface server error/warning showMessages in the status bar. (Info/log
+		// and window/logMessage are dropped — they're just console noise.)
 		pv, has := obj["params"]
 		if !has do return
 		p, ok := pv.(json.Object)
 		if !ok do return
 		msg := lsp_obj_str(p, "message")
 		typ := int(lsp_obj_int(p, "type")) // 1=error 2=warn 3=info 4=log
-		if len(msg) > 0 {
-			fmt.eprintfln("LSP[%s] %s", lsp_lang_name(c.lang), msg)
-			if method == "window/showMessage" && typ <= 2 {
-				set_status_message(fmt.tprintf("%s: %s", lsp_lang_name(c.lang), msg), typ == 1 ? .Error : .Info)
-			}
+		if len(msg) > 0 && typ <= 2 {
+			set_status_message(fmt.tprintf("%s: %s", lsp_lang_name(c.lang), msg), typ == 1 ? .Error : .Info)
 		}
 	}
 }
