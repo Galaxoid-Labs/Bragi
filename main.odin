@@ -831,6 +831,18 @@ shift_held :: proc(mods: sdl.Keymod) -> bool {return mods & sdl.KMOD_SHIFT != {}
 cmd_or_ctrl :: proc(mods: sdl.Keymod) -> bool {return mods & (sdl.KMOD_GUI | sdl.KMOD_CTRL) != {}}
 
 handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
+	// Bottom prompt (sidebar New File/Folder/Rename) owns the keyboard while
+	// open: Enter confirms, Esc cancels, Backspace edits, runes arrive via
+	// TEXT_INPUT. Checked first so nothing else sees these keys.
+	if prompt_active() {
+		switch ev.key {
+		case sdl.K_RETURN, sdl.K_KP_ENTER: prompt_confirm()
+		case sdl.K_ESCAPE:                 prompt_cancel()
+		case sdl.K_BACKSPACE:              prompt_backspace()
+		}
+		return
+	}
+
 	// Any keystroke dismisses the one-shot status message (file-open
 	// errors, etc.). Doesn't run while modals are up — those have their
 	// own input loops and shouldn't acknowledge buffer-level messages.
@@ -1225,14 +1237,9 @@ handle_mouse_button :: proc(ed: ^Editor, ev: sdl.MouseButtonEvent, p: Pane_Layou
 	// Context menu interaction. Only act on button-down (otherwise the
 	// button-up that follows the right-click that *opened* the menu would
 	// immediately close it).
-	if ev.down && g_menu.visible {
-		if ev.button == sdl.BUTTON_LEFT {
-			if menu_handle_click(ed, mx, my) do return // hit a menu item
-			menu_hide() // left-click outside dismisses + falls through
-		} else {
-			menu_hide() // right-click while menu is open dismisses; below opens a new one
-		}
-	}
+	// Note: an already-open menu is handled globally in the MOUSE_BUTTON_DOWN
+	// dispatch (so sidebar menus get clicks too); by the time we reach here no
+	// menu is open.
 
 	// Right-click in this pane's text or gutter area opens the context menu.
 	if ev.down && ev.button == sdl.BUTTON_RIGHT {
@@ -2358,15 +2365,7 @@ config_reload :: proc() {
 	// LSP settings only take effect at server start — restart any whose
 	// path/compiler/entry changed so e.g. a freshly-set jai_compiler applies
 	// without a manual :lsp restart.
-	n := g_config.lsp
-	if n.jai_path != old_lsp.jai_path ||
-	   n.jai_compiler != old_lsp.jai_compiler ||
-	   n.jai_entry != old_lsp.jai_entry {
-		lsp_restart(.Jai)
-	}
-	if n.odin_path != old_lsp.odin_path {
-		lsp_restart(.Odin)
-	}
+	lsp_restart_changed(old_lsp)
 
 	set_status_message("config reloaded", .Info)
 }
@@ -2586,6 +2585,49 @@ close_active_pane_unconditional :: proc() {
 	ordered_remove(&g_editors, idx)
 	remove_pane_ratio(idx)
 	if g_active_idx >= len(g_editors) do g_active_idx = len(g_editors) - 1
+}
+
+// Close the pane at `idx` (e.g. its file was deleted out from under it).
+// Mirrors close_active_pane_unconditional but for an arbitrary index; the
+// last pane becomes a fresh welcome buffer rather than vanishing.
+close_pane_at :: proc(idx: int) {
+	if idx < 0 || idx >= len(g_editors) do return
+	completion_dismiss()
+	signature_dismiss()
+	hover_clear()
+	def_picker_dismiss()
+
+	if len(g_editors) == 1 {
+		editor_destroy(&g_editors[0])
+		g_editors[0] = editor_make()
+		g_editors[0].mode = .Normal
+		return
+	}
+	editor_destroy(&g_editors[idx])
+	ordered_remove(&g_editors, idx)
+	remove_pane_ratio(idx)
+	if g_active_idx > idx do g_active_idx -= 1
+	if g_active_idx >= len(g_editors) do g_active_idx = len(g_editors) - 1
+	if g_active_idx < 0 do g_active_idx = 0
+}
+
+// True when `path` is `dir` itself or lives under it.
+path_under_dir :: proc(path, dir: string) -> bool {
+	if !strings.has_prefix(path, dir) do return false
+	if len(path) == len(dir) do return true
+	return path[len(dir)] == '/' || path[len(dir)] == '\\'
+}
+
+// Close every pane whose file was just deleted (the file itself, or any file
+// under a deleted directory). Iterates back-to-front so removals don't shift
+// indices we haven't visited.
+close_panes_for_deleted :: proc(deleted: string, is_dir: bool) {
+	for i := len(g_editors) - 1; i >= 0; i -= 1 {
+		fp := g_editors[i].file_path
+		if len(fp) == 0 do continue
+		hit := is_dir ? path_under_dir(fp, deleted) : lsp_path_eq(fp, deleted)
+		if hit do close_pane_at(i)
+	}
 }
 
 // Cmd+W / Ctrl+W path: prompt-then-close. Returns true if the pane was
@@ -2835,6 +2877,11 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 	case .KEY_DOWN:
 		handle_key_down(active_editor(), ev.key)
 	case .TEXT_INPUT:
+		// Bottom prompt captures runes while open (before sidebar/editor).
+		if prompt_active() {
+			prompt_input(ev.text.text)
+			return
+		}
 		// Sidebar focus consumes typing (its nav keys arrive via KEY_DOWN);
 		// don't let the runes fall through into the buffer. The finder is a
 		// modal that owns text input, so it wins over sidebar focus — its
@@ -2854,6 +2901,22 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 				lsp_restart(active_editor().language)
 				return
 			}
+		}
+		// A click anywhere cancels an open file-op prompt.
+		if prompt_active() {
+			prompt_cancel()
+			return
+		}
+		// An open context menu (editor or sidebar) swallows the next click:
+		// a left-click inside dispatches its item, anything else dismisses.
+		// Handled globally (before sidebar/finder routing) so a sidebar menu
+		// drawn over the tree still receives its clicks.
+		if g_menu.visible {
+			if ev.button.button == sdl.BUTTON_LEFT && menu_handle_click(active_editor(), ev.button.x, ev.button.y) {
+				return
+			}
+			menu_hide()
+			return
 		}
 		// Open-Recent popup swallows clicks; outside dismisses, row opens.
 		if recent_handle_button(ev.button, l) do return
@@ -2974,6 +3037,11 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		}
 		g_drag_idx = -1
 	case .MOUSE_MOTION:
+		// An open context menu (editor or sidebar) owns hover highlighting.
+		if g_menu.visible {
+			menu_handle_motion(ev.motion.x, ev.motion.y)
+			return
+		}
 		// Cmd/Ctrl-hover: underline the symbol under the cursor + request
 		// hover info (the "click to go to definition" affordance). Doesn't
 		// consume the event — normal motion handling continues below.

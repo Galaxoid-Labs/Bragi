@@ -1,7 +1,9 @@
 package bragi
 
+import "core:c"
 import "core:fmt"
 import "core:os"
+import "core:path/filepath"
 import "core:strings"
 import sdl "vendor:sdl3"
 
@@ -61,10 +63,11 @@ g_sidebar_scroll: int
 g_sidebar_view_rows: int // visible row count from the last draw (for key-nav scrolling)
 
 Sidebar_Entry :: struct {
-	path:   string, // owned, absolute
-	name:   string, // owned, base name
-	is_dir: bool,
-	depth:  int,
+	path:    string, // owned, absolute
+	name:    string, // owned, base name
+	is_dir:  bool,
+	depth:   int,
+	editing: bool,   // transient: this row is the inline New/Rename text field
 }
 
 // Toggle visibility. Showing it also focuses it and (re)builds the tree
@@ -304,6 +307,17 @@ sidebar_handle_button :: proc(ev: sdl.MouseButtonEvent, l: Layout) -> bool {
 	if !point_in_rect({ev.x, ev.y}, l.sidebar_rect) do return false
 	if !ev.down do return true
 	g_sidebar_active = true
+	// Right-click → file-tree context menu. On a row it acts on that entry;
+	// in empty space it acts on the workspace root (target -1).
+	if ev.button == sdl.BUTTON_RIGHT {
+		if idx := sidebar_row_at(ev.x, ev.y, l); idx >= 0 {
+			g_sidebar_selected = idx
+			menu_show_items({ev.x, ev.y}, SIDEBAR_MENU, .Sidebar, idx)
+		} else if len(g_workspace_root) > 0 {
+			menu_show_items({ev.x, ev.y}, SIDEBAR_ROOT_MENU, .Sidebar, -1)
+		}
+		return true
+	}
 	if ev.button != sdl.BUTTON_LEFT do return true
 	if idx := sidebar_row_at(ev.x, ev.y, l); idx >= 0 {
 		g_sidebar_selected = idx
@@ -335,6 +349,283 @@ sidebar_handle_wheel :: proc(ev: sdl.MouseWheelEvent) -> bool {
 	max_scroll := max(0, len(g_sidebar_entries) - g_sidebar_view_rows)
 	g_sidebar_scroll = clamp(g_sidebar_scroll, 0, max_scroll)
 	return true
+}
+
+// ──────────────────────────────────────────────────────────────────
+// File-tree context-menu actions (dispatched from menu_handle_click when
+// g_menu.kind == .Sidebar). New File/Folder/Rename go through the bottom
+// prompt; Delete confirms natively; Copy Path / Reveal act immediately.
+// ──────────────────────────────────────────────────────────────────
+
+// Perform a file-tree context-menu action on the entry at `row` (or the
+// workspace root when row < 0). New File/Folder/Rename open an inline editor;
+// Delete confirms natively; Copy Path / Reveal act immediately.
+sidebar_menu_dispatch :: proc(action: Menu_Action, row: int) {
+	// Empty-space menu (target -1): act on the workspace root.
+	if row < 0 {
+		root := g_workspace_root
+		if len(root) == 0 do return
+		#partial switch action {
+		// New file lands at the bottom of the list (after dirs); new folder
+		// sorts up among the dirs, so its input goes to the top.
+		case .New_File:   sidebar_begin_new(root, sidebar_group_end(0, 0), 0, false)
+		case .New_Folder: sidebar_begin_new(root, 0, 0, true)
+		case .Copy_Path:
+			sdl.SetClipboardText(strings.clone_to_cstring(root, context.temp_allocator))
+			set_status_message(fmt.tprintf("copied %s", root), .Info)
+		case .Reveal:
+			reveal_path(root, true)
+		}
+		return
+	}
+	if row >= len(g_sidebar_entries) do return
+	e := g_sidebar_entries[row]
+	#partial switch action {
+	case .New_File, .New_Folder:
+		nd := action == .New_Folder
+		if e.is_dir {
+			// Create inside the folder (expand it so the input shows as a child).
+			dir   := strings.clone(e.path, context.temp_allocator)
+			depth := e.depth
+			if !g_sidebar_expanded[e.path] do sidebar_set_expanded(e.path, true) // rebuild; row unchanged
+			// New file → end of this folder's children; new folder → its top.
+			at := nd ? row + 1 : sidebar_group_end(row + 1, depth + 1)
+			sidebar_begin_new(dir, at, depth + 1, nd)
+		} else {
+			// Create as a sibling of the clicked file (file → bottom of the group).
+			start := row + 1
+			at := nd ? start : sidebar_group_end(start, e.depth)
+			sidebar_begin_new(filepath.dir(e.path), at, e.depth, nd)
+		}
+	case .Rename:
+		sidebar_begin_rename(row)
+	case .Delete:
+		sidebar_delete(e)
+	case .Copy_Path:
+		sdl.SetClipboardText(strings.clone_to_cstring(e.path, context.temp_allocator))
+		set_status_message(fmt.tprintf("copied %s", e.path), .Info)
+	case .Reveal:
+		reveal_path(e.path, e.is_dir) // platform-specific: reveal-and-select where supported
+	}
+}
+
+@(private="file")
+sidebar_create_file :: proc(dir, name: string) {
+	path, _ := filepath.join({dir, name}, context.temp_allocator)
+	if os.exists(path) {
+		set_status_message(fmt.tprintf("%s already exists", name), .Error)
+		return
+	}
+	if err := os.write_entire_file(path, []byte{}); err != nil {
+		set_status_message(fmt.tprintf("could not create %s", name), .Error)
+		return
+	}
+	sidebar_rebuild()
+	open_file_smart(path) // open the new (empty) file
+	set_status_message(fmt.tprintf("created %s", name), .Info)
+}
+
+@(private="file")
+sidebar_create_folder :: proc(dir, name: string) {
+	path, _ := filepath.join({dir, name}, context.temp_allocator)
+	if os.exists(path) {
+		set_status_message(fmt.tprintf("%s already exists", name), .Error)
+		return
+	}
+	if err := os.make_directory(path); err != nil {
+		set_status_message(fmt.tprintf("could not create %s", name), .Error)
+		return
+	}
+	sidebar_rebuild()
+	set_status_message(fmt.tprintf("created %s/", name), .Info)
+}
+
+@(private="file")
+sidebar_do_rename :: proc(old, dir, name: string) {
+	newpath, _ := filepath.join({dir, name}, context.temp_allocator)
+	if os.exists(newpath) {
+		set_status_message(fmt.tprintf("%s already exists", name), .Error)
+		return
+	}
+	if err := os.rename(old, newpath); err != nil {
+		set_status_message("rename failed", .Error)
+		return
+	}
+	// Migrate any open editor viewing the renamed file: LSP didClose on the old
+	// URI, re-point path + language, then didOpen on the new URI (handles an
+	// extension change spawning a different server, e.g. .txt → .jai).
+	for &ed in g_editors {
+		if !lsp_path_eq(ed.file_path, old) do continue
+		lsp_on_editor_closed(&ed)
+		delete(ed.file_path)
+		ed.file_path = strings.clone(newpath)
+		ed.language  = language_for_path(ed.file_path)
+		lsp_on_editor_opened(&ed)
+	}
+	sidebar_rebuild()
+	set_status_message(fmt.tprintf("renamed to %s", name), .Info)
+}
+
+@(private="file")
+sidebar_delete :: proc(e: Sidebar_Entry) {
+	// Capture before the native dialog / rebuild can invalidate the entry.
+	path   := strings.clone(e.path, context.temp_allocator)
+	name   := strings.clone(e.name, context.temp_allocator)
+	is_dir := e.is_dir
+
+	kind := is_dir ? "folder" : "file"
+	tail := is_dir ? "\n\nThis removes the folder and everything in it." : ""
+	msg  := strings.clone_to_cstring(fmt.tprintf("Delete %s \"%s\"?%s", kind, name, tail), context.temp_allocator)
+	// Cancel is the Return/Escape default so a stray Enter never deletes —
+	// removal requires an explicit click on Delete.
+	buttons := [2]sdl.MessageBoxButtonData{
+		{flags = {.RETURNKEY_DEFAULT, .ESCAPEKEY_DEFAULT}, buttonID = 0, text = "Cancel"},
+		{flags = {}, buttonID = 1, text = "Delete"},
+	}
+	data := sdl.MessageBoxData{
+		flags      = {.WARNING},
+		window     = g_window,
+		title      = "Delete",
+		message    = msg,
+		numbuttons = c.int(len(buttons)),
+		buttons    = raw_data(buttons[:]),
+	}
+	choice: c.int = 0
+	if !sdl.ShowMessageBox(data, &choice) do return
+	if choice != 1 do return
+
+	err := is_dir ? os.remove_all(path) : os.remove(path)
+	if err != nil {
+		set_status_message(fmt.tprintf("could not delete %s", name), .Error)
+		return
+	}
+	close_panes_for_deleted(path, is_dir) // don't leave panes viewing a gone file
+	sidebar_rebuild()
+	set_status_message(fmt.tprintf("deleted %s", name), .Info)
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Inline name entry for New File / New Folder / Rename — an editable row
+// rendered in the tree (draw_sidebar) right where the entry lands. main.odin
+// routes keys/runes here while prompt_active(): Enter confirms, Esc or a click
+// elsewhere cancels.
+// ──────────────────────────────────────────────────────────────────
+
+Prompt_Kind :: enum { None, New_File, New_Folder, Rename }
+
+g_prompt: struct {
+	kind:   Prompt_Kind,
+	dir:    string,      // owned: target directory
+	old:    string,      // owned: existing path (Rename only)
+	buffer: [dynamic]u8, // the typed name
+	row:    int,         // g_sidebar_entries index of the editing row
+	is_dir: bool,        // the editing row's icon (New_Folder / a renamed dir)
+}
+
+prompt_active :: proc() -> bool { return g_prompt.kind != .None }
+
+prompt_editing_row :: proc() -> int { return g_prompt.row }
+
+prompt_text :: proc() -> string { return string(g_prompt.buffer[:]) }
+
+// Free prompt state WITHOUT rebuilding (for callers that already rebuilt).
+@(private="file")
+prompt_clear :: proc() {
+	if len(g_prompt.dir) > 0 do delete(g_prompt.dir)
+	if len(g_prompt.old) > 0 do delete(g_prompt.old)
+	g_prompt.dir = ""
+	g_prompt.old = ""
+	clear(&g_prompt.buffer)
+	g_prompt.kind = .None
+	g_prompt.row  = -1
+}
+
+// Begin an inline New File/Folder: inject a synthetic editable row at `at`
+// (depth `depth`) so it renders exactly where the entry will be created.
+@(private="file")
+sidebar_begin_new :: proc(dir: string, at, depth: int, is_dir: bool) {
+	prompt_cancel() // clear any in-progress edit (rebuilds away its synthetic row)
+	g_prompt.kind   = is_dir ? .New_Folder : .New_File
+	g_prompt.dir    = strings.clone(dir)
+	g_prompt.is_dir = is_dir
+	idx := clamp(at, 0, len(g_sidebar_entries))
+	inject_at(&g_sidebar_entries, idx, Sidebar_Entry{is_dir = is_dir, depth = depth, editing = true})
+	g_prompt.row       = idx
+	g_sidebar_selected = idx
+	sidebar_ensure_visible(idx)
+}
+
+// Begin an inline Rename: turn the existing row into a field pre-filled with
+// the current name.
+@(private="file")
+sidebar_begin_rename :: proc(row: int) {
+	if row < 0 || row >= len(g_sidebar_entries) do return
+	e := g_sidebar_entries[row]
+	prompt_cancel()
+	g_prompt.kind   = .Rename
+	g_prompt.dir    = strings.clone(filepath.dir(e.path))
+	g_prompt.old    = strings.clone(e.path)
+	g_prompt.is_dir = e.is_dir
+	g_prompt.row    = row
+	for i in 0 ..< len(e.name) do append(&g_prompt.buffer, e.name[i])
+	g_sidebar_entries[row].editing = true
+	g_sidebar_selected = row
+	sidebar_ensure_visible(row)
+}
+
+// First index at/after `start` whose entry is shallower than `depth` — i.e. the
+// end of the current indent group, where a new row at `depth` appends to the
+// bottom of that group.
+@(private="file")
+sidebar_group_end :: proc(start, depth: int) -> int {
+	i := start
+	for i < len(g_sidebar_entries) && g_sidebar_entries[i].depth >= depth do i += 1
+	return i
+}
+
+@(private="file")
+sidebar_ensure_visible :: proc(idx: int) {
+	if g_sidebar_view_rows <= 0 do return
+	if idx < g_sidebar_scroll {
+		g_sidebar_scroll = idx
+	} else if idx >= g_sidebar_scroll + g_sidebar_view_rows {
+		g_sidebar_scroll = idx - g_sidebar_view_rows + 1
+	}
+}
+
+prompt_cancel :: proc() {
+	if g_prompt.kind == .None do return
+	prompt_clear()
+	sidebar_rebuild() // drops the synthetic row / clears the editing flag
+}
+
+prompt_input :: proc(text: cstring) {
+	s := string(text)
+	for i in 0 ..< len(s) do append(&g_prompt.buffer, s[i])
+}
+
+prompt_backspace :: proc() {
+	if len(g_prompt.buffer) == 0 do return
+	i := len(g_prompt.buffer) - 1
+	for i > 0 && (g_prompt.buffer[i] & 0xC0) == 0x80 do i -= 1 // back over UTF-8 continuation
+	resize(&g_prompt.buffer, i)
+}
+
+prompt_confirm :: proc() {
+	name := strings.trim_space(string(g_prompt.buffer[:]))
+	if len(name) == 0 {
+		prompt_cancel()
+		return
+	}
+	// Each op rebuilds the tree (dropping our synthetic / editing row); then we
+	// free state without an extra rebuild.
+	switch g_prompt.kind {
+	case .None:
+	case .New_File:   sidebar_create_file(g_prompt.dir, name)
+	case .New_Folder: sidebar_create_folder(g_prompt.dir, name)
+	case .Rename:     sidebar_do_rename(g_prompt.old, g_prompt.dir, name)
+	}
+	prompt_clear()
 }
 
 // ── draw ───────────────────────────────────────────────────────────
@@ -409,6 +700,26 @@ draw_sidebar :: proc(l: Layout) {
 			bg = hov
 		}
 		x := r.x + SIDEBAR_PAD + f32(e.depth) * SIDEBAR_INDENT
+
+		// Inline New/Rename text field: render the typed name + a caret in
+		// place of the normal row, with the appropriate (folder/file) icon.
+		if e.editing {
+			if g_prompt.is_dir {
+				gc := strings.clone_to_cstring(GLYPH_FOLDER, context.temp_allocator)
+				draw_text(gc, x, ry, SIDEBAR_DIR_COLOR, bg, g_terminal_font)
+			}
+			fx := x + (g_prompt.is_dir ? g_config.font.size * SIDEBAR_ICON_COL : 0)
+			tc := strings.clone_to_cstring(prompt_text(), context.temp_allocator)
+			tw := draw_text(tc, fx, ry, MENU_TEXT_COLOR, bg)
+			if int(active_editor().blink_timer * 2) % 2 == 0 {
+				// Center the caret on the row (text sits top-aligned, the row has
+				// SIDEBAR_ROW_GAP below it) so it doesn't look low.
+				cy := ry + (row_h - g_config.font.size) * 0.5
+				fill_rect({fx + tw, cy, 2, g_config.font.size}, g_theme.cursor_color)
+			}
+			continue
+		}
+
 		// Folders get an open/closed icon from the embedded Nerd Font; files
 		// get none (the icon was redundant). Names still start at a fixed
 		// column so the tree stays aligned.

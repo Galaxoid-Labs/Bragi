@@ -18,6 +18,14 @@ Menu_Action :: enum {
 	Save,
 	Save_As,
 	Format,
+	// File-tree (sidebar) context-menu actions. Operate on g_menu.target
+	// (a g_sidebar_entries index), not the active editor.
+	New_File,
+	New_Folder,
+	Rename,
+	Delete,
+	Copy_Path,
+	Reveal,
 }
 
 Menu_Item :: struct {
@@ -69,8 +77,13 @@ CONTEXT_MENU := []Menu_Item{
 	{label = "Save As...", shortcut = SC_SAVE_AS,    action = .Save_As},
 }
 
+Menu_Kind :: enum { Editor, Sidebar }
+
 Menu :: struct {
 	visible: bool,
+	kind:    Menu_Kind,
+	items:   []Menu_Item, // CONTEXT_MENU or SIDEBAR_MENU
+	target:  int,         // sidebar: g_sidebar_entries index this menu acts on
 	pos:     sdl.FPoint,
 	hovered: int, // -1 = none
 	width:   f32,
@@ -78,6 +91,40 @@ Menu :: struct {
 }
 
 g_menu: Menu
+
+// "Reveal" target differs per platform's file manager.
+when ODIN_OS == .Darwin {
+	SC_REVEAL_LABEL :: "Reveal in Finder"
+} else when ODIN_OS == .Windows {
+	SC_REVEAL_LABEL :: "Reveal in Explorer"
+} else {
+	SC_REVEAL_LABEL :: "Open Containing Folder"
+}
+
+// Right-click context menu for the file-tree sidebar. Actions operate on the
+// clicked entry (g_menu.target). New File/Folder create in the entry's dir (its
+// own dir if it's a folder, else its parent).
+SIDEBAR_MENU := []Menu_Item{
+	{label = "New File…",        action = .New_File},
+	{label = "New Folder…",      action = .New_Folder},
+	{is_separator = true},
+	{label = "Rename…",          action = .Rename},
+	{label = "Delete…",          action = .Delete},
+	{is_separator = true},
+	{label = "Copy Path",        action = .Copy_Path},
+	{label = SC_REVEAL_LABEL,    action = .Reveal},
+}
+
+// Right-clicking empty sidebar space (no row) → actions on the workspace root.
+// Rename/Delete don't apply to the root, so they're omitted. Dispatched with
+// target = -1.
+SIDEBAR_ROOT_MENU := []Menu_Item{
+	{label = "New File…",        action = .New_File},
+	{label = "New Folder…",      action = .New_Folder},
+	{is_separator = true},
+	{label = "Copy Path",        action = .Copy_Path},
+	{label = SC_REVEAL_LABEL,    action = .Reveal},
+}
 
 MENU_BG_COLOR        :: sdl.Color{45, 45, 55, 255}
 MENU_BORDER_COLOR    :: sdl.Color{80, 82, 92, 255}
@@ -101,14 +148,24 @@ measure_text_w :: proc(s: string) -> f32 {
 	return f32(w_px) / g_density
 }
 
+// Open the editor context menu at `at`.
 menu_show :: proc(at: sdl.FPoint) {
+	menu_show_items(at, CONTEXT_MENU, .Editor, -1)
+}
+
+// Open an arbitrary menu (editor or sidebar) at `at`. `target` is the sidebar
+// entry index the menu acts on (-1 for the editor menu).
+menu_show_items :: proc(at: sdl.FPoint, items: []Menu_Item, kind: Menu_Kind, target: int) {
 	g_menu.visible = true
 	g_menu.hovered = -1
+	g_menu.kind    = kind
+	g_menu.items   = items
+	g_menu.target  = target
 
 	// Width: widest (label) + gap + widest (shortcut) + padding.
 	max_label_w:    f32 = 0
 	max_shortcut_w: f32 = 0
-	for item in CONTEXT_MENU {
+	for item in items {
 		if item.is_separator do continue
 		lw := measure_text_w(item.label)
 		if lw > max_label_w do max_label_w = lw
@@ -120,7 +177,7 @@ menu_show :: proc(at: sdl.FPoint) {
 
 	// Height = sum of items + vertical padding
 	h: f32 = MENU_PAD_Y * 2
-	for item in CONTEXT_MENU {
+	for item in items {
 		h += item.is_separator ? MENU_SEP_H : MENU_ITEM_H
 	}
 	g_menu.height = h
@@ -163,6 +220,9 @@ menu_action_enabled :: proc(ed: ^Editor, action: Menu_Action) -> bool {
 		return true
 	case .Format:
 		return lsp_can_format(ed.language)
+	case .New_File, .New_Folder, .Rename, .Delete, .Copy_Path, .Reveal:
+		// Sidebar actions; validity is per-target, handled in dispatch.
+		return true
 	}
 	return true
 }
@@ -171,7 +231,7 @@ menu_action_enabled :: proc(ed: ^Editor, action: Menu_Action) -> bool {
 menu_item_at :: proc(local_x, local_y: f32) -> int {
 	if local_x < 0 || local_x > g_menu.width do return -1
 	y := f32(MENU_PAD_Y)
-	for item, idx in CONTEXT_MENU {
+	for item, idx in g_menu.items {
 		ih: f32 = item.is_separator ? MENU_SEP_H : MENU_ITEM_H
 		if local_y >= y && local_y < y + ih {
 			return item.is_separator ? -1 : idx
@@ -195,8 +255,12 @@ menu_handle_click :: proc(ed: ^Editor, mx, my: f32) -> bool {
 
 	idx := menu_item_at(mx - g_menu.pos.x, my - g_menu.pos.y)
 	if idx >= 0 {
-		action := CONTEXT_MENU[idx].action
-		if menu_action_enabled(ed, action) do menu_dispatch(ed, action)
+		action := g_menu.items[idx].action
+		if g_menu.kind == .Sidebar {
+			sidebar_menu_dispatch(action, g_menu.target)
+		} else if menu_action_enabled(ed, action) {
+			menu_dispatch(ed, action)
+		}
 		// Disabled-item click still closes the menu, matching the
 		// behavior of native context menus.
 	}
@@ -205,7 +269,9 @@ menu_handle_click :: proc(ed: ^Editor, mx, my: f32) -> bool {
 }
 
 menu_dispatch :: proc(ed: ^Editor, action: Menu_Action) {
-	switch action {
+	// Sidebar actions (.New_File … .Reveal) never reach here — they're routed
+	// through sidebar_menu_dispatch — so this only handles the editor set.
+	#partial switch action {
 	case .None:
 	case .Cut:        clipboard_cut(ed)
 	case .Copy:       clipboard_copy(ed)
@@ -242,7 +308,7 @@ draw_menu :: proc() {
 	fill_rect({rect.x + rect.w - bw,  rect.y,                bw,     rect.h}, MENU_BORDER_COLOR)
 
 	y := rect.y + MENU_PAD_Y
-	for item, idx in CONTEXT_MENU {
+	for item, idx in g_menu.items {
 		if item.is_separator {
 			fill_rect({
 				rect.x + MENU_PAD_X,
@@ -254,7 +320,7 @@ draw_menu :: proc() {
 			continue
 		}
 
-		enabled := menu_action_enabled(ed, item.action)
+		enabled := g_menu.kind == .Sidebar || menu_action_enabled(ed, item.action)
 
 		bg := MENU_BG_COLOR
 		// Hover highlight only on enabled items — disabled rows stay

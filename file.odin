@@ -2,6 +2,7 @@ package bragi
 
 import "core:fmt"
 import "core:os"
+import "core:path/filepath"
 import "core:strings"
 import "core:time"
 
@@ -431,6 +432,20 @@ editor_save_file :: proc(ed: ^Editor) -> bool {
 	// Saving the config file applies it immediately — no restart needed.
 	if cfg := config_path(context.temp_allocator); len(cfg) > 0 && ed.file_path == cfg {
 		config_reload()
+	}
+
+	// Saving (or creating) the workspace's bragi.ini re-applies its [lsp]
+	// overlay and restarts any affected server — no Bragi restart / folder
+	// re-open needed.
+	if len(g_workspace_root) > 0 {
+		if proj, jerr := filepath.join({g_workspace_root, "bragi.ini"}, context.temp_allocator);
+		   jerr == nil && lsp_path_eq(ed.file_path, proj) {
+			old := lsp_config_clone(g_config.lsp)
+			project_config_apply()
+			lsp_restart_changed(old)
+			lsp_config_free(&old)
+			set_status_message("bragi.ini applied", .Info)
+		}
 	}
 	return true
 }

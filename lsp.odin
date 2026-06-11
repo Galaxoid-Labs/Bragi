@@ -87,12 +87,20 @@ lsp_on_editor_opened :: proc(ed: ^Editor) {
 	}
 	lsp_did_open(c, ed)
 
-	// jai-lsp needs the Jai compiler for diagnostics + typed hover, but it
-	// isn't bundled (no canonical Jai install path). If it's unconfigured,
-	// hint once — completion / signatures / go-to-def still work without it.
-	if ed.language == .Jai && len(g_config.lsp.jai_compiler) == 0 && !g_jai_compiler_hinted {
-		g_jai_compiler_hinted = true
-		set_status_message("Jai diagnostics + typed hover need [lsp] jai_compiler — run :config to set it", .Info)
+	// jai-lsp hints (each fires at most once per session). The compiler isn't
+	// bundled (no canonical Jai install path) and the type-check entry is
+	// inherently per-project, so we nudge the user toward the config they need —
+	// completion / signatures / go-to-def / lexer errors all work without either.
+	if ed.language == .Jai {
+		if len(g_config.lsp.jai_compiler) == 0 && !g_jai_compiler_hinted {
+			g_jai_compiler_hinted = true
+			set_status_message("Jai diagnostics + typed hover need [lsp] jai_compiler — run :config to set it", .Info)
+		} else if len(g_config.lsp.jai_entry) == 0 && !g_jai_entry_hinted {
+			// Compiler is set but there's no entry file → jai-lsp runs in
+			// standalone mode (lexer errors only). Point at the per-project file.
+			g_jai_entry_hinted = true
+			set_status_message("Jai: lexer errors only — set jai_entry in a project bragi.ini for full type-check diagnostics", .Info)
+		}
 	}
 
 	// ols resolves core:/vendor: imports (and thus fields / locals) from the
@@ -106,6 +114,8 @@ lsp_on_editor_opened :: proc(ed: ^Editor) {
 
 @(private="file")
 g_jai_compiler_hinted: bool
+@(private="file")
+g_jai_entry_hinted: bool
 @(private="file")
 g_odin_root_hinted: bool
 
@@ -1143,6 +1153,19 @@ lsp_status_at_cursor :: proc(ed: ^Editor) {
 	if best_msg != "" {
 		kind := best_sev == 1 ? Status_Kind.Error : Status_Kind.Info
 		set_status_message(lsp_oneline(best_msg), kind)
+	}
+}
+
+// Restart any server whose effective [lsp] config changed vs `old`. Shared by
+// the global config reload and the per-project bragi.ini re-apply, so both pick
+// up jai_compiler/jai_entry/odin_root changes without a manual :lsp restart.
+lsp_restart_changed :: proc(old: Lsp_Config) {
+	n := g_config.lsp
+	if n.jai_path != old.jai_path || n.jai_compiler != old.jai_compiler || n.jai_entry != old.jai_entry {
+		lsp_restart(.Jai)
+	}
+	if n.odin_path != old.odin_path || n.odin_root != old.odin_root {
+		lsp_restart(.Odin)
 	}
 }
 

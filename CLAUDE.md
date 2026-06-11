@@ -98,7 +98,13 @@ Both have identical advance width so cell math is unchanged.
   distinct and drive real font styles (see the globals + roadmap notes). The
   `md_*` theme colors **inherit** the base syntax colors at config-load time
   (overridable per key).
-- **`menu.odin`** — Right-click context menu.
+- **`menu.odin`** — Right-click context menu, shared by two kinds
+  (`Menu_Kind`: `.Editor` = `CONTEXT_MENU`, `.Sidebar` = `SIDEBAR_MENU` /
+  `SIDEBAR_ROOT_MENU`). `g_menu` carries the active `items` slice + sidebar
+  `target` row; `menu_handle_click` routes editor items to `menu_dispatch`
+  and sidebar items to `sidebar_menu_dispatch`. Open-menu click + hover are
+  handled globally in the main event dispatch so a sidebar menu drawn over
+  the tree still gets its input.
 - **`help.odin`** — `:h` / `:help` modal cheat-sheet.
 - **`finder.odin`** — Cmd/Ctrl+F project-wide fuzzy file picker, backed
   by fff. Flat recursive search (relative paths), NOT a directory
@@ -153,7 +159,25 @@ Both have identical advance width so cell math is unchanged.
   (lazy). Dotfiles hidden, toggle with `i`. Styled like the finder
   (MENU_* colors, blue dirs, UI font — does NOT scale with editor zoom).
   Mouse (click dir=expand, file=open) + keyboard (j/k/h/l, Enter, Esc)
-  when focused.
+  when focused. **Context menu**: right-click a row → `SIDEBAR_MENU`
+  (empty space → `SIDEBAR_ROOT_MENU`, target -1 = workspace root), dispatched
+  by `sidebar_menu_dispatch`. New File/Folder and Rename use an **inline
+  editor**, not a dialog: a transient `editing` flag on a `Sidebar_Entry`
+  (a synthetic row `inject_at`'d for New at `sidebar_group_end` so it lands
+  where it'll sort; the existing row for Rename), drawn by the row loop as a
+  text field + caret. `g_prompt` holds the edit state; main.odin routes
+  keys/runes to `prompt_input`/`prompt_confirm`/`prompt_cancel` while
+  `prompt_active()`. Ops go through `core:os` (`write_entire_file`,
+  `make_directory`, `rename`, `remove`/`remove_all`) then `sidebar_rebuild`.
+  Delete confirms natively (Cancel is the default key) and calls
+  `close_panes_for_deleted` (main.odin) to drop panes viewing a gone file;
+  Rename migrates an open editor's LSP (didClose old → re-point → didOpen
+  new). Reveal → `reveal_path` (platform files below).
+- **`reveal_{darwin,windows,other}.odin`** — `reveal_path(path, is_dir)`
+  for the sidebar's Reveal action. Darwin: `open -R` via `posix_spawn` on
+  `/usr/bin/open` (selects in Finder). Windows: `explorer /select,` via
+  `CreateProcessW`. Other (Linux/BSD): no portable select, so open the
+  containing folder via `SDL_OpenURL`.
 - **`recent.odin`** — Open-Recent popup: a dismissable, menu-styled
   overlay (`g_recent_visible`, `draw_recent`) listing recently opened
   workspaces (folders) and standalone files, most-recent-first. Cmd/Ctrl+R
@@ -249,7 +273,9 @@ Both have identical advance width so cell math is unchanged.
   **per-project overlay**: `<workspace>/bragi.ini`'s `[lsp]` section overrides
   the global config. `config_capture_global_lsp` snapshots the global `[lsp]`
   baseline after `config_load`; `project_config_apply` (called from
-  `set_workspace`, before the LSP teardown, and from `config_reload`) frees
+  `set_workspace` before the LSP teardown, from `config_reload`, and from
+  `editor_save_file` when a `bragi.ini` is saved — hot-reload via
+  `lsp_restart_changed`, no folder re-open) frees
   `g_config.lsp`, re-clones the baseline, then overlays the project file —
   resolving a relative `jai_entry` against the workspace root. So the effective
   `g_config.lsp` = global ⊕ project. `lsp_config_clone`/`lsp_config_free` are

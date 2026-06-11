@@ -40,6 +40,13 @@ A small, GPU-accelerated, vim-flavoured text/code editor written in
   navigate with `j/k/h/l` + Enter when focused; `i` toggles hidden
   dotfiles. Folder/file icons come from the embedded Nerd Font. The
   divider resizes it. The workspace also becomes the finder's root.
+  **Right-click** any row (or empty space, which targets the workspace
+  root) for a context menu: **New File / New Folder** (an inline editable
+  row appears right where it'll land — type the name, Enter creates, Esc
+  cancels), **Rename** (inline, pre-filled), **Delete** (native confirm;
+  recursive for folders; closes any open pane for the deleted file),
+  **Copy Path**, and **Reveal in Finder/Explorer**. Deleting or renaming
+  an open file keeps its pane/LSP in sync.
 - **Open Recent** — Cmd/Ctrl+R (or `:recent`) pops a menu-styled list of
   recently opened folders and files, grouped and most-recent-first. Enter
   (or click) opens; Esc / click-away closes. It also appears automatically
@@ -427,8 +434,9 @@ Loaded when the folder opens as the workspace (Open Folder, `bragi <dir>`,
 `:cd`, or a dropped folder); the language server respawns to pick it up. All
 `[lsp]` keys are overridable. Setting `jai_entry` is what flips jai-lsp out of
 standalone mode into full type-checking, so it's the key that unlocks compiler
-diagnostics on save. (Editing `bragi.ini` mid-session currently needs a
-re-open of the folder to re-apply.)
+diagnostics on save. **Saving** a `bragi.ini` from inside Bragi (editing an
+existing one or creating it via Save As) re-applies it and restarts the
+affected server immediately — no folder re-open or restart needed.
 
 ### Caveats
 
@@ -443,6 +451,13 @@ re-open of the folder to re-apply.)
   auto-detects the root) or set **`[lsp] odin_root`** to your Odin dir — it's
   passed as `ODIN_ROOT`, so no `ols.json` is required for the common case.
   Bragi hints once on the first `.odin` open if it can't find either.
+- **Odin has no `bragi.ini` equivalent of `jai_entry`** — it doesn't need
+  one. ols checks the saved file's package on save with zero config, so
+  diagnostics just work once `odin` is resolvable (above). The one genuinely
+  per-project Odin setting — custom import **collections** (`import "mylib:…"`),
+  plus checker args — lives in ols's own **`ols.json`** at the workspace root,
+  which ols reads directly. Don't look for an Odin entry-file knob; there
+  isn't one.
 - **macOS Gatekeeper** SIGKILLs unsigned helper binaries on first spawn.
   Release `.app`s codesign the bundled servers under the app identity; a
   raw downloaded binary needs a one-time allow in System Settings →
