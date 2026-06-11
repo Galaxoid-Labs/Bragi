@@ -30,7 +30,7 @@ RECENT_ENTRY_INDENT :: 12.0
 RECENT_DIM_BG      :: sdl.Color{0, 0, 0, 140}
 
 @(private="file")
-RECENT_PREFIX_COLOR :: sdl.Color{120, 125, 140, 255} // dim the directory portion
+RECENT_PREFIX_COLOR :: sdl.Color{126, 132, 150, 255} // unified muted gray
 
 Recent_Entry :: struct {
 	path:   string, // owned; absolute

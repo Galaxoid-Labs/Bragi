@@ -19,12 +19,25 @@ Token_Kind :: enum {
 	String,    // includes char literals and raw strings
 	Comment,
 	Function,  // identifier immediately followed by `(`
+	// Markdown. Bold / Italic / Strike are distinct kinds even though they
+	// currently share one color — so a future "real bold/italic font" pass
+	// can attach a style to the kind without re-touching the tokenizer.
+	Md_Heading,
+	Md_Bold,
+	Md_Italic,
+	Md_Strike,
+	Md_Code,    // inline `code` and fenced ``` blocks
+	Md_Link,    // [link text]
+	Md_Url,     // (destination) / <autolink>
+	Md_Marker,  // structural punctuation: #, list bullets, >, ---, fences
 }
 
-// State carried between lines for multi-line constructs (block comments).
+// State carried between lines for multi-line constructs (block comments;
+// Markdown fenced code blocks).
 Tokenizer_State :: enum u8 {
 	Normal,
 	Block_Comment,
+	Fenced_Code,
 }
 
 Language :: enum {
@@ -40,6 +53,7 @@ Language :: enum {
 	Ini,
 	Bash,
 	Gdscript,
+	Markdown,
 }
 
 // Per-language data table that drives `tokenize_with_spec`. New languages
@@ -508,6 +522,15 @@ g_specs := [Language]Language_Spec{
 		capitalized_types    = true,
 		detect_function_call = true,
 	},
+	.Markdown = Language_Spec{
+		// Markup, not code — handled by the bespoke tokenize_markdown
+		// (syntax_tokenize special-cases it, like INI). The spec entry is
+		// just for name / display / extension lookup.
+		name         = "markdown",
+		display_name = "Markdown",
+		aliases      = []string{"md"},
+		extensions   = []string{".md", ".markdown", ".mkd", ".mdown"},
+	},
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -551,6 +574,7 @@ language_display_name :: proc(lang: Language) -> string {
 syntax_tokenize :: proc(lang: Language, line: []u8, state_in: Tokenizer_State) -> ([]Token, Tokenizer_State) {
 	if lang == .None do return nil, .Normal
 	if lang == .Ini  do return tokenize_ini(line), .Normal
+	if lang == .Markdown do return tokenize_markdown(line, state_in)
 	return tokenize_with_spec(line, state_in, &g_specs[lang])
 }
 
@@ -716,6 +740,266 @@ ini_is_number :: proc(val: []u8) -> bool {
 		}
 	}
 	return saw_digit && i == n
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Markdown tokenizer
+// ──────────────────────────────────────────────────────────────────
+//
+// Bespoke (the C-family Language_Spec doesn't model markup). Line-oriented
+// block elements + inline spans, with Fenced_Code carried between lines for
+// ``` / ~~~ blocks. Bold / Italic / Strike are separate Token_Kinds sharing
+// one color today, so a future font-style pass needs no tokenizer changes.
+//
+// v1: ATX headings, fenced + inline code, bold / italic / strike, links +
+// autolinks, list markers, blockquotes, horizontal rules. Deferred: setext
+// headings (need previous-line lookback) and per-language highlighting inside
+// fenced blocks.
+
+@(private="file")
+md_is_alnum :: proc(b: u8) -> bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+}
+
+// Fence line: optional leading spaces, then a run of ≥3 '`' or '~'.
+@(private="file")
+md_is_fence :: proc(line: []u8) -> bool {
+	n := len(line)
+	i := 0
+	for i < n && line[i] == ' ' do i += 1
+	if i >= n do return false
+	c := line[i]
+	if c != '`' && c != '~' do return false
+	run := 0
+	for i < n && line[i] == c { i += 1; run += 1 }
+	return run >= 3
+}
+
+// Horizontal rule: ≥3 of the same -, *, or _, separated only by spaces.
+@(private="file")
+md_is_hr :: proc(line: []u8) -> bool {
+	n := len(line)
+	i := 0
+	for i < n && line[i] == ' ' do i += 1
+	if i >= n do return false
+	c := line[i]
+	if c != '-' && c != '*' && c != '_' do return false
+	count := 0
+	for ; i < n; i += 1 {
+		if line[i] == c do count += 1
+		else if line[i] == ' ' || line[i] == '\t' do continue
+		else do return false
+	}
+	return count >= 3
+}
+
+// Index of the next occurrence of `s` in line[from:n], else -1.
+@(private="file")
+md_find :: proc(line: []u8, from, n: int, s: string) -> int {
+	i := from
+	for i + len(s) <= n {
+		if match_at(line, i, s) do return i
+		i += 1
+	}
+	return -1
+}
+
+@(private="file")
+md_find_char :: proc(line: []u8, from, n: int, c: u8) -> int {
+	for i := from; i < n; i += 1 do if line[i] == c do return i
+	return -1
+}
+
+// Underscore emphasis only fires at a left word boundary, so snake_case in
+// prose isn't italicised. (Asterisk emphasis is allowed intra-word.)
+@(private="file")
+md_left_flank_ok :: proc(line: []u8, pos: int) -> bool {
+	return !(pos > 0 && md_is_alnum(line[pos - 1]))
+}
+
+@(private="file")
+md_looks_like_url :: proc(line: []u8, start, end: int) -> bool {
+	return md_find(line, start, end, "://") >= 0 || md_find_char(line, start, end, '@') >= 0
+}
+
+@(private="file")
+tokenize_markdown :: proc(line: []u8, state_in: Tokenizer_State) -> ([]Token, Tokenizer_State) {
+	tokens := make([dynamic]Token, 0, 8, context.temp_allocator)
+	n := len(line)
+
+	// Inside a fenced block: the whole line is code, until a closing fence
+	// (a marker) drops us back to Normal.
+	if state_in == .Fenced_Code {
+		if md_is_fence(line) {
+			append(&tokens, Token{0, n, .Md_Marker})
+			return tokens[:], .Normal
+		}
+		if n > 0 do append(&tokens, Token{0, n, .Md_Code})
+		return tokens[:], .Fenced_Code
+	}
+
+	// An opening fence flips us into Fenced_Code; the fence line (incl. an
+	// info string like ```odin) is a marker.
+	if md_is_fence(line) {
+		append(&tokens, Token{0, n, .Md_Marker})
+		return tokens[:], .Fenced_Code
+	}
+
+	// Leading whitespace (no token).
+	i := 0
+	for i < n && (line[i] == ' ' || line[i] == '\t') do i += 1
+	if i >= n do return tokens[:], .Normal
+
+	// Horizontal rule.
+	if md_is_hr(line) {
+		append(&tokens, Token{i, n, .Md_Marker})
+		return tokens[:], .Normal
+	}
+
+	// ATX heading: 1–6 '#' then a space or end-of-line.
+	if line[i] == '#' {
+		h := i
+		for h < n && line[h] == '#' do h += 1
+		cnt := h - i
+		if cnt <= 6 && (h >= n || line[h] == ' ' || line[h] == '\t') {
+			append(&tokens, Token{i, h, .Md_Marker})
+			if h < n do append(&tokens, Token{h, n, .Md_Heading})
+			return tokens[:], .Normal
+		}
+	}
+
+	// Blockquote: mark the leading '>' run, inline-parse the remainder.
+	if line[i] == '>' {
+		q := i
+		for q < n && (line[q] == '>' || line[q] == ' ') do q += 1
+		append(&tokens, Token{i, q, .Md_Marker})
+		md_inline(&tokens, line, q, n)
+		return tokens[:], .Normal
+	}
+
+	// List marker: -, *, + then a space; or ordered `1.` / `1)` then a space.
+	// The required space keeps `*bold*` / `_x_` from looking like bullets.
+	{
+		c := line[i]
+		if (c == '-' || c == '*' || c == '+') && i + 1 < n && (line[i+1] == ' ' || line[i+1] == '\t') {
+			append(&tokens, Token{i, i + 1, .Md_Marker})
+			md_inline(&tokens, line, i + 1, n)
+			return tokens[:], .Normal
+		}
+		if c >= '0' && c <= '9' {
+			j := i
+			for j < n && line[j] >= '0' && line[j] <= '9' do j += 1
+			if j < n && (line[j] == '.' || line[j] == ')') && j + 1 < n && (line[j+1] == ' ' || line[j+1] == '\t') {
+				append(&tokens, Token{i, j + 1, .Md_Marker})
+				md_inline(&tokens, line, j + 1, n)
+				return tokens[:], .Normal
+			}
+		}
+	}
+
+	// Plain paragraph — inline spans only.
+	md_inline(&tokens, line, i, n)
+	return tokens[:], .Normal
+}
+
+// Inline span scanner: code, strike, bold, italic, links, autolinks.
+// Single pass, non-overlapping — first match at a position wins and we
+// resume after it; unrecognized bytes are left untokenized (default color).
+@(private="file")
+md_inline :: proc(tokens: ^[dynamic]Token, line: []u8, start, n: int) {
+	i := start
+	for i < n {
+		b := line[i]
+
+		// Inline code: a run of N backticks closed by another run of N.
+		if b == '`' {
+			j := i
+			for j < n && line[j] == '`' do j += 1
+			ticks := j - i
+			k := j
+			closed := false
+			for k < n {
+				if line[k] == '`' {
+					m := k
+					for m < n && line[m] == '`' do m += 1
+					if m - k == ticks {
+						append(tokens, Token{i, m, .Md_Code})
+						i = m
+						closed = true
+						break
+					}
+					k = m
+				} else {
+					k += 1
+				}
+			}
+			if closed do continue
+			i = j // unterminated — skip the opening run
+			continue
+		}
+
+		// Strikethrough: ~~text~~.
+		if b == '~' && i + 1 < n && line[i+1] == '~' {
+			c := md_find(line, i + 2, n, "~~")
+			if c > i + 2 {
+				append(tokens, Token{i, c + 2, .Md_Strike})
+				i = c + 2
+				continue
+			}
+		}
+
+		// Bold: **text** or __text__.
+		if (b == '*' && i + 1 < n && line[i+1] == '*') || (b == '_' && i + 1 < n && line[i+1] == '_') {
+			if b == '*' || md_left_flank_ok(line, i) {
+				delim := b == '*' ? "**" : "__"
+				c := md_find(line, i + 2, n, delim)
+				if c > i + 2 {
+					append(tokens, Token{i, c + 2, .Md_Bold})
+					i = c + 2
+					continue
+				}
+			}
+		}
+
+		// Italic: *text* or _text_.
+		if b == '*' || b == '_' {
+			if b == '*' || md_left_flank_ok(line, i) {
+				c := md_find_char(line, i + 1, n, b)
+				if c > i + 1 {
+					append(tokens, Token{i, c + 1, .Md_Italic})
+					i = c + 1
+					continue
+				}
+			}
+		}
+
+		// Link / image: [text](url) / ![alt](url).
+		if b == '[' || (b == '!' && i + 1 < n && line[i+1] == '[') {
+			open := b == '!' ? i + 1 : i
+			close := md_find_char(line, open + 1, n, ']')
+			if close > open && close + 1 < n && line[close+1] == '(' {
+				paren := md_find_char(line, close + 2, n, ')')
+				if paren > close + 1 {
+					append(tokens, Token{i, close + 1, .Md_Link})   // [text] (+ leading !)
+					append(tokens, Token{close + 1, paren + 1, .Md_Url}) // (url)
+					i = paren + 1
+					continue
+				}
+			}
+		}
+
+		// Autolink: <scheme://...> or <user@host>.
+		if b == '<' {
+			c := md_find_char(line, i + 1, n, '>')
+			if c > i + 1 && md_looks_like_url(line, i + 1, c) {
+				append(tokens, Token{i, c + 1, .Md_Url})
+				i = c + 1
+				continue
+			}
+		}
+
+		i += 1
+	}
 }
 
 // ──────────────────────────────────────────────────────────────────

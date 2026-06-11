@@ -44,10 +44,11 @@ A small, GPU-accelerated, vim-flavoured text/code editor written in
   exist on disk are pruned on load. Disable the startup popup with
   `[ui] show_recent_on_startup = false`.
 - **Scratchpad** — Cmd/Ctrl+Shift+N (or `:scratch`) opens an in-memory
-  notes buffer with full editing. Close its pane and the contents stay in
-  memory, so it's always one keystroke away while Bragi is open; quitting
-  discards it (nothing touches disk). Save As promotes it to a real file
-  if a note's worth keeping.
+  notes buffer with full editing, rendered with **Markdown** highlighting
+  by default. Close its pane and the contents stay in memory, so it's
+  always one keystroke away while Bragi is open; quitting discards it
+  (nothing touches disk). Save As promotes it to a real file if a note's
+  worth keeping.
 - **Fast** — piece-table buffer (far cursor jumps don't memmove),
   mmap-backed file open on POSIX (kernel lazy-pages the file as you
   scroll), incremental line-index + per-line column-width caches.
@@ -59,10 +60,12 @@ A small, GPU-accelerated, vim-flavoured text/code editor written in
   doesn't — drawing in the watch there would jam the event queue).
 - **Syntax highlighting** for **Odin**, **C**, **C++**, **Go**, **Jai**,
   **Swift**, **Rust**, **GDScript**, **Bash** (and `.sh` / `.zsh`),
-  **INI** (sections,
-  keys, hex colors, booleans), plus a **Generic** fallback (strings /
-  numbers / `//` and `/* */` comments) for everything else. Detection
-  by file extension; switch manually with `:syntax <name>`.
+  **INI** (sections, keys, hex colors, booleans), **Markdown** (headings,
+  bold / italic / strike, inline + fenced code, links, lists, blockquotes,
+  rules), plus a **Generic** fallback (strings / numbers / `//` and
+  `/* */` comments) for everything else. Detection by file extension;
+  switch manually with `:syntax <name>`. Markdown colors are themeable
+  (`[theme] md_*`) and inherit the base palette by default.
 - **Intellisense via LSP** — open a `.jai` or `.odin` file inside a
   workspace and Bragi drives **jai-lsp** / **ols** over the Language
   Server Protocol: **autocompletion** as you type (Tab/Enter accept,

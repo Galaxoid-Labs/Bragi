@@ -42,7 +42,7 @@ HELP_CHIP_PAD_Y :: f32(2)
 @(private = "file")
 HELP_TEXT_COLOR :: sdl.Color{220, 220, 220, 255}
 @(private = "file")
-HELP_TEXT_DIM :: sdl.Color{135, 140, 155, 255}
+HELP_TEXT_DIM :: sdl.Color{126, 132, 150, 255} // unified muted gray
 @(private = "file")
 HELP_TEXT_BRIGHT :: sdl.Color{235, 240, 248, 255}
 @(private = "file")

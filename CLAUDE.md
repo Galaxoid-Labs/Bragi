@@ -82,9 +82,15 @@ Both have identical advance width so cell math is unchanged.
   ex commands. Modes: `Insert`, `Normal`, `Visual`, `Visual_Line`,
   `Command`, `Search`.
 - **`syntax.odin`** — Per-language tokenizers (Odin / C / C++ / Go /
-  Jai / Swift / Rust / GDScript / Bash / INI / Generic / None). Most go through
-  `tokenize_with_spec`; INI has its own dedicated tokenizer because
-  sections / keys / values don't fit the C-family `Language_Spec`.
+  Jai / Swift / Rust / GDScript / Bash / INI / Markdown / Generic / None).
+  Most go through `tokenize_with_spec`; INI and **Markdown** have their own
+  dedicated tokenizers (markup / config don't fit the C-family
+  `Language_Spec`). `tokenize_markdown` is line-oriented + inline spans and
+  carries `Tokenizer_State.Fenced_Code` across lines for ``` blocks. Its
+  `Md_*` token kinds keep bold / italic / strike distinct (so a future
+  font-style pass needs no tokenizer change) even though they share
+  `md_emphasis_color`. The `md_*` theme colors **inherit** the base syntax
+  colors at config-load time (overridable per key).
 - **`menu.odin`** — Right-click context menu.
 - **`help.odin`** — `:h` / `:help` modal cheat-sheet.
 - **`finder.odin`** — Cmd/Ctrl+F project-wide fuzzy file picker, backed
@@ -151,7 +157,8 @@ Both have identical advance width so cell math is unchanged.
   / `try_close_active_pane` special-case `is_scratch`). Save As `scratch_promote`s
   it to a real file-backed buffer (clears the flag + snapshot). Shown as
   `*scratch*` via `pane_display_name` (no dirty marker); excluded from
-  `is_welcome_pane` / `should_replace_active`. Plain text (language `.None`).
+  `is_welcome_pane` / `should_replace_active`. Opens with Markdown
+  highlighting (`language = .Markdown`); `:syntax` changes it like any buffer.
 - **`lsp.odin`** — Language Server Protocol client. **jai-lsp only for
   now** (ols/.odin later). One server process per language, spawned
   lazily when a `.jai` file opens in a workspace. JSON-RPC over the
@@ -472,7 +479,11 @@ path, and gravity alone fixed it.
 - **Incremental search** — re-find on every keystroke into `cmd_buffer`.
 - **Comment toggle** (`gc`) — language-aware; needs per-`Language`
   comment metadata.
-- **More tokenizers** — Python, Markdown, JSON, Zig, TS/JS.
+- **More tokenizers** — Python, JSON, Zig, TS/JS. (Markdown shipped.)
+- **Styled Markdown** — real bold / italic font faces (the `Md_Bold` /
+  `Md_Italic` / `Md_Strike` kinds already distinguish the spans; needs
+  bold/italic font loading + a per-token style attribute through the
+  text cache + draw path, and custom-font users supplying extra faces).
 - **Untitled-buffer Save flow** — Cmd+W on dirty untitled prompts
   Save / Discard / Cancel; clicking Save fires the dialog but doesn't
   auto-close the pane on success (Cmd+Q already does).

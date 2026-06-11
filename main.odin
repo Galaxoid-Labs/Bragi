@@ -61,6 +61,14 @@ Theme :: struct {
 	string_color:         sdl.Color,
 	comment_color:        sdl.Color,
 	function_color:       sdl.Color,
+	// Markdown. Bold / italic / strike share md_emphasis_color for now
+	// (color-only emphasis); the tokenizer still distinguishes them.
+	md_heading_color:     sdl.Color,
+	md_emphasis_color:    sdl.Color,
+	md_code_color:        sdl.Color,
+	md_link_color:        sdl.Color,
+	md_url_color:         sdl.Color,
+	md_marker_color:      sdl.Color,
 	// Chrome.
 	bg_color:             sdl.Color,
 	cursor_color:         sdl.Color,
@@ -83,18 +91,29 @@ Theme :: struct {
 }
 
 DEFAULT_THEME :: Theme {
-	default_color        = sdl.Color{220, 220, 220, 255},
+	// Syntax accents (One-Dark family). The neutrals + highlights below are
+	// tuned to cohere with these: a single cool blue-gray ramp for every
+	// background / border / muted text, and highlights pulled from the accent
+	// hues (selection = function blue, search = keyword purple, cursor = gold)
+	// rather than out-of-palette colors.
+	default_color        = sdl.Color{216, 221, 232, 255}, // cool off-white
 	keyword_color        = sdl.Color{198, 120, 221, 255}, // purple
 	type_color           = sdl.Color{95, 200, 218, 255}, // cyan
 	constant_color       = sdl.Color{229, 192, 123, 255}, // gold (true/false/nil)
 	number_color         = sdl.Color{215, 145, 90, 255}, // orange
 	string_color         = sdl.Color{152, 195, 121, 255}, // green
-	comment_color        = sdl.Color{95, 110, 130, 255}, // muted blue-gray
+	comment_color        = sdl.Color{102, 112, 134, 255}, // muted blue-gray (on the ramp)
 	function_color       = sdl.Color{97, 175, 239, 255}, // blue
+	md_heading_color     = sdl.Color{229, 192, 123, 255}, // gold — headings
+	md_emphasis_color    = sdl.Color{198, 120, 221, 255}, // purple — bold / italic / strike
+	md_code_color        = sdl.Color{152, 195, 121, 255}, // green — code spans / fences
+	md_link_color        = sdl.Color{97, 175, 239, 255}, // blue — [link text]
+	md_url_color         = sdl.Color{95, 200, 218, 255}, // cyan — (destination) / <autolink>
+	md_marker_color      = sdl.Color{95, 110, 130, 255}, // muted — #, bullets, >, ---, fences
 	bg_color             = sdl.Color{30, 30, 38, 255},
-	cursor_color         = sdl.Color{240, 200, 80, 255},
-	selection_color      = sdl.Color{70, 95, 150, 120},
-	search_match_color   = sdl.Color{190, 80, 180, 120},
+	cursor_color         = sdl.Color{236, 196, 108, 255}, // gold (ties to constant; was neon yellow)
+	selection_color      = sdl.Color{70, 98, 156, 120}, // function-blue, translucent
+	search_match_color   = sdl.Color{156, 108, 206, 120}, // keyword-purple, translucent (was magenta)
 	sb_track_color       = sdl.Color{40, 40, 48, 255},
 	sb_thumb_color       = sdl.Color{90, 90, 100, 255},
 	sb_thumb_hover_color = sdl.Color{130, 130, 140, 255},
@@ -105,7 +124,7 @@ DEFAULT_THEME :: Theme {
 	status_bg_color      = sdl.Color{20, 20, 26, 255},
 	status_path_bg_color = sdl.Color{28, 28, 36, 255},
 	status_text_color    = sdl.Color{200, 200, 210, 255},
-	status_dim_color     = sdl.Color{120, 125, 140, 255},
+	status_dim_color     = sdl.Color{126, 132, 150, 255}, // unified muted gray (menus/finder/help match)
 	status_info_color    = sdl.Color{229, 192, 123, 255}, // gold — reload / config / etc.
 	status_error_color   = sdl.Color{220, 90, 90, 255}, // soft red for errors
 	status_warning_color = sdl.Color{218, 160, 70, 255}, // amber — warning diagnostics
@@ -129,6 +148,18 @@ theme_color :: proc(theme: ^Theme, kind: Token_Kind) -> sdl.Color {
 		return theme.comment_color
 	case .Function:
 		return theme.function_color
+	case .Md_Heading:
+		return theme.md_heading_color
+	case .Md_Bold, .Md_Italic, .Md_Strike:
+		return theme.md_emphasis_color
+	case .Md_Code:
+		return theme.md_code_color
+	case .Md_Link:
+		return theme.md_link_color
+	case .Md_Url:
+		return theme.md_url_color
+	case .Md_Marker:
+		return theme.md_marker_color
 	}
 	return theme.default_color
 }

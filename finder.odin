@@ -32,9 +32,9 @@ FINDER_DIM_BG       :: sdl.Color{0, 0, 0, 140}
 FINDER_PAGE_SIZE :: 200
 
 @(private="file")
-FINDER_PROMPT_COLOR :: sdl.Color{120, 125, 140, 255}
+FINDER_PROMPT_COLOR :: sdl.Color{126, 132, 150, 255} // unified muted gray
 @(private="file")
-FINDER_DIR_COLOR    :: sdl.Color{120, 125, 140, 255} // dim the directory portion of a path
+FINDER_DIR_COLOR    :: sdl.Color{126, 132, 150, 255} // dim the directory portion of a path
 
 g_finder_visible:  bool
 g_finder_query:    [dynamic]u8

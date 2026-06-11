@@ -83,7 +83,7 @@ MENU_BG_COLOR        :: sdl.Color{45, 45, 55, 255}
 MENU_BORDER_COLOR    :: sdl.Color{80, 82, 92, 255}
 MENU_HOVER_COLOR     :: sdl.Color{70, 95, 150, 255}
 MENU_TEXT_COLOR      :: sdl.Color{225, 225, 230, 255}
-MENU_DIM_COLOR       :: sdl.Color{140, 145, 160, 255}
+MENU_DIM_COLOR       :: sdl.Color{126, 132, 150, 255} // unified muted gray (matches status_dim)
 MENU_SEP_COLOR       :: sdl.Color{70, 72, 82, 255}
 
 MENU_PAD_X       :: 14.0

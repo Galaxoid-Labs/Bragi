@@ -10,7 +10,9 @@ package bragi
 // Save As "promotes" the buffer to a real file (clears is_scratch + the
 // in-memory snapshot), graduating the note into a normal file buffer.
 //
-// Plain text only (language = .None) — notes, not code.
+// Opens with Markdown highlighting (`language = .Markdown`) so notes look
+// nice — headings, lists, code spans, emphasis. Change language with
+// `:syntax <name>` like any buffer.
 
 SCRATCH_NAME :: "*scratch*"
 
@@ -40,7 +42,7 @@ scratch_open :: proc() {
 scratch_seed :: proc(ed: ^Editor) {
 	editor_set_text(ed, g_scratch_text)
 	ed.is_scratch = true
-	ed.language   = .None
+	ed.language   = .Markdown // notes render with Markdown highlighting
 	ed.mode       = .Normal
 	ed.dirty      = false
 	n := piece_buffer_len(&ed.buffer)

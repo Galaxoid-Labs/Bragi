@@ -128,6 +128,17 @@ string   = #98C379
 comment  = #5F6E82
 function = #61AFEF
 
+# Markdown — these inherit the syntax colors above by default (heading←
+# constant, emphasis←keyword, code←string, link←function, url←type,
+# marker←comment). Uncomment to override independently. Bold / italic /
+# strike share md_emphasis until styled fonts land.
+# md_heading  = #E5C07B
+# md_emphasis = #C678DD
+# md_code     = #98C379
+# md_link     = #61AFEF
+# md_url      = #5FC8DA
+# md_marker   = #5F6E82
+
 # Chrome
 bg              = #1E1E26
 cursor          = #F0C850
@@ -263,6 +274,22 @@ config_load :: proc() {
 		load_color(section, "string",   &g_config.theme.string_color)
 		load_color(section, "comment",  &g_config.theme.comment_color)
 		load_color(section, "function", &g_config.theme.function_color)
+
+		// Markdown colors inherit the current theme's syntax colors so they
+		// stay consistent with whatever palette the user runs (seed first,
+		// then apply any explicit md_* override).
+		g_config.theme.md_heading_color  = g_config.theme.constant_color
+		g_config.theme.md_emphasis_color = g_config.theme.keyword_color
+		g_config.theme.md_code_color     = g_config.theme.string_color
+		g_config.theme.md_link_color     = g_config.theme.function_color
+		g_config.theme.md_url_color      = g_config.theme.type_color
+		g_config.theme.md_marker_color   = g_config.theme.comment_color
+		load_color(section, "md_heading",  &g_config.theme.md_heading_color)
+		load_color(section, "md_emphasis", &g_config.theme.md_emphasis_color)
+		load_color(section, "md_code",     &g_config.theme.md_code_color)
+		load_color(section, "md_link",     &g_config.theme.md_link_color)
+		load_color(section, "md_url",      &g_config.theme.md_url_color)
+		load_color(section, "md_marker",   &g_config.theme.md_marker_color)
 		// Chrome.
 		load_color(section, "bg",              &g_config.theme.bg_color)
 		load_color(section, "cursor",          &g_config.theme.cursor_color)
