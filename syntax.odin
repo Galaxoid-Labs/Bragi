@@ -29,15 +29,27 @@ Token_Kind :: enum {
 	Md_Code,    // inline `code` and fenced ``` blocks
 	Md_Link,    // [link text]
 	Md_Url,     // (destination) / <autolink>
-	Md_Marker,  // structural punctuation: #, list bullets, >, ---, fences
+	Md_Marker,  // structural punctuation: #, list bullets, >, ---, fences, table pipes
+	Md_Task,    // a checked task-list box [x]
 }
 
-// State carried between lines for multi-line constructs (block comments;
-// Markdown fenced code blocks).
-Tokenizer_State :: enum u8 {
+// The per-line line state mode. C-family / INI tokenizers only ever use
+// Normal | Block_Comment; Markdown also uses Fenced_Code | Table.
+Tok_Mode :: enum u8 {
 	Normal,
 	Block_Comment,
 	Fenced_Code,
+	Table, // Markdown: inside a GFM pipe table (carries across body rows)
+}
+
+// State carried between lines for multi-line constructs. A struct (not a bare
+// enum) so a Markdown fenced block can remember its body language and that
+// embedded tokenizer's own mode, letting ```odin / ```c bodies highlight
+// across lines. The zero value is the Normal start state.
+Tokenizer_State :: struct {
+	mode:        Tok_Mode,
+	fence_lang:  Language, // mode == Fenced_Code: the ```lang (None → flat code)
+	fence_inner: Tok_Mode, // mode == Fenced_Code: embedded tokenizer's carried mode
 }
 
 Language :: enum {
@@ -53,6 +65,7 @@ Language :: enum {
 	Ini,
 	Bash,
 	Gdscript,
+	V,
 	Markdown,
 }
 
@@ -182,6 +195,27 @@ GO_TYPES := []string{
 }
 @(private="file")
 GO_CONSTANTS := []string{ "true", "false", "nil", "iota" }
+
+@(private="file")
+V_KEYWORDS := []string{
+	"as", "asm", "assert", "atomic", "break", "const", "continue", "defer",
+	"else", "enum", "fn", "for", "go", "goto", "if", "import", "in",
+	"interface", "is", "isreftype", "lock", "match", "module", "mut", "or",
+	"pub", "return", "rlock", "select", "shared", "sizeof", "spawn", "static",
+	"struct", "type", "typeof", "union", "unsafe", "volatile", "__global",
+	"__offsetof", "dump", "likely", "unlikely",
+}
+@(private="file")
+V_TYPES := []string{
+	"bool", "string", "rune", "byte", "char",
+	"i8", "i16", "int", "i64", "i128",
+	"u8", "u16", "u32", "u64", "u128",
+	"f32", "f64", "isize", "usize",
+	"voidptr", "byteptr", "charptr", "any",
+	"map", "chan", "thread",
+}
+@(private="file")
+V_CONSTANTS := []string{ "true", "false", "none", "nil" }
 
 @(private="file")
 JAI_KEYWORDS := []string{
@@ -414,6 +448,27 @@ g_specs := [Language]Language_Spec{
 		raw_string_quote    = '`',
 		detect_function_call = true,
 	},
+	.V       = Language_Spec{
+		name        = "v",
+		display_name = "V",
+		aliases     = []string{"vlang"},
+		extensions  = []string{".v", ".vsh", ".vv"},
+		keywords    = V_KEYWORDS,
+		types       = V_TYPES,
+		constants   = V_CONSTANTS,
+		line_comment        = "//",
+		block_open          = "/*",
+		block_close         = "*/",
+		double_quote_string = true,
+		// V single-quoted strings ('hi', '$name') — the single-quote scanner
+		// consumes the whole run, so they read as strings (like Bash/GDScript).
+		// V's char literal is the backtick rune, coloured via raw_string_quote.
+		single_quote_char   = true,
+		raw_string_quote    = '`',  // `a` rune literals → string-coloured
+		directive_prefix    = '$',  // $if / $else / $embed_file compile-time
+		capitalized_types    = true, // V types / structs are PascalCase
+		detect_function_call = true,
+	},
 	.Jai     = Language_Spec{
 		name        = "jai",
 		display_name = "Jai",
@@ -572,8 +627,8 @@ language_display_name :: proc(lang: Language) -> string {
 // Tokenize a single line. Returns tokens (in temp_allocator) and the state
 // the next line should resume from. For Language.None, returns no tokens.
 syntax_tokenize :: proc(lang: Language, line: []u8, state_in: Tokenizer_State) -> ([]Token, Tokenizer_State) {
-	if lang == .None do return nil, .Normal
-	if lang == .Ini  do return tokenize_ini(line), .Normal
+	if lang == .None do return nil, {}
+	if lang == .Ini  do return tokenize_ini(line), {}
 	if lang == .Markdown do return tokenize_markdown(line, state_in)
 	return tokenize_with_spec(line, state_in, &g_specs[lang])
 }
@@ -823,37 +878,130 @@ md_looks_like_url :: proc(line: []u8, start, end: int) -> bool {
 }
 
 @(private="file")
+md_count_pipes :: proc(line: []u8) -> int {
+	c := 0
+	for b in line do if b == '|' do c += 1
+	return c
+}
+
+// A GFM table delimiter row: only pipes / dashes / colons / spaces, with at
+// least one of each pipe + dash (e.g. `| --- | :--: |`).
+@(private="file")
+md_is_table_delim :: proc(line: []u8) -> bool {
+	n := len(line)
+	i := 0
+	for i < n && line[i] == ' ' do i += 1
+	if i >= n do return false
+	has_dash, has_pipe := false, false
+	for ; i < n; i += 1 {
+		switch line[i] {
+		case '-':            has_dash = true
+		case '|':            has_pipe = true
+		case ':', ' ', '\t': // allowed filler
+		case:                return false
+		}
+	}
+	return has_dash && has_pipe
+}
+
+// If line[from:] (after spaces) opens with a task-list box `[ ]` / `[x]`,
+// emit it and return the index past `]`. Otherwise return `from` unchanged.
+// Unchecked boxes are markers; checked ones get the Md_Task accent.
+@(private="file")
+md_emit_checkbox :: proc(tokens: ^[dynamic]Token, line: []u8, from, n: int) -> int {
+	i := from
+	for i < n && line[i] == ' ' do i += 1
+	if i + 2 < n && line[i] == '[' && line[i + 2] == ']' {
+		mid := line[i + 1]
+		if mid == ' ' || mid == 'x' || mid == 'X' {
+			checked := mid != ' '
+			append(tokens, Token{i, i + 3, checked ? .Md_Task : .Md_Marker})
+			return i + 3
+		}
+	}
+	return from
+}
+
+// The language of an opening fence's info string (```odin → .Odin), resolved
+// against the languages we actually tokenize. .None for a bare fence or an
+// unknown/unsupported tag (python, json, …) → body renders as flat code.
+@(private="file")
+md_fence_lang :: proc(line: []u8) -> Language {
+	n := len(line)
+	i := 0
+	for i < n && line[i] == ' ' do i += 1
+	if i >= n do return .None
+	fence := line[i]
+	for i < n && line[i] == fence do i += 1   // skip the ``` / ~~~ run
+	for i < n && (line[i] == ' ' || line[i] == '\t') do i += 1
+	start := i
+	for i < n && line[i] != ' ' && line[i] != '\t' do i += 1
+	if i <= start do return .None
+	if lang, ok := language_from_name(string(line[start:i])); ok do return lang
+	return .None
+}
+
+@(private="file")
 tokenize_markdown :: proc(line: []u8, state_in: Tokenizer_State) -> ([]Token, Tokenizer_State) {
 	tokens := make([dynamic]Token, 0, 8, context.temp_allocator)
 	n := len(line)
 
-	// Inside a fenced block: the whole line is code, until a closing fence
-	// (a marker) drops us back to Normal.
-	if state_in == .Fenced_Code {
+	// Inside a fenced block: a closing fence (a marker) ends it. Otherwise the
+	// body renders in the fence's language when we have a tokenizer for it
+	// (threading that tokenizer's own block-comment state across body lines),
+	// else as flat Md_Code.
+	if state_in.mode == .Fenced_Code {
 		if md_is_fence(line) {
 			append(&tokens, Token{0, n, .Md_Marker})
-			return tokens[:], .Normal
+			return tokens[:], {}
+		}
+		lang := state_in.fence_lang
+		if lang != .None && lang != .Markdown {
+			body, inner := syntax_tokenize(lang, line, {mode = state_in.fence_inner})
+			append(&tokens, ..body)
+			return tokens[:], {mode = .Fenced_Code, fence_lang = lang, fence_inner = inner.mode}
 		}
 		if n > 0 do append(&tokens, Token{0, n, .Md_Code})
-		return tokens[:], .Fenced_Code
+		return tokens[:], {mode = .Fenced_Code, fence_lang = lang, fence_inner = state_in.fence_inner}
 	}
 
 	// An opening fence flips us into Fenced_Code; the fence line (incl. an
-	// info string like ```odin) is a marker.
+	// info string like ```odin) is a marker. Resolve the body language now.
 	if md_is_fence(line) {
 		append(&tokens, Token{0, n, .Md_Marker})
-		return tokens[:], .Fenced_Code
+		return tokens[:], {mode = .Fenced_Code, fence_lang = md_fence_lang(line)}
 	}
 
 	// Leading whitespace (no token).
 	i := 0
 	for i < n && (line[i] == ' ' || line[i] == '\t') do i += 1
-	if i >= n do return tokens[:], .Normal
+	if i >= n do return tokens[:], {}
+
+	// GFM table. A row with ≥2 pipes starts/continues one; while inside a
+	// table a single pipe keeps it going (borderless rows). The delimiter
+	// row is all-marker; other rows colour each `|` and inline-parse cells.
+	pipes := md_count_pipes(line)
+	if pipes >= 2 || (state_in.mode == .Table && pipes >= 1) {
+		if md_is_table_delim(line) {
+			append(&tokens, Token{i, n, .Md_Marker})
+			return tokens[:], {mode = .Table}
+		}
+		prev := 0
+		for k := 0; k < n; k += 1 {
+			if line[k] == '|' {
+				md_inline(&tokens, line, prev, k)
+				append(&tokens, Token{k, k + 1, .Md_Marker})
+				prev = k + 1
+			}
+		}
+		md_inline(&tokens, line, prev, n)
+		return tokens[:], {mode = .Table}
+	}
 
 	// Horizontal rule.
 	if md_is_hr(line) {
 		append(&tokens, Token{i, n, .Md_Marker})
-		return tokens[:], .Normal
+		return tokens[:], {}
 	}
 
 	// ATX heading: 1–6 '#' then a space or end-of-line.
@@ -864,7 +1012,7 @@ tokenize_markdown :: proc(line: []u8, state_in: Tokenizer_State) -> ([]Token, To
 		if cnt <= 6 && (h >= n || line[h] == ' ' || line[h] == '\t') {
 			append(&tokens, Token{i, h, .Md_Marker})
 			if h < n do append(&tokens, Token{h, n, .Md_Heading})
-			return tokens[:], .Normal
+			return tokens[:], {}
 		}
 	}
 
@@ -874,7 +1022,7 @@ tokenize_markdown :: proc(line: []u8, state_in: Tokenizer_State) -> ([]Token, To
 		for q < n && (line[q] == '>' || line[q] == ' ') do q += 1
 		append(&tokens, Token{i, q, .Md_Marker})
 		md_inline(&tokens, line, q, n)
-		return tokens[:], .Normal
+		return tokens[:], {}
 	}
 
 	// List marker: -, *, + then a space; or ordered `1.` / `1)` then a space.
@@ -883,23 +1031,25 @@ tokenize_markdown :: proc(line: []u8, state_in: Tokenizer_State) -> ([]Token, To
 		c := line[i]
 		if (c == '-' || c == '*' || c == '+') && i + 1 < n && (line[i+1] == ' ' || line[i+1] == '\t') {
 			append(&tokens, Token{i, i + 1, .Md_Marker})
-			md_inline(&tokens, line, i + 1, n)
-			return tokens[:], .Normal
+			rest := md_emit_checkbox(&tokens, line, i + 1, n) // task list `- [ ]` / `- [x]`
+			md_inline(&tokens, line, rest, n)
+			return tokens[:], {}
 		}
 		if c >= '0' && c <= '9' {
 			j := i
 			for j < n && line[j] >= '0' && line[j] <= '9' do j += 1
 			if j < n && (line[j] == '.' || line[j] == ')') && j + 1 < n && (line[j+1] == ' ' || line[j+1] == '\t') {
 				append(&tokens, Token{i, j + 1, .Md_Marker})
-				md_inline(&tokens, line, j + 1, n)
-				return tokens[:], .Normal
+				rest := md_emit_checkbox(&tokens, line, j + 1, n)
+				md_inline(&tokens, line, rest, n)
+				return tokens[:], {}
 			}
 		}
 	}
 
 	// Plain paragraph — inline spans only.
 	md_inline(&tokens, line, i, n)
-	return tokens[:], .Normal
+	return tokens[:], {}
 }
 
 // Inline span scanner: code, strike, bold, italic, links, autolinks.
@@ -910,6 +1060,13 @@ md_inline :: proc(tokens: ^[dynamic]Token, line: []u8, start, n: int) {
 	i := start
 	for i < n {
 		b := line[i]
+
+		// Backslash escape: `\*`, `` \` ``, `\[`, … — the next char is literal,
+		// so skip both (no token) instead of letting it open a span.
+		if b == '\\' && i + 1 < n {
+			i += 2
+			continue
+		}
 
 		// Inline code: a run of N backticks closed by another run of N.
 		if b == '`' {
@@ -1057,7 +1214,7 @@ tokenize_with_spec :: proc(line: []u8, state_in: Tokenizer_State, spec: ^Languag
 	i := 0
 
 	// Resume an open block comment from the previous line.
-	if state == .Block_Comment {
+	if state.mode == .Block_Comment {
 		comment_start := 0
 		closed := false
 		for i < n {
@@ -1070,10 +1227,10 @@ tokenize_with_spec :: proc(line: []u8, state_in: Tokenizer_State, spec: ^Languag
 		}
 		if !closed {
 			append(&tokens, Token{0, n, .Comment})
-			return tokens[:], .Block_Comment
+			return tokens[:], {mode = .Block_Comment}
 		}
 		append(&tokens, Token{comment_start, i, .Comment})
-		state = .Normal
+		state.mode = .Normal
 	}
 
 	for i < n {
@@ -1101,7 +1258,7 @@ tokenize_with_spec :: proc(line: []u8, state_in: Tokenizer_State, spec: ^Languag
 			}
 			if !closed {
 				append(&tokens, Token{start, n, .Comment})
-				state = .Block_Comment
+				state.mode = .Block_Comment
 				break
 			}
 			append(&tokens, Token{start, i, .Comment})

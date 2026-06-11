@@ -28,6 +28,11 @@ A small, GPU-accelerated, vim-flavoured text/code editor written in
   you're editing — `.gitignore` is respected, so build dirs and
   `node_modules` stay out. Type to filter, Up/Down to move, Enter to
   open. Mouse double-click works too.
+- **Find in files** — Cmd/Ctrl+Shift+F runs a project-wide content search
+  (grep) powered by fff's live-grep engine, live as you type. Results list
+  `path:line` + the matched line with the match highlighted; Enter (or
+  double-click) opens the file and jumps to the match. Shares the finder's
+  warm project index.
 - **Workspace + file-tree sidebar** — open a folder (Cmd/Ctrl+Shift+O,
   `bragi <dir>`, `:cd <path>`, or drop a folder on the window) to set a
   project root. Cmd/Ctrl+E toggles a left file-tree sidebar (NERDTree
@@ -59,10 +64,13 @@ A small, GPU-accelerated, vim-flavoured text/code editor written in
   during the resize loop; the normal render loop on Linux, where it
   doesn't — drawing in the watch there would jam the event queue).
 - **Syntax highlighting** for **Odin**, **C**, **C++**, **Go**, **Jai**,
-  **Swift**, **Rust**, **GDScript**, **Bash** (and `.sh` / `.zsh`),
+  **Swift**, **Rust**, **V**, **GDScript**, **Bash** (and `.sh` / `.zsh`),
   **INI** (sections, keys, hex colors, booleans), **Markdown** (headings,
-  bold / italic / strike, inline + fenced code, links, lists, blockquotes,
-  rules), plus a **Generic** fallback (strings / numbers / `//` and
+  bold / italic / strike with real font styles, inline + fenced code (with
+  the fence body highlighted in its language — ```` ```odin ````, ```` ```c ````,
+  etc. for any language Bragi tokenizes), links, lists, task checkboxes,
+  blockquotes, rules, GFM tables, backslash escapes),
+  plus a **Generic** fallback (strings / numbers / `//` and
   `/* */` comments) for everything else. Detection by file extension;
   switch manually with `:syntax <name>`. Markdown colors are themeable
   (`[theme] md_*`) and inherit the base palette by default.
@@ -354,7 +362,7 @@ signature help on `(` with the active argument highlighted, hover info via
 than one location — and diagnostics as underlines plus a status-bar message
 on the cursor's line.
 
-**Formatting** — `Cmd`/`Ctrl+Shift+F`, `:fmt`, or right-click → *Format
+**Formatting** — `Cmd`/`Ctrl+Alt+F`, `:fmt`, or right-click → *Format
 Document* reformats the file through the server's formatter (jai-lsp; ols
 via its in-process `odin/printer` — no separate `odinfmt` binary needed).
 Applied as a single undo. Set `[lsp] format_on_save = true` to run it
@@ -389,6 +397,7 @@ jai          = /path/to/jai-lsp        # else: bundled → PATH
 odin         = /path/to/ols            # else: bundled → PATH
 jai_entry    = /path/to/main.jai       # jai-lsp's type-check entry (diagnostics)
 jai_compiler = /path/to/jai-macos      # → JAI_COMPILER, for jai diagnostics + rich hover
+odin_root    = /path/to/Odin           # → ODIN_ROOT, so ols resolves core:/vendor:
 format_on_save = false                 # run the LSP formatter on :w / Cmd+S
 ```
 
@@ -400,8 +409,11 @@ format_on_save = false                 # run the LSP formatter on :w / Cmd+S
   go-to-definition work without it (they use the workspace scan).
 - **Odin** completion/hover/def — including built-ins (`len`, `append`,
   `intrinsics`, …) via the bundled `builtin` folder — work out of the box.
-  Collection-aware features and diagnostics want an `ols.json` in the
-  workspace root and `odin` on `PATH` (ols's standard config — not bundled).
+  Resolving `core:` / `vendor:` imports (and the struct fields / locals that
+  depend on them) needs the Odin SDK: either put `odin` on `PATH` (ols
+  auto-detects the root) or set **`[lsp] odin_root`** to your Odin dir — it's
+  passed as `ODIN_ROOT`, so no `ols.json` is required for the common case.
+  Bragi hints once on the first `.odin` open if it can't find either.
 - **macOS Gatekeeper** SIGKILLs unsigned helper binaries on first spawn.
   Release `.app`s codesign the bundled servers under the app identity; a
   raw downloaded binary needs a one-time allow in System Settings →
@@ -451,6 +463,7 @@ n N                 next / prev match (wraps)
 :h  :help           open the categorised cheat sheet
 
 Cmd/Ctrl+F          fuzzy file finder
+Cmd/Ctrl+Shift+F    find in files (project-wide grep)
 Cmd/Ctrl+R          open recent (folders + files)
 Cmd/Ctrl+Shift+N    open the in-memory scratchpad
 Cmd/Ctrl+E          toggle the file-tree sidebar
@@ -458,7 +471,7 @@ Cmd/Ctrl+J          toggle the terminal pane
 gd                  go to definition (LSP, Normal mode)
 Cmd/Ctrl+click      go to definition at the clicked symbol
 Cmd/Ctrl+hover      underline a symbol + show hover info
-Cmd/Ctrl+Shift+F    format the document (LSP) · also :fmt
+Cmd/Ctrl+Alt+F      format the document (LSP) · also :fmt
 Ctrl+Space          invoke autocompletion (Insert mode)
 Tab / Enter         accept completion · Esc dismiss
 Cmd/Ctrl + = / -    zoom editor font in / out  (Cmd/Ctrl 0 resets)

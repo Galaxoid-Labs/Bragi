@@ -141,10 +141,11 @@ when ODIN_OS == .Darwin {
 	@(private = "file")
 	HELP_FILES := [?]Help_Entry {
 		{MOD + "+F", "fuzzy file finder (type to search the project · Up/Down · Enter opens)"},
+		{MOD + "+Shift+F", "find in files (project-wide grep · Enter jumps to the match)"},
 		{MOD + "+E", "toggle file-tree sidebar (j/k/h/l · Enter opens · i = hidden files)"},
 		{"gd", "go to definition (LSP, .jai in a workspace)"},
 		{MOD + "+Space", "autocompletion (Insert mode · Tab/Enter accept · Esc dismiss)"},
-		{MOD + "+Shift+F", "format document (LSP · also :fmt · [lsp] format_on_save)"},
+		{MOD + "+Alt+F", "format document (LSP · also :fmt · [lsp] format_on_save)"},
 		{MOD + "+Shift+O", "open a folder as the workspace (also :cd <path> · drop a folder)"},
 		{MOD + "+R", "open recent (folders + files · also :recent · Esc closes)"},
 		{MOD + "+Shift+N", "scratchpad (in-memory notes · also :scratch · Save As keeps it)"},
@@ -170,10 +171,11 @@ when ODIN_OS == .Darwin {
 	@(private = "file")
 	HELP_FILES := [?]Help_Entry {
 		{MOD + "+F", "fuzzy file finder (type to search the project · Up/Down · Enter opens)"},
+		{MOD + "+Shift+F", "find in files (project-wide grep · Enter jumps to the match)"},
 		{MOD + "+E", "toggle file-tree sidebar (j/k/h/l · Enter opens · i = hidden files)"},
 		{"gd", "go to definition (LSP, .jai in a workspace)"},
 		{MOD + "+Space", "autocompletion (Insert mode · Tab/Enter accept · Esc dismiss)"},
-		{MOD + "+Shift+F", "format document (LSP · also :fmt · [lsp] format_on_save)"},
+		{MOD + "+Alt+F", "format document (LSP · also :fmt · [lsp] format_on_save)"},
 		{MOD + "+Shift+O", "open a folder as the workspace (also :cd <path> · drop a folder)"},
 		{MOD + "+R", "open recent (folders + files · also :recent · Esc closes)"},
 		{MOD + "+Shift+N", "scratchpad (in-memory notes · also :scratch · Save As keeps it)"},

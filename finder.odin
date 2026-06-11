@@ -31,6 +31,11 @@ FINDER_DIM_BG       :: sdl.Color{0, 0, 0, 140}
 @(private="file")
 FINDER_PAGE_SIZE :: 200
 
+// Grep (find-in-files) tuning. page_limit caps matches returned; the time
+// budget keeps a live keystroke from stalling on a huge tree.
+@(private="file") GREP_PAGE_LIMIT     :: u32(500)
+@(private="file") GREP_TIME_BUDGET_MS :: u64(400)
+
 @(private="file")
 FINDER_PROMPT_COLOR :: sdl.Color{126, 132, 150, 255} // unified muted gray
 @(private="file")
@@ -72,12 +77,31 @@ FFF_EVENT :: i32(0x46464600) // "FFF\0" — wake code the worker pushes
 @(private="file") g_fff_indexed:  u32            // indexed file count (status)
 @(private="file") g_fff_results:  [dynamic]string // owned by the worker; latest matches
 
+// Grep (find-in-files) shares the same worker + instance as the file finder
+// (the two are mutually exclusive modals). The findall modal posts a query
+// here; the worker runs fff_live_grep and publishes Grep_Hits.
+@(private="file") g_fff_grep_req:     string          // owned; current grep query
+@(private="file") g_fff_grep_dirty:   bool
+@(private="file") g_fff_grep_active:  bool            // findall modal open → re-grep while scanning
+@(private="file") g_fff_grep_results: [dynamic]Grep_Hit // owned by the worker
+
+// One grep match, copied out of fff for the findall UI.
+Grep_Hit :: struct {
+	path:    string, // owned; relative to g_fff_root
+	line:    int,    // 1-based
+	col:     int,    // 0-based byte column of the match start
+	text:    string, // owned; the matched line's content
+	m_start: int,    // byte range of the (first) match within `text`, for highlight
+	m_end:   int,
+}
+
 Finder_Result :: struct {
 	path: string, // owned; relative to g_fff_root (e.g. "src/main.odin")
 }
 
 finder_show :: proc() {
-	recent_hide() // the finder and recents are mutually exclusive modals
+	recent_hide()  // mutually exclusive modals
+	findall_hide()
 	// Only (re)point the index when we resolve an indexable root. When we
 	// can't (no file open + cwd is $HOME/root, or the file sits loose in
 	// $HOME), we leave any existing index alone and the list shows a hint.
@@ -111,6 +135,7 @@ finder_destroy :: proc() {
 	}
 	if len(g_fff_req_query) > 0 do delete(g_fff_req_query)
 	if len(g_fff_req_file)  > 0 do delete(g_fff_req_file)
+	if len(g_fff_grep_req)  > 0 do delete(g_fff_grep_req)
 	if g_fff_sem != nil {
 		sdl.DestroySemaphore(g_fff_sem)
 		g_fff_sem = nil
@@ -301,12 +326,17 @@ fff_worker :: proc "c" (data: rawptr) -> c.int {
 		file  := strings.clone(g_fff_req_file)
 		dirty := g_fff_req_dirty
 		g_fff_req_dirty = false
+		grep_query  := strings.clone(g_fff_grep_req)
+		grep_dirty  := g_fff_grep_dirty
+		grep_active := g_fff_grep_active
+		g_fff_grep_dirty = false
 		sdl.UnlockMutex(g_fff_mutex)
 
 		now_scanning := fff_is_scanning(handle)
 
-		// Re-search when the query changed or the index is still growing.
-		if dirty || now_scanning {
+		// Re-search when the query changed or the index is still growing
+		// (skip the scan-driven refresh while the grep modal owns the worker).
+		if dirty || (now_scanning && !grep_active) {
 			qc := strings.clone_to_cstring(query)
 			fc: cstring
 			if len(file) > 0 do fc = strings.clone_to_cstring(file)
@@ -351,15 +381,66 @@ fff_worker :: proc "c" (data: rawptr) -> c.int {
 			sdl.UnlockMutex(g_fff_mutex)
 			fff_push_wake()
 		}
+
+		// Grep request (find-in-files): re-run on a new query, or while the
+		// index is still scanning so matches stream in as files get indexed.
+		if grep_dirty || (grep_active && now_scanning) {
+			local := make([dynamic]Grep_Hit)
+			if len(grep_query) > 0 {
+				gqc := strings.clone_to_cstring(grep_query)
+				defer delete(gqc)
+				// mode 0 (plain SIMD), smart_case on, our page + time caps.
+				gres := fff_live_grep(handle, gqc, 0, 0, 0, true, 0, GREP_PAGE_LIMIT, GREP_TIME_BUDGET_MS, 0, 0, false)
+				if gres != nil {
+					if gres.success && gres.handle != nil {
+						gr := cast(^FffGrepResult)gres.handle
+						count := fff_grep_result_get_count(gr)
+						for i in 0 ..< count {
+							m := fff_grep_result_get_match(gr, i)
+							if m == nil do continue
+							rel := fff_grep_match_get_relative_path(m)
+							if rel == nil do continue
+							txt := fff_grep_match_get_line_content(m)
+							hit := Grep_Hit {
+								path = strings.clone(string(rel)),
+								line = int(fff_grep_match_get_line_number(m)),
+								col  = int(fff_grep_match_get_col(m)),
+								text = strings.clone(txt != nil ? string(txt) : ""),
+							}
+							if fff_grep_match_get_match_ranges_count(m) > 0 {
+								if mr := fff_grep_match_get_match_range(m, 0); mr != nil {
+									hit.m_start = int(mr.start)
+									hit.m_end   = int(mr.end)
+								}
+							}
+							append(&local, hit)
+						}
+						fff_free_grep_result(gr)
+					}
+					fff_free_result(gres)
+				}
+			}
+			sdl.LockMutex(g_fff_mutex)
+			for h in g_fff_grep_results { delete(h.path); delete(h.text) }
+			delete(g_fff_grep_results)
+			g_fff_grep_results = local
+			sdl.UnlockMutex(g_fff_mutex)
+			fff_push_wake()
+		}
+
 		prev_scanning = now_scanning
 		delete(query)
 		delete(file)
+		delete(grep_query)
 	}
 
 	sdl.LockMutex(g_fff_mutex)
 	for s in g_fff_results do delete(s)
 	delete(g_fff_results)
 	g_fff_results = nil
+	for h in g_fff_grep_results { delete(h.path); delete(h.text) }
+	delete(g_fff_grep_results)
+	g_fff_grep_results = nil
 	sdl.UnlockMutex(g_fff_mutex)
 	fff_destroy(handle)
 	return 0
@@ -421,7 +502,6 @@ finder_on_fff_event :: proc() {
 }
 
 // (indexing?, files-indexed-so-far) for the status line.
-@(private="file")
 fff_index_status :: proc() -> (indexing: bool, files: u32) {
 	if g_fff_mutex == nil do return false, 0
 	sdl.LockMutex(g_fff_mutex)
@@ -432,9 +512,65 @@ fff_index_status :: proc() -> (indexing: bool, files: u32) {
 }
 
 // True once a root is set / worker running (vs. "no project to search").
-@(private="file")
 fff_has_root :: proc() -> bool {
 	return g_fff_thread != nil
+}
+
+// The current index root (borrowed). findall builds absolute paths from it.
+fff_current_root :: proc() -> string {
+	return g_fff_root
+}
+
+// ── Grep (find-in-files) glue — drives the shared worker from findall.odin ──
+
+// Open: ensure the instance is up for the project root, mark grep active so
+// the worker re-greps while the index is still scanning.
+grep_open :: proc() {
+	if root, ok := finder_compute_root(); ok {
+		fff_ensure_instance(root)
+		delete(root)
+	}
+	fff_ensure_sync()
+	if g_fff_mutex == nil do return
+	sdl.LockMutex(g_fff_mutex)
+	g_fff_grep_active = true
+	sdl.UnlockMutex(g_fff_mutex)
+}
+
+grep_close :: proc() {
+	if g_fff_mutex == nil do return
+	sdl.LockMutex(g_fff_mutex)
+	g_fff_grep_active = false
+	sdl.UnlockMutex(g_fff_mutex)
+}
+
+// Post a grep query (debounced via the dirty flag) and wake the worker.
+grep_request :: proc(query: string) {
+	if g_fff_mutex == nil do return
+	sdl.LockMutex(g_fff_mutex)
+	if len(g_fff_grep_req) > 0 do delete(g_fff_grep_req)
+	g_fff_grep_req = strings.clone(query)
+	g_fff_grep_dirty = true
+	sdl.UnlockMutex(g_fff_mutex)
+	if g_fff_sem != nil do sdl.SignalSemaphore(g_fff_sem)
+}
+
+// Copy the worker's latest grep hits into `dst` (freeing its prior contents).
+// Called from findall_on_fff_event on the main thread.
+grep_copy_results :: proc(dst: ^[dynamic]Grep_Hit) {
+	if g_fff_mutex == nil do return
+	for h in dst { delete(h.path); delete(h.text) }
+	clear(dst)
+	sdl.LockMutex(g_fff_mutex)
+	for h in g_fff_grep_results {
+		append(dst, Grep_Hit {
+			path = strings.clone(h.path),
+			line = h.line, col = h.col,
+			text = strings.clone(h.text),
+			m_start = h.m_start, m_end = h.m_end,
+		})
+	}
+	sdl.UnlockMutex(g_fff_mutex)
 }
 
 @(private="file")
@@ -612,15 +748,22 @@ draw_finder :: proc(l: Layout) {
 
 	indexing, idx_files := fff_index_status()
 
-	// Line 1: index root path (dim) + a live "indexing…" indicator while
-	// the background build/scan is in flight.
+	// Title row: "Find File" (left), context (right, dim) — the project name,
+	// or a live "indexing…" indicator while the background scan is in flight.
 	dir_y := r.y + FINDER_PAD
-	root_cstr := strings.clone_to_cstring(g_fff_root, context.temp_allocator)
-	rw := draw_text(root_cstr, r.x + FINDER_PAD, dir_y, FINDER_PROMPT_COLOR, MENU_BG_COLOR)
+	title_cstr := strings.clone_to_cstring("Find File", context.temp_allocator)
+	draw_text(title_cstr, r.x + FINDER_PAD, dir_y, MENU_TEXT_COLOR, MENU_BG_COLOR)
+	right: string
+	right_col := FINDER_PROMPT_COLOR
 	if indexing {
-		stat := fmt.tprintf("  ·  indexing… %d", idx_files)
-		sc := strings.clone_to_cstring(stat, context.temp_allocator)
-		draw_text(sc, r.x + FINDER_PAD + rw, dir_y, g_theme.status_info_color, MENU_BG_COLOR)
+		right = fmt.tprintf("indexing… %d", idx_files)
+		right_col = g_theme.status_info_color
+	} else if len(g_fff_root) > 0 {
+		right = path_basename(g_fff_root)
+	}
+	if len(right) > 0 {
+		rc := strings.clone_to_cstring(right, context.temp_allocator)
+		draw_text(rc, r.x + r.w - FINDER_PAD - ui_text_w(right), dir_y, right_col, MENU_BG_COLOR)
 	}
 
 	// Line 2: prompt + query + caret.

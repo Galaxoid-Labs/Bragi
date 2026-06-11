@@ -92,11 +92,11 @@ completion_prefix :: proc(ed: ^Editor) -> string {
 
 // ── triggering ──────────────────────────────────────────────────────
 
-completion_trigger :: proc(ed: ^Editor) {
+completion_trigger :: proc(ed: ^Editor, trigger := "") {
 	if !lsp_ready(ed.language) || ed.mode != .Insert do return
 	g_completion.anchor = completion_word_start(ed, ed.cursor)
 	g_completion.for_editor = g_active_idx
-	id, ok := lsp_completion_request(ed)
+	id, ok := lsp_completion_request(ed, trigger)
 	if !ok do return
 	g_completion.pending_id = id
 }
@@ -105,7 +105,7 @@ completion_trigger :: proc(ed: ^Editor) {
 completion_after_insert :: proc(ed: ^Editor, r: rune) {
 	if !lsp_ready(ed.language) do return
 	if r == '.' {
-		completion_trigger(ed)
+		completion_trigger(ed, ".") // member-access trigger char
 		return
 	}
 	if r < 128 && is_ident_byte(u8(r)) {

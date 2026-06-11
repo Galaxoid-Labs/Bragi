@@ -127,7 +127,8 @@ recent_show :: proc() {
 		set_status_message("no recent items", .Info)
 		return
 	}
-	finder_hide() // the finder and recents are mutually exclusive modals
+	finder_hide() // mutually exclusive modals
+	findall_hide()
 	g_recent_active  = 0
 	g_recent_scroll  = 0
 	g_recent_visible = true

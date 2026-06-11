@@ -87,6 +87,15 @@ FffCreateOptions :: struct {
 // to us (and we dodge any struct-alignment ABI hazards).
 FffSearchResult :: struct {} // opaque
 FffFileItem     :: struct {} // opaque
+FffGrepResult   :: struct {} // opaque
+FffGrepMatch    :: struct {} // opaque
+
+// Small, stable POD — a byte range within a matched line for highlighting.
+// Read directly (two u32s, 8 bytes); no ABI hazard.
+FffMatchRange :: struct {
+	start: u32,
+	end:   u32,
+}
 
 @(default_calling_convention = "c")
 foreign fff_lib {
@@ -128,8 +137,36 @@ foreign fff_lib {
 	fff_file_item_get_file_name         :: proc(item: ^FffFileItem) -> cstring ---
 	fff_file_item_get_git_status        :: proc(item: ^FffFileItem) -> cstring ---
 
+	// Content search (grep) across indexed files. Result `handle` is a
+	// ^FffGrepResult. `mode`: 0 plain (SIMD), 1 regex, 2 fuzzy.
+	fff_live_grep :: proc(
+		handle:               rawptr,
+		query:                cstring,
+		mode:                 u8,
+		max_file_size:        u64, // skip files larger than this (0 = 10 MB)
+		max_matches_per_file: u32, // 0 = unlimited
+		smart_case:           bool,
+		file_offset:          u32, // pagination (0 = start)
+		page_limit:           u32, // max matches returned (0 = default 50)
+		time_budget_ms:       u64, // wall-clock budget (0 = unlimited)
+		before_context:       u32,
+		after_context:        u32,
+		classify_definitions: bool,
+	) -> ^FffResult ---
+
+	// Grep result + match accessors (pointers borrowed from the result).
+	fff_grep_result_get_count :: proc(r: ^FffGrepResult) -> u32 ---
+	fff_grep_result_get_match :: proc(r: ^FffGrepResult, index: u32) -> ^FffGrepMatch ---
+	fff_grep_match_get_relative_path      :: proc(m: ^FffGrepMatch) -> cstring ---
+	fff_grep_match_get_line_content       :: proc(m: ^FffGrepMatch) -> cstring ---
+	fff_grep_match_get_line_number        :: proc(m: ^FffGrepMatch) -> u64 --- // 1-based
+	fff_grep_match_get_col                :: proc(m: ^FffGrepMatch) -> u32 --- // 0-based byte col
+	fff_grep_match_get_match_ranges_count :: proc(m: ^FffGrepMatch) -> u32 ---
+	fff_grep_match_get_match_range        :: proc(m: ^FffGrepMatch, index: u32) -> ^FffMatchRange ---
+
 	// Frees.
 	fff_free_result        :: proc(r: ^FffResult) ---
 	fff_free_search_result :: proc(r: ^FffSearchResult) ---
+	fff_free_grep_result   :: proc(r: ^FffGrepResult) ---
 	fff_free_string        :: proc(s: cstring) ---
 }

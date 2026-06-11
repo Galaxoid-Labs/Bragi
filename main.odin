@@ -69,6 +69,7 @@ Theme :: struct {
 	md_link_color:        sdl.Color,
 	md_url_color:         sdl.Color,
 	md_marker_color:      sdl.Color,
+	md_task_color:        sdl.Color, // checked task-list box [x]
 	// Chrome.
 	bg_color:             sdl.Color,
 	cursor_color:         sdl.Color,
@@ -110,6 +111,7 @@ DEFAULT_THEME :: Theme {
 	md_link_color        = sdl.Color{97, 175, 239, 255}, // blue — [link text]
 	md_url_color         = sdl.Color{95, 200, 218, 255}, // cyan — (destination) / <autolink>
 	md_marker_color      = sdl.Color{95, 110, 130, 255}, // muted — #, bullets, >, ---, fences
+	md_task_color        = sdl.Color{152, 195, 121, 255}, // green — checked task box [x]
 	bg_color             = sdl.Color{30, 30, 38, 255},
 	cursor_color         = sdl.Color{236, 196, 108, 255}, // gold (ties to constant; was neon yellow)
 	selection_color      = sdl.Color{70, 98, 156, 120}, // function-blue, translucent
@@ -160,6 +162,8 @@ theme_color :: proc(theme: ^Theme, kind: Token_Kind) -> sdl.Color {
 		return theme.md_url_color
 	case .Md_Marker:
 		return theme.md_marker_color
+	case .Md_Task:
+		return theme.md_task_color
 	}
 	return theme.default_color
 }
@@ -184,6 +188,7 @@ WELCOME_LINES :: [?]string {
 	"",
 	"i              start editing",
 	MOD + "+F          open file",
+	MOD + "+Shift+F    find in files",
 	MOD + "+Shift+O    open folder (workspace)",
 	MOD + "+R          open recent",
 	MOD + "+Shift+N    scratchpad",
@@ -270,6 +275,13 @@ g_renderer: ^sdl.Renderer
 g_window: ^sdl.Window
 g_font: ^ttf.Font // UI / chrome font (status bar, finder, help, menus)
 g_editor_font: ^ttf.Font // editor document + gutter font (zoomable via Cmd +/-)
+// Styled variants of g_editor_font, opened off the same source with SDL_ttf's
+// synthetic styles (no separate font files). Used for Markdown emphasis spans
+// (Md_Bold / Md_Italic / Md_Strike). nil → fall back to g_editor_font. Kept in
+// lock-step with g_editor_font's size/path via editor_style_fonts_reopen.
+g_editor_font_bold:   ^ttf.Font
+g_editor_font_italic: ^ttf.Font
+g_editor_font_strike: ^ttf.Font
 g_editor_font_size: f32 // current editor font size (logical px); Cmd +/-/0 adjust it
 g_terminal_font: ^ttf.Font // Nerd Font variant used by the terminal pane
 g_density: f32 // pixel density (1.0 non-retina, 2.0 retina)
@@ -652,6 +664,16 @@ draw_text :: proc(text: cstring, x, y: f32, fg, bg: sdl.Color, font: ^ttf.Font =
 	return w
 }
 
+// Width of `s` in the UI font (g_font), in logical px. For right-aligning
+// chrome labels (modal title bars, status counts).
+ui_text_w :: proc(s: string) -> f32 {
+	if len(s) == 0 do return 0
+	cstr := strings.clone_to_cstring(s, context.temp_allocator)
+	w: c.int
+	ttf.GetStringSize(g_font, cstr, 0, &w, nil)
+	return f32(w) / g_density
+}
+
 fill_rect :: proc(rect: sdl.FRect, color: sdl.Color) {
 	sdl.SetRenderDrawColor(g_renderer, color.r, color.g, color.b, color.a)
 	r := rect
@@ -698,10 +720,30 @@ count_display_cols :: proc(bytes: []u8) -> int {
 	return col
 }
 
-draw_segment :: proc(bytes: []u8, x, y: f32, fg, bg: sdl.Color) {
+draw_segment :: proc(bytes: []u8, x, y: f32, fg, bg: sdl.Color, font: ^ttf.Font = nil) {
 	if len(bytes) == 0 do return
+	f := font != nil ? font : g_editor_font
 	cstr := strings.clone_to_cstring(string(bytes), context.temp_allocator)
-	draw_text(cstr, x, y, fg, bg, g_editor_font)
+	draw_text(cstr, x, y, fg, bg, f)
+}
+
+// Render `bytes` one display-cell at a time at x + col*g_char_width, pinning
+// every glyph to the monospace grid even when the font's advance differs from
+// g_char_width. Used for synthetic-bold Markdown spans: SDL_ttf's emboldening
+// widens the advance, which otherwise drifts the run (and the cursor) right.
+// Loses ligatures within the run — a non-issue for bold prose.
+draw_segment_cells :: proc(bytes: []u8, x, y: f32, fg, bg: sdl.Color, font: ^ttf.Font) {
+	col := 0
+	i := 0
+	n := len(bytes)
+	for i < n {
+		size := utf8_lead_size(bytes[i])
+		if i + size > n do size = n - i
+		cx := x + f32(col) * g_char_width
+		draw_segment(bytes[i:i + size], cx, y, fg, bg, font)
+		col += 1
+		i += size
+	}
 }
 
 // Walk tokens + the gaps between them, drawing each as a separately-colored
@@ -720,7 +762,15 @@ draw_tokenized_line :: proc(bytes: []u8, tokens: []Token, x_origin, y: f32) {
 		}
 		seg := bytes[tok.start:tok.end]
 		x := x_origin + f32(cur_col) * g_char_width
-		draw_segment(seg, x, y, theme_color(&g_theme, tok.kind), g_theme.bg_color)
+		fg := theme_color(&g_theme, tok.kind)
+		font := editor_font_for_kind(tok.kind)
+		// Synthetic bold widens the advance; render it per cell so the run
+		// (and the cursor over it) stays pinned to the monospace grid.
+		if tok.kind == .Md_Bold {
+			draw_segment_cells(seg, x, y, fg, g_theme.bg_color, font)
+		} else {
+			draw_segment(seg, x, y, fg, g_theme.bg_color, font)
+		}
 		cur_col += count_display_cols(seg)
 		prev_end = tok.end
 	}
@@ -734,8 +784,8 @@ draw_tokenized_line :: proc(bytes: []u8, tokens: []Token, x_origin, y: f32) {
 // Walk from line 0 to `target_line` to compute the tokenizer state at the
 // start of `target_line`. O(n) per call; called once per draw frame.
 compute_state_at_line :: proc(ed: ^Editor, target_line: int) -> Tokenizer_State {
-	if ed.language == .None do return .Normal
-	state := Tokenizer_State.Normal
+	if ed.language == .None do return {}
+	state: Tokenizer_State // zero value = Normal start state
 	n := piece_buffer_len(&ed.buffer)
 	line := 0
 	line_start := 0
@@ -765,18 +815,24 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 	// own input loops and shouldn't acknowledge buffer-level messages.
 	if !g_finder_visible && !g_help_visible do clear_status_message()
 
-	// Cmd+F (macOS) / Ctrl+F (everywhere else) toggles the directory
-	// navigator. Detected before any modal/mode logic so it works
-	// from anywhere — even Insert mode.
-	// Cmd/Ctrl+Shift+F formats the document via the language server. Checked
-	// before the (Shift-less) finder chord so they don't collide.
-	if ev.key == sdl.K_F && ev.mod & (sdl.KMOD_GUI | sdl.KMOD_CTRL) != {} && shift_held(ev.mod) {
+	// The Cmd/Ctrl+F family, detected before any modal/mode logic so it works
+	// from anywhere (even Insert mode). Order matters — Alt/Shift variants are
+	// checked before the bare finder chord so they don't collide:
+	//   Cmd/Ctrl+Alt+F   → format document (LSP)
+	//   Cmd/Ctrl+Shift+F → find in files (grep)
+	//   Cmd/Ctrl+F       → fuzzy file finder
+	if ev.key == sdl.K_F && cmd_or_ctrl(ev.mod) && ev.mod & sdl.KMOD_ALT != {} {
 		if !lsp_format_request(ed, false) {
 			set_status_message("formatting not available for this file", .Info)
 		}
 		return
 	}
-	if ev.key == sdl.K_F && ev.mod & (sdl.KMOD_GUI | sdl.KMOD_CTRL) != {} && !shift_held(ev.mod) {
+	if ev.key == sdl.K_F && cmd_or_ctrl(ev.mod) && shift_held(ev.mod) {
+		if g_findall_visible do findall_hide()
+		else do findall_show()
+		return
+	}
+	if ev.key == sdl.K_F && cmd_or_ctrl(ev.mod) && !shift_held(ev.mod) {
 		if g_finder_visible do finder_hide()
 		else do finder_show()
 		return
@@ -820,6 +876,9 @@ handle_key_down :: proc(ed: ^Editor, ev: sdl.KeyboardEvent) {
 
 	// Open-Recent popup swallows every key while visible.
 	if recent_handle_key(ev) do return
+
+	// Find-in-files modal swallows every key while visible.
+	if findall_handle_key(ev) do return
 
 	// Finder modal swallows every key while visible.
 	if finder_handle_key(ev) do return
@@ -1105,6 +1164,7 @@ handle_text_input :: proc(ed: ^Editor, text: cstring) {
 	if text == nil do return
 	s := string(text)
 	if recent_handle_text(s) do return
+	if findall_handle_text(s) do return
 	if finder_handle_text(s) do return
 	if g_terminal_active && g_terminal_visible {
 		handle_terminal_text(s)
@@ -2118,6 +2178,47 @@ apply_ui_font_fallback :: proc() {
 EDITOR_FONT_MIN :: f32(6)
 EDITOR_FONT_MAX :: f32(72)
 
+// Open a styled variant of the editor font off the same source (config path
+// or embedded FiraCode) at the current size, applying an SDL_ttf synthetic
+// style (bold = algorithmic emboldening, italic = shear). nil on failure →
+// callers fall back to g_editor_font. Distinct handle → distinct text-cache
+// key, so styled and plain runs never collide.
+@(private="file")
+open_styled_editor_font :: proc(style: ttf.FontStyleFlags) -> ^ttf.Font {
+	f := open_font_path(g_config.editor_font.path, g_editor_font_size * g_density)
+	if f == nil do return nil
+	ttf.SetFontHinting(f, g_config.editor_font.hinting)
+	ttf.SetFontStyle(f, style)
+	return f
+}
+
+@(private="file")
+close_styled_editor_font :: proc(f: ^ttf.Font) {
+	if f != nil && f != g_font && f != g_editor_font do ttf.CloseFont(f)
+}
+
+// (Re)open the bold / italic / strikethrough editor-font handles to match
+// g_editor_font's current path + size. Call after g_editor_font is set.
+editor_style_fonts_reopen :: proc() {
+	close_styled_editor_font(g_editor_font_bold)
+	close_styled_editor_font(g_editor_font_italic)
+	close_styled_editor_font(g_editor_font_strike)
+	g_editor_font_bold   = open_styled_editor_font({.BOLD})
+	g_editor_font_italic = open_styled_editor_font({.ITALIC})
+	g_editor_font_strike = open_styled_editor_font({.STRIKETHROUGH})
+}
+
+// Pick the editor-font handle a token should render with. Only Markdown
+// emphasis kinds diverge; everything else uses the plain face.
+editor_font_for_kind :: proc(kind: Token_Kind) -> ^ttf.Font {
+	#partial switch kind {
+	case .Md_Bold:   if g_editor_font_bold   != nil do return g_editor_font_bold
+	case .Md_Italic: if g_editor_font_italic != nil do return g_editor_font_italic
+	case .Md_Strike: if g_editor_font_strike != nil do return g_editor_font_strike
+	}
+	return g_editor_font
+}
+
 // (Re)open g_editor_font at g_editor_font_size and recompute the editor
 // metrics. Closes the previous handle (unless it was aliased to g_font
 // as a fallback) and drops the texture cache so glyphs re-rasterize at
@@ -2134,6 +2235,7 @@ editor_font_reopen :: proc() {
 	}
 	g_char_width = measure_char_width(g_editor_font)
 	g_line_height = g_editor_font_size * g_config.editor.line_spacing
+	editor_style_fonts_reopen()
 	text_cache_clear()
 }
 
@@ -2166,6 +2268,7 @@ config_reload :: proc() {
 	}
 	g_char_width = measure_char_width(g_editor_font)
 	g_line_height = g_editor_font_size * g_config.editor.line_spacing
+	editor_style_fonts_reopen()
 
 	if old_edit != nil && old_edit != old_ui do ttf.CloseFont(old_edit)
 	if old_ui != nil do ttf.CloseFont(old_ui)
@@ -2541,6 +2644,7 @@ draw_frame :: proc() {
 	draw_menu()
 	draw_help(l)
 	draw_finder(l)
+	draw_findall(l)
 	draw_recent(l)
 	sdl.RenderPresent(g_renderer)
 }
@@ -2629,9 +2733,10 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 			editor_check_external_changes()
 		}
 		if ev.user.code == FFF_EVENT {
-			// fff index build thread: instance ready / scan progressed.
-			// Re-run the finder search so new files appear live.
+			// fff worker: index ready / scan progressed / new results. Refresh
+			// whichever search modal is open (they share the worker).
 			finder_on_fff_event()
+			findall_on_fff_event()
 		}
 		if ev.user.code == LSP_EVENT {
 			// A language-server reader thread queued messages — drain +
@@ -2656,7 +2761,7 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		// modal that owns text input, so it wins over sidebar focus — its
 		// search box must keep working even when the sidebar is focused
 		// (e.g. you opened a folder, then hit Cmd+F).
-		if g_sidebar_active && !g_finder_visible do return
+		if g_sidebar_active && !g_finder_visible && !g_findall_visible do return
 		if !cmd_or_ctrl(sdl.GetModState()) do handle_text_input(active_editor(), ev.text.text)
 	case .MOUSE_BUTTON_DOWN:
 		// Click the LSP status indicator → restart that server. Pad the hit
@@ -2673,6 +2778,8 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		}
 		// Open-Recent popup swallows clicks; outside dismisses, row opens.
 		if recent_handle_button(ev.button, l) do return
+		// Find-in-files modal swallows clicks; outside dismisses, dbl-click opens.
+		if findall_handle_button(ev.button, l) do return
 		// Finder modal swallows clicks; outside-click dismisses,
 		// inside-click selects (and double-click activates).
 		if finder_handle_button(ev.button, l) do return
@@ -2805,6 +2912,8 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		finder_handle_motion(ev.motion.x, ev.motion.y, l)
 		// Open-Recent row hover.
 		recent_handle_motion(ev.motion.x, ev.motion.y, l)
+		// Find-in-files row hover.
+		findall_handle_motion(ev.motion.x, ev.motion.y, l)
 
 		if cmd_or_ctrl(sdl.GetModState()) && !g_finder_visible {
 			hidx := pane_at_x(ev.motion.x, l)
@@ -2889,6 +2998,7 @@ process_event :: proc(ev: sdl.Event, l: Layout, running: ^bool) {
 		handle_mouse_motion(&g_editors[target], ev.motion, l.panes[target])
 	case .MOUSE_WHEEL:
 		if recent_handle_wheel(ev.wheel) do return
+		if findall_handle_wheel(ev.wheel) do return
 		if finder_handle_wheel(ev.wheel) do return
 		if g_help_visible {
 			line_h := g_config.font.size + HELP_LINE_GAP
@@ -3022,6 +3132,11 @@ main :: proc() {
 	g_editor_font_size = g_config.editor_font.size
 	editor_font_reopen()
 	defer if g_editor_font != nil && g_editor_font != g_font do ttf.CloseFont(g_editor_font)
+	defer {
+		close_styled_editor_font(g_editor_font_bold)
+		close_styled_editor_font(g_editor_font_italic)
+		close_styled_editor_font(g_editor_font_strike)
+	}
 
 	_ = sdl.StartTextInput(g_window)
 	defer {_ = sdl.StopTextInput(g_window)}
@@ -3048,6 +3163,7 @@ main :: proc() {
 		delete(g_editors)
 		delete(g_pane_ratios)
 		finder_destroy()
+		findall_destroy()
 		completion_destroy()
 		signature_destroy()
 		hover_destroy()

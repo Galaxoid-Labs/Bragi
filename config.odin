@@ -31,6 +31,7 @@ Lsp_Config :: struct {
 	odin_path:    string, // owned; override path to ols
 	jai_entry:    string, // owned; JAI_LSP_ENTRY_FILE override
 	jai_compiler: string, // owned; absolute path to the jai compiler → JAI_COMPILER env
+	odin_root:    string, // owned; the Odin SDK dir (core/, vendor/) → ODIN_ROOT env for ols
 	format_on_save: bool, // run textDocument/formatting before each interactive save
 }
 
@@ -98,15 +99,22 @@ smartcase    = false
 # automatically — leave jai / odin blank unless you want a custom build.
 # jai_compiler is the one thing NOT bundled: the absolute path to your Jai
 # compiler (e.g. .../jai/bin/jai-macos), passed to jai-lsp as JAI_COMPILER
-# for Jai diagnostics + typed hover. (Odin's equivalent is the odin compiler
-# on PATH + an ols.json in the workspace.) jai_entry optionally pins jai-lsp's
-# type-check to a specific entry .jai. Saving this file applies changes live.
-# format_on_save runs the language server's formatter (jai-lsp / ols) on :w
-# and Cmd/Ctrl+S — only for files whose server advertises formatting.
+# for Jai diagnostics + typed hover. jai_entry optionally pins jai-lsp's
+# type-check to a specific entry .jai.
+#
+# odin_root is the Odin equivalent: the Odin SDK directory (the one holding
+# core/ and vendor/), passed to ols as ODIN_ROOT so it resolves core:/vendor:
+# imports, struct fields, and locals — no ols.json needed for the common case.
+# Leave blank if the odin compiler is already on your PATH (ols auto-detects).
+#
+# Saving this file applies changes live. format_on_save runs the language
+# server's formatter (jai-lsp / ols) on :w and Cmd/Ctrl+S — only for files
+# whose server advertises formatting.
 jai            =
 odin           =
 jai_entry      =
 jai_compiler   =
+odin_root      =
 format_on_save = false
 
 [ui]
@@ -130,14 +138,15 @@ function = #61AFEF
 
 # Markdown — these inherit the syntax colors above by default (heading←
 # constant, emphasis←keyword, code←string, link←function, url←type,
-# marker←comment). Uncomment to override independently. Bold / italic /
-# strike share md_emphasis until styled fonts land.
+# marker←comment, task←string). Uncomment to override independently. Bold /
+# italic / strike share md_emphasis (rendered with synthetic font styles).
 # md_heading  = #E5C07B
 # md_emphasis = #C678DD
 # md_code     = #98C379
 # md_link     = #61AFEF
 # md_url      = #5FC8DA
 # md_marker   = #5F6E82
+# md_task     = #98C379
 
 # Chrome
 bg              = #1E1E26
@@ -284,12 +293,14 @@ config_load :: proc() {
 		g_config.theme.md_link_color     = g_config.theme.function_color
 		g_config.theme.md_url_color      = g_config.theme.type_color
 		g_config.theme.md_marker_color   = g_config.theme.comment_color
+		g_config.theme.md_task_color     = g_config.theme.string_color
 		load_color(section, "md_heading",  &g_config.theme.md_heading_color)
 		load_color(section, "md_emphasis", &g_config.theme.md_emphasis_color)
 		load_color(section, "md_code",     &g_config.theme.md_code_color)
 		load_color(section, "md_link",     &g_config.theme.md_link_color)
 		load_color(section, "md_url",      &g_config.theme.md_url_color)
 		load_color(section, "md_marker",   &g_config.theme.md_marker_color)
+		load_color(section, "md_task",     &g_config.theme.md_task_color)
 		// Chrome.
 		load_color(section, "bg",              &g_config.theme.bg_color)
 		load_color(section, "cursor",          &g_config.theme.cursor_color)
@@ -316,6 +327,7 @@ config_load :: proc() {
 		load_string(section, "odin",         &g_config.lsp.odin_path)
 		load_string(section, "jai_entry",    &g_config.lsp.jai_entry)
 		load_string(section, "jai_compiler", &g_config.lsp.jai_compiler)
+		load_string(section, "odin_root",    &g_config.lsp.odin_root)
 		load_bool(section,   "format_on_save", &g_config.lsp.format_on_save)
 	}
 }

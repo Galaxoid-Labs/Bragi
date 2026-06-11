@@ -94,10 +94,47 @@ lsp_on_editor_opened :: proc(ed: ^Editor) {
 		g_jai_compiler_hinted = true
 		set_status_message("Jai diagnostics + typed hover need [lsp] jai_compiler — run :config to set it", .Info)
 	}
+
+	// ols resolves core:/vendor: imports (and thus fields / locals) from the
+	// Odin SDK root. If we can't find it (no [lsp] odin_root, no ODIN_ROOT in
+	// the env, no `odin` on PATH), hint once.
+	if ed.language == .Odin && !lsp_odin_root_resolvable() && !g_odin_root_hinted {
+		g_odin_root_hinted = true
+		set_status_message("Odin completion needs the Odin SDK — set [lsp] odin_root (run :config) or put `odin` on PATH", .Info)
+	}
 }
 
 @(private="file")
 g_jai_compiler_hinted: bool
+@(private="file")
+g_odin_root_hinted: bool
+
+// True if ols can locate the Odin SDK without us configuring it: an explicit
+// [lsp] odin_root, an ODIN_ROOT in the environment, or `odin` on PATH (ols
+// shells out to `odin root` to find core/vendor). Gates the one-time hint so
+// we don't nag users who already have Odin set up.
+@(private="file")
+lsp_odin_root_resolvable :: proc() -> bool {
+	if len(g_config.lsp.odin_root) > 0 do return true
+	if len(os.get_env("ODIN_ROOT", context.temp_allocator)) > 0 do return true
+	return lsp_binary_on_path("odin")
+}
+
+// Scan PATH for an executable named `name` (`name.exe` on Windows).
+@(private="file")
+lsp_binary_on_path :: proc(name: string) -> bool {
+	path := os.get_env("PATH", context.temp_allocator)
+	if len(path) == 0 do return false
+	sep := ODIN_OS == .Windows ? ";" : ":"
+	exe := name
+	when ODIN_OS == .Windows do exe = fmt.tprintf("%s.exe", name)
+	for dir in strings.split(path, sep, context.temp_allocator) {
+		if len(dir) == 0 do continue
+		joiner := (strings.has_suffix(dir, "/") || strings.has_suffix(dir, "\\")) ? "" : (ODIN_OS == .Windows ? "\\" : "/")
+		if os.exists(fmt.tprintf("%s%s%s", dir, joiner, exe)) do return true
+	}
+	return false
+}
 
 // Called as a pane/editor is torn down (editor.odin), before file_path is freed.
 lsp_on_editor_closed :: proc(ed: ^Editor) {
@@ -300,6 +337,13 @@ lsp_client_start :: proc(lang: Language, root: string) -> ^LSP_Client {
 		}
 	}
 
+	// The Odin SDK dir → ODIN_ROOT so ols resolves core:/vendor: imports
+	// (and thus struct fields / locals) without an ols.json. Unset → ols
+	// falls back to ODIN_ROOT in the env or `odin` on PATH.
+	if lang == .Odin && len(g_config.lsp.odin_root) > 0 {
+		append(&env, fmt.tprintf("ODIN_ROOT=%s", g_config.lsp.odin_root))
+	}
+
 	// A Finder/Applications-launched .app inherits a stripped PATH. The
 	// servers (and the compilers they shell out to — jai's linker, odin)
 	// need a real PATH or typed hover / diagnostics silently fail while
@@ -311,6 +355,10 @@ lsp_client_start :: proc(lang: Language, root: string) -> ^LSP_Client {
 			if d := lsp_dir_of(g_config.lsp.jai_compiler); len(d) > 0 {
 				path = fmt.tprintf("%s:%s", d, path)
 			}
+		}
+		// Put the Odin SDK dir on PATH so ols can shell out to `odin`.
+		if lang == .Odin && len(g_config.lsp.odin_root) > 0 {
+			path = fmt.tprintf("%s:%s", g_config.lsp.odin_root, path)
 		}
 		append(&env, fmt.tprintf("PATH=%s", path))
 	}
@@ -526,15 +574,25 @@ lsp_ready :: proc(lang: Language) -> bool {
 
 // Send textDocument/completion at the editor's cursor. Returns the request
 // id (correlate the response by it) and whether it was sent.
-lsp_completion_request :: proc(ed: ^Editor) -> (id: i64, ok: bool) {
+// `trigger` is the character that fired completion (e.g. "." for member
+// access), or "" when invoked by typing an identifier / Ctrl+Space. It's
+// sent as the LSP CompletionContext so the server can branch member-vs-scope.
+lsp_completion_request :: proc(ed: ^Editor, trigger := "") -> (id: i64, ok: bool) {
 	c := g_lsp_clients[ed.language]
 	if c == nil || c.state != .Ready do return 0, false
 	lsp_flush_pending_change(ed)
 	line, ch := lsp_byte_to_pos(ed, ed.cursor)
 	uri := lsp_path_to_uri(ed.file_path)
+	// CompletionContext: triggerKind 2 (TriggerCharacter) + the char, else
+	// 1 (Invoked). The `ctx` braces are literal JSON (it's a %s arg, not part
+	// of the outer format string).
+	ctx := `,"context":{"triggerKind":1}`
+	if len(trigger) > 0 {
+		ctx = fmt.tprintf(`,"context":{{"triggerKind":2,"triggerCharacter":"%s"}}`, trigger)
+	}
 	params := fmt.tprintf(
-		`{{"textDocument":{{"uri":"%s"}},"position":{{"line":%d,"character":%d}}}}`,
-		uri, line, ch,
+		`{{"textDocument":{{"uri":"%s"}},"position":{{"line":%d,"character":%d}}%s}}`,
+		uri, line, ch, ctx,
 	)
 	return lsp_send_request(c, "textDocument/completion", params), true
 }

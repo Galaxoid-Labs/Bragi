@@ -407,7 +407,7 @@ draw_hover :: proc(ed: ^Editor, p: Pane_Layout) {
 draw_code_line :: proc(lang: Language, line: string, x, y: f32, bg: sdl.Color) -> f32 {
 	if len(line) == 0 do return 0
 	bytes := transmute([]u8)line
-	tokens, _ := syntax_tokenize(lang, bytes, .Normal)
+	tokens, _ := syntax_tokenize(lang, bytes, {})
 	default_fg := theme_color(&g_theme, .Default)
 	// Position per-column (monospace), NOT by draw_text's returned width:
 	// a segment ending in spaces returns less than its advance, which would

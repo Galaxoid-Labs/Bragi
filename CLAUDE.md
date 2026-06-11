@@ -82,15 +82,22 @@ Both have identical advance width so cell math is unchanged.
   ex commands. Modes: `Insert`, `Normal`, `Visual`, `Visual_Line`,
   `Command`, `Search`.
 - **`syntax.odin`** — Per-language tokenizers (Odin / C / C++ / Go /
-  Jai / Swift / Rust / GDScript / Bash / INI / Markdown / Generic / None).
+  Jai / Swift / Rust / V / GDScript / Bash / INI / Markdown / Generic / None).
   Most go through `tokenize_with_spec`; INI and **Markdown** have their own
   dedicated tokenizers (markup / config don't fit the C-family
-  `Language_Spec`). `tokenize_markdown` is line-oriented + inline spans and
-  carries `Tokenizer_State.Fenced_Code` across lines for ``` blocks. Its
-  `Md_*` token kinds keep bold / italic / strike distinct (so a future
-  font-style pass needs no tokenizer change) even though they share
-  `md_emphasis_color`. The `md_*` theme colors **inherit** the base syntax
-  colors at config-load time (overridable per key).
+  `Language_Spec`). `tokenize_markdown` is line-oriented + inline spans.
+  `Tokenizer_State` is a **struct** (`mode` + `fence_lang` + `fence_inner`),
+  not a bare enum, so a fenced block remembers its body language and that
+  embedded tokenizer's own block-comment mode — letting ```` ```odin ````/
+  ```` ```c ```` bodies highlight in their language across lines (via a
+  recursive `syntax_tokenize` call; unknown/unsupported tags fall back to flat
+  `Md_Code`). `mode` also carries `Fenced_Code` / `Table` across lines. Covers
+  headings, emphasis, inline + fenced code, links/autolinks, lists, task
+  checkboxes (`- [ ]`/`- [x]` → `Md_Task`), blockquotes, rules, tables, and
+  backslash escapes. The `Md_*` token kinds keep bold / italic / strike
+  distinct and drive real font styles (see the globals + roadmap notes). The
+  `md_*` theme colors **inherit** the base syntax colors at config-load time
+  (overridable per key).
 - **`menu.odin`** — Right-click context menu.
 - **`help.odin`** — `:h` / `:help` modal cheat-sheet.
 - **`finder.odin`** — Cmd/Ctrl+F project-wide fuzzy file picker, backed
@@ -111,10 +118,23 @@ Both have identical advance width so cell math is unchanged.
   stream in live and the "indexing… N files" status updates — without ever
   blocking input. A root change / shutdown tears the worker down
   (`fff_teardown`: set quit, signal sem, `WaitThread`; the worker frees the
-  instance + results on exit).
+  instance + results on exit). The same worker also serves the find-in-files
+  **grep** path (`g_fff_grep_*` + the `grep_*` procs); the file finder and
+  findall are mutually exclusive modals sharing one warm instance.
+- **`findall.odin`** — Cmd/Ctrl+Shift+F **find-in-files** (project-wide
+  content search). Finder-styled centered modal, live as you type: each
+  keystroke calls `grep_request`, the shared fff worker runs `fff_live_grep`
+  and publishes `Grep_Hit`s (path / line / col / line text / match range),
+  `findall_on_fff_event` copies them in. Rows show `path:line` + the matched
+  line with the match span highlighted; Enter/dbl-click → `open_file_smart` +
+  jump to (line, col). (Format Document moved to Cmd/Ctrl+Alt+F to free the
+  Shift+F chord.)
 - **`fff.odin`** — Foreign bindings for the fff C library
-  (`vendor/fff/fff.h`). Subset: instance lifecycle, `fff_search` +
-  result accessors, frees. Links the vendored per-arch
+  (`vendor/fff/fff.h`). Subset: instance lifecycle, `fff_search` + result
+  accessors, **`fff_live_grep` + grep-match accessors**, frees. (fff is a
+  full code-search engine — fuzzy files/dirs/mixed, live + multi grep,
+  frecency, git status; we bind the file-search + grep slices.) Links the
+  vendored per-arch
   `libfff_c-*-{darwin,linux}.{dylib,so}` on macOS/Linux and
   `vendor/fff/fff_c.lib` on Windows. See `vendor/fff/README.md` for the
   install_name / import-lib fixups.
@@ -189,7 +209,13 @@ Both have identical advance width so cell math is unchanged.
   (dev: `vendor/odin-lsp/builtin`; macOS `.app`; Windows beside `ols.exe`)
   then `<ols-dir>/../lib/bragi/builtin` (packaged Linux libdir). Skipped if
   ols came off PATH (no dir to anchor on); the packaging scripts ship the
-  folder beside/near the binary on every platform.
+  folder beside/near the binary on every platform. `[lsp] odin_root` →
+  `ODIN_ROOT` (+ prepended to the child PATH on POSIX) lets ols resolve
+  `core:`/`vendor:` imports — and the struct fields / locals that depend on
+  them — without an `ols.json`; `lsp_on_editor_opened` hints once on the
+  first `.odin` open if it's unresolvable (`lsp_odin_root_resolvable`: no
+  config, no `ODIN_ROOT` env, no `odin` on PATH). Mirrors the jai-lsp
+  `jai_compiler` → `JAI_COMPILER` + first-open hint.
   Teardown mirrors `fff_teardown` (quit flag, close stdin to EOF the
   reader, `WaitThread`, reap).
 - **`lsp_posix.odin`** / **`lsp_windows.odin`** — process spawn with
@@ -283,6 +309,9 @@ sentinel that forces full rebuild on next read.
   → `editor_font_zoom` / `editor_font_reset` → `editor_font_reopen`,
   which reopens it at `g_editor_font_size`, recomputes the editor
   metrics, and drops the text cache. `g_terminal_font` is the Nerd Font.
+  `g_editor_font_{bold,italic,strike}` are synthetic-styled siblings of
+  `g_editor_font` for Markdown emphasis (see the styled-Markdown roadmap
+  note); reopened alongside it by `editor_style_fonts_reopen`.
 - `g_renderer`, `g_window` — SDL3 handles.
 - `g_density` — `GetWindowPixelDensity` result.
 - `g_char_width`, `g_line_height` — **editor-font** monospace metrics
@@ -480,10 +509,17 @@ path, and gravity alone fixed it.
 - **Comment toggle** (`gc`) — language-aware; needs per-`Language`
   comment metadata.
 - **More tokenizers** — Python, JSON, Zig, TS/JS. (Markdown shipped.)
-- **Styled Markdown** — real bold / italic font faces (the `Md_Bold` /
-  `Md_Italic` / `Md_Strike` kinds already distinguish the spans; needs
-  bold/italic font loading + a per-token style attribute through the
-  text cache + draw path, and custom-font users supplying extra faces).
+- **Styled Markdown (shipped, synthetic)** — `Md_Bold` / `Md_Italic` /
+  `Md_Strike` render with `g_editor_font_{bold,italic,strike}`, opened off
+  the same source as `g_editor_font` via SDL_ttf synthetic styles
+  (`SetFontStyle {.BOLD}/{.ITALIC}/{.STRIKETHROUGH}`) — no extra font files.
+  `editor_font_for_kind` picks the handle per token; `draw_segment` takes a
+  `font` arg. Kept in lock-step with the editor font by
+  `editor_style_fonts_reopen` (called from `editor_font_reopen` + `config_reload`).
+  Caveat: italic is a shear (advance preserved → aligns); synthetic **bold**
+  can widen the glyph advance, and the layout positions by cell
+  (`cur_col * g_char_width`), so long bold runs may drift. If that bites,
+  ship a real `FiraCode-Bold.ttf` (same advance) for the bold handle.
 - **Untitled-buffer Save flow** — Cmd+W on dirty untitled prompts
   Save / Discard / Cancel; clicking Save fires the dialog but doesn't
   auto-close the pane on success (Cmd+Q already does).
