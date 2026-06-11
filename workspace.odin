@@ -45,6 +45,9 @@ set_workspace :: proc(path: string) -> bool {
 	// and refresh the file tree for the new root.
 	finder_set_workspace_root(g_workspace_root)
 	sidebar_on_workspace_changed()
+	// Overlay this project's bragi.ini [lsp] section before the LSP teardown
+	// below, so the servers respawn against the project's jai_entry/compiler.
+	project_config_apply()
 	lsp_on_workspace_changed()
 	return true
 }

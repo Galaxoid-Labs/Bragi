@@ -3,6 +3,7 @@ package bragi
 import "core:encoding/ini"
 import "core:fmt"
 import "core:os"
+import "core:path/filepath"
 import "core:strconv"
 import "core:strings"
 import sdl "vendor:sdl3"
@@ -329,6 +330,92 @@ config_load :: proc() {
 		load_string(section, "jai_compiler", &g_config.lsp.jai_compiler)
 		load_string(section, "odin_root",    &g_config.lsp.odin_root)
 		load_bool(section,   "format_on_save", &g_config.lsp.format_on_save)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Per-project config: <workspace_root>/bragi.ini
+// ──────────────────────────────────────────────────────────────────
+//
+// The effective g_config.lsp is the global config.ini [lsp] section overlaid
+// with the active workspace's bragi.ini [lsp] section — project values win.
+// jai_entry especially belongs here: it names a file *inside* the workspace,
+// so a global setting would leak one project's entry file into every other.
+// Only the [lsp] section is honored for now; editor/theme overrides can follow
+// the same overlay pattern later.
+
+@(private="file")
+g_global_lsp: Lsp_Config // snapshot of the global [lsp] config, sans project overlay
+
+lsp_config_clone :: proc(src: Lsp_Config) -> Lsp_Config {
+	return Lsp_Config{
+		jai_path       = strings.clone(src.jai_path),
+		odin_path      = strings.clone(src.odin_path),
+		jai_entry      = strings.clone(src.jai_entry),
+		jai_compiler   = strings.clone(src.jai_compiler),
+		odin_root      = strings.clone(src.odin_root),
+		format_on_save = src.format_on_save,
+	}
+}
+
+lsp_config_free :: proc(c: ^Lsp_Config) {
+	delete(c.jai_path)
+	delete(c.odin_path)
+	delete(c.jai_entry)
+	delete(c.jai_compiler)
+	delete(c.odin_root)
+	c^ = {}
+}
+
+// Snapshot the just-loaded global [lsp] config as the baseline that project
+// overlays sit on top of. Call right after config_load().
+config_capture_global_lsp :: proc() {
+	lsp_config_free(&g_global_lsp)
+	g_global_lsp = lsp_config_clone(g_config.lsp)
+}
+
+// Reset g_config.lsp to the global baseline, then overlay the active
+// workspace's bragi.ini [lsp] section (if present). Idempotent — safe to call
+// on every workspace change. Callers that want servers to pick up the change
+// must restart them (set_workspace does, via lsp_on_workspace_changed).
+project_config_apply :: proc() {
+	lsp_config_free(&g_config.lsp)
+	g_config.lsp = lsp_config_clone(g_global_lsp)
+
+	if len(g_workspace_root) == 0 do return
+	path, _ := filepath.join({g_workspace_root, "bragi.ini"}, context.temp_allocator)
+	if !os.exists(path) do return
+	m, _, ok := ini.load_map_from_path(path, context.temp_allocator)
+	if !ok {
+		fmt.eprintfln("project config: failed to parse %s", path)
+		return
+	}
+	section, has := m["lsp"]
+	if !has do return
+
+	overlay_string(section, "jai",          &g_config.lsp.jai_path)
+	overlay_string(section, "odin",         &g_config.lsp.odin_path)
+	overlay_string(section, "jai_entry",    &g_config.lsp.jai_entry)
+	overlay_string(section, "jai_compiler", &g_config.lsp.jai_compiler)
+	overlay_string(section, "odin_root",    &g_config.lsp.odin_root)
+	load_bool(section, "format_on_save", &g_config.lsp.format_on_save)
+
+	// A relative jai_entry resolves against the workspace root — the natural
+	// way to write it in a project file (`jai_entry = src/main.jai`).
+	if e := g_config.lsp.jai_entry; len(e) > 0 && !filepath.is_abs(e) {
+		abs, _ := filepath.join({g_workspace_root, e}, context.temp_allocator)
+		delete(g_config.lsp.jai_entry)
+		g_config.lsp.jai_entry = strings.clone(abs)
+	}
+}
+
+// Like load_string but frees the previous (cloned) value first, so overlaying
+// onto an already-populated config doesn't leak.
+@(private="file")
+overlay_string :: proc(section: map[string]string, key: string, dest: ^string) {
+	if v, ok := section[key]; ok {
+		delete(dest^)
+		dest^ = strings.clone(strings.trim_space(v))
 	}
 }
 

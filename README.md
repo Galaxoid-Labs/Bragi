@@ -359,8 +359,15 @@ matching server, one process per language:
 signature help on `(` with the active argument highlighted, hover info via
 `Cmd`/`Ctrl`-hover (also underlines the symbol), go-to-definition with
 `gd` or `Cmd`/`Ctrl`-click — a chooser pops when a symbol resolves to more
-than one location — and diagnostics as underlines plus a status-bar message
-on the cursor's line.
+than one location — and **diagnostics**.
+
+**Diagnostics** show up four ways: a severity-colored `<--` marker at the
+end of each error/warning line, a matching bar on the line-number rail (spot
+problems while scrolling), the full message in the status bar when the cursor
+is on that line, and an always-visible `N err / M warn` count in the status
+bar. Errors are red, warnings amber. (Note jai-lsp publishes lexer errors
+live as you type but real type-check errors only on **save**, and only once a
+`jai_entry` is set — see per-project config below; ols publishes on save.)
 
 **Formatting** — `Cmd`/`Ctrl+Alt+F`, `:fmt`, or right-click → *Format
 Document* reformats the file through the server's formatter (jai-lsp; ols
@@ -400,6 +407,28 @@ jai_compiler = /path/to/jai-macos      # → JAI_COMPILER, for jai diagnostics +
 odin_root    = /path/to/Odin           # → ODIN_ROOT, so ols resolves core:/vendor:
 format_on_save = false                 # run the LSP formatter on :w / Cmd+S
 ```
+
+### Per-project config (`bragi.ini`)
+
+Some settings are inherently per-project — `jai_entry` especially, since it
+names a file *inside* a specific workspace. Drop a **`bragi.ini`** at the
+workspace root and its `[lsp]` section **overrides** the global `config.ini`
+for that project:
+
+```ini
+# <workspace>/bragi.ini
+[lsp]
+jai_entry      = src/main.jai   # relative paths resolve against the workspace root
+jai_compiler   = /path/to/jai-macos
+format_on_save = true
+```
+
+Loaded when the folder opens as the workspace (Open Folder, `bragi <dir>`,
+`:cd`, or a dropped folder); the language server respawns to pick it up. All
+`[lsp]` keys are overridable. Setting `jai_entry` is what flips jai-lsp out of
+standalone mode into full type-checking, so it's the key that unlocks compiler
+diagnostics on save. (Editing `bragi.ini` mid-session currently needs a
+re-open of the folder to re-apply.)
 
 ### Caveats
 

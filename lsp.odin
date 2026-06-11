@@ -170,6 +170,19 @@ lsp_diagnostics_for :: proc(path: string) -> []LSP_Diagnostic {
 	return nil
 }
 
+// Count error (severity 1) and warning (severity 2) diagnostics for a file.
+// Hints / info (3, 4 — e.g. ols's unused-import notes) don't count toward the
+// status-bar badge so routine editing noise doesn't read as a problem.
+lsp_diag_counts :: proc(path: string) -> (errors, warnings: int) {
+	for d in lsp_diagnostics_for(path) {
+		switch d.severity {
+		case 1: errors += 1
+		case 2: warnings += 1
+		}
+	}
+	return
+}
+
 @(private="file")
 lsp_set_diagnostics :: proc(path: string, diags: []LSP_Diagnostic) {
 	if old, ok := g_lsp_diagnostics[path]; ok {
@@ -411,6 +424,10 @@ lsp_client_stop :: proc(c: ^LSP_Client) {
 	lsp_proc_kill(c.pipes.pid)
 
 	g_lsp_clients[c.lang] = nil
+	// Drop the diagnostics this server published — a stopped/restarting server's
+	// underlines shouldn't linger until the respawn re-publishes (and a server
+	// that accumulated a stale pile gets a clean slate).
+	for path in c.docs do lsp_set_diagnostics(path, nil)
 	for _, m in c.pending do delete(m)
 	delete(c.pending)
 	for k in c.docs do delete(k)
@@ -983,6 +1000,13 @@ lsp_handle_notification :: proc(c: ^LSP_Client, method: string, obj: json.Object
 		lsp_set_diagnostics(path, diags[:] if len(diags) > 0 else nil)
 		if len(diags) == 0 do delete(diags)
 
+		// Surface the message immediately if this is the file you're looking at
+		// and the cursor's already on an error line (e.g. right after a save) —
+		// otherwise it'd wait for the next cursor move.
+		if ae := active_editor(); ae != nil && lsp_path_eq(ae.file_path, path) {
+			lsp_status_at_cursor(ae)
+		}
+
 	case "window/logMessage", "window/showMessage":
 		// Server-side logs (ols/jai-lsp emit startup + error notes here).
 		// Echo to the console; surface error/warning showMessages in the bar.
@@ -1075,20 +1099,50 @@ lsp_did_change :: proc(c: ^LSP_Client, ed: ^Editor) {
 	lsp_send_notification(c, "textDocument/didChange", params)
 }
 
-// If the cursor sits inside a diagnostic range, show its message in the
-// status bar. Called on cursor move from the main loop.
+// Collapse a (possibly multi-line) diagnostic message to a single line for the
+// status bar / inline display: every run of whitespace / control chars becomes
+// one space. ols's messages carry embedded `\n` + `\t` ("Suggestion: Did you
+// mean?\n\tname"), which draw_text would otherwise render as tofu boxes.
+// Temp-allocated.
+lsp_oneline :: proc(s: string) -> string {
+	b := strings.builder_make(context.temp_allocator)
+	prev_space := false
+	for i in 0 ..< len(s) {
+		c := s[i]
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c < 0x20 {
+			if !prev_space do strings.write_byte(&b, ' ')
+			prev_space = true
+		} else {
+			strings.write_byte(&b, c)
+			prev_space = false
+		}
+	}
+	return strings.trim_space(strings.to_string(b))
+}
+
+// Show the diagnostic on the cursor's *line* in the status bar (most severe
+// when several share the line). Line-based, not exact-range — error ranges are
+// often a single column (a missing `;`), so requiring the caret to land on that
+// exact char made the message nearly impossible to surface. Matches the per-
+// line marker / gutter sign. Called on cursor move (and on diagnostics arrival).
 lsp_status_at_cursor :: proc(ed: ^Editor) {
 	if !lsp_lang_supported(ed.language) || len(ed.file_path) == 0 do return
 	diags := lsp_diagnostics_for(ed.file_path)
 	if len(diags) == 0 do return
+	cur_line, _ := editor_pos_to_line_col(ed, ed.cursor)
+	best_sev := 0
+	best_msg := ""
 	for d in diags {
-		lo := lsp_pos_to_byte(ed, d.start_line, d.start_char)
-		hi := lsp_pos_to_byte(ed, d.end_line, d.end_char)
-		if ed.cursor >= lo && ed.cursor <= hi {
-			kind := d.severity == 1 ? Status_Kind.Error : Status_Kind.Info
-			set_status_message(d.message, kind)
-			return
+		if cur_line < d.start_line || cur_line > d.end_line do continue
+		eff := d.severity <= 0 ? 1 : d.severity // unset → treat as error
+		if best_msg == "" || eff < best_sev {
+			best_sev = eff
+			best_msg = d.message
 		}
+	}
+	if best_msg != "" {
+		kind := best_sev == 1 ? Status_Kind.Error : Status_Kind.Info
+		set_status_message(lsp_oneline(best_msg), kind)
 	}
 }
 

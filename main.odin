@@ -680,6 +680,27 @@ fill_rect :: proc(rect: sdl.FRect, color: sdl.Color) {
 	sdl.RenderFillRect(g_renderer, &r)
 }
 
+// Filled rect via RenderGeometry rather than RenderFillRect. Same result, but
+// it dodges the macOS arm64 -o:speed/-o:size codegen bug (odin-lang/Odin#6809)
+// that miscompiles SOME RenderFillRect call sites into a solid-white fill. The
+// affected site is codegen-fragile — it moves between builds as unrelated code
+// shifts inlining — so we route the diagnostic underline through the geometry
+// path, which the bug never touches. Use only where a white fill is observed;
+// fill_rect stays the default everywhere else.
+fill_rect_geom :: proc(rect: sdl.FRect, color: sdl.Color) {
+	fc := sdl.FColor{f32(color.r) / 255, f32(color.g) / 255, f32(color.b) / 255, f32(color.a) / 255}
+	x0, y0 := rect.x, rect.y
+	x1, y1 := rect.x + rect.w, rect.y + rect.h
+	verts := [4]sdl.Vertex{
+		{position = {x0, y0}, color = fc},
+		{position = {x1, y0}, color = fc},
+		{position = {x1, y1}, color = fc},
+		{position = {x0, y1}, color = fc},
+	}
+	idx := [6]c.int{0, 1, 2, 0, 2, 3}
+	sdl.RenderGeometry(g_renderer, nil, raw_data(verts[:]), 4, raw_data(idx[:]), 6)
+}
+
 // Convert a screen-space mouse position (logical px) to a buffer byte offset.
 mouse_to_buffer_pos :: proc(ed: ^Editor, mx, my: f32, p: Pane_Layout) -> int {
 	doc_y := my - p.text_y + ed.scroll_y
@@ -1440,37 +1461,51 @@ diag_severity_color :: proc(severity: int) -> sdl.Color {
 	}
 }
 
-// Underline the LSP diagnostic ranges on visible lines. LSP positions are
-// utf-8 (jai-lsp) → byte offsets; x uses display columns like the rest of
-// the editor (so tabs line up). Multi-line ranges split per line.
+// Lower = more severe. Treats unset/unknown (0) as Error so a sloppy server's
+// diagnostics still rank as problems rather than sinking below hints.
+@(private = "file")
+diag_sev_rank :: proc(severity: int) -> int {
+	return severity <= 0 ? 1 : severity
+}
+
+// Pick one diagnostic per visible line (most severe wins) into `out`, keyed by
+// 0-based line. Shared by the in-text marker and the gutter rail sign so they
+// agree on which line shows what severity.
+@(private = "file")
+collect_line_diagnostics :: proc(
+	ed: ^Editor,
+	first_visible, last_visible: int,
+	out: ^map[int]LSP_Diagnostic,
+) {
+	for d in lsp_diagnostics_for(ed.file_path) {
+		if d.start_line < first_visible || d.start_line > last_visible do continue
+		if prev, ok := out[d.start_line]; ok && diag_sev_rank(d.severity) >= diag_sev_rank(prev.severity) {
+			continue
+		}
+		out[d.start_line] = d
+	}
+}
+
+// Mark visible lines carrying an LSP diagnostic with a severity-colored "<--"
+// just past the end of the line — the at-a-glance "error here" pointer. The
+// full message shows in the status bar when the cursor is on the line; the
+// gutter rail also gets a sign (draw_gutter). One marker per line.
 @(private = "file")
 draw_lsp_diagnostics :: proc(ed: ^Editor, p: Pane_Layout, first_visible, last_visible: int) {
 	if !lsp_lang_supported(ed.language) || len(ed.file_path) == 0 do return
-	diags := lsp_diagnostics_for(ed.file_path)
-	if len(diags) == 0 do return
-	thick := max(1.0 / g_density, 1.5)
-	for d in diags {
-		lo := lsp_pos_to_byte(ed, d.start_line, d.start_char)
-		hi := lsp_pos_to_byte(ed, d.end_line, d.end_char)
-		if hi < lo do hi = lo
-		col := diag_severity_color(d.severity)
-		seg := lo
-		for {
-			sline, scol := editor_pos_to_line_col(ed, seg)
-			if sline > last_visible do break
-			le := editor_line_end(ed, seg)
-			seg_end := min(hi, le)
-			if sline >= first_visible {
-				_, ecol := editor_pos_to_line_col(ed, seg_end)
-				x := p.text_x + f32(scol) * g_char_width - ed.scroll_x
-				y := p.text_y + f32(sline) * g_line_height - ed.scroll_y
-				w := f32(ecol - scol) * g_char_width
-				if w < g_char_width do w = g_char_width // zero-width → 1 cell
-				fill_rect({x, y + g_line_height - thick, w, thick}, col)
-			}
-			if seg_end >= hi do break
-			seg = le + 1
-		}
+	if len(lsp_diagnostics_for(ed.file_path)) == 0 do return
+
+	chosen := make(map[int]LSP_Diagnostic, 0, context.temp_allocator)
+	collect_line_diagnostics(ed, first_visible, last_visible, &chosen)
+
+	for line, d in chosen {
+		ls := editor_nth_line_start(ed, line)
+		le := editor_line_end(ed, ls)
+		_, end_col := editor_pos_to_line_col(ed, le)
+		x := p.text_x + f32(end_col) * g_char_width - ed.scroll_x + g_char_width * 2
+		y := p.text_y + f32(line) * g_line_height - ed.scroll_y
+		if x >= p.text_x + p.text_w do continue // off the right edge (status bar still has it)
+		draw_text("<--", x, y, diag_severity_color(d.severity), g_theme.bg_color, g_editor_font)
 	}
 }
 
@@ -1590,8 +1625,7 @@ draw_editor :: proc(ed: ^Editor, p: Pane_Layout, is_active: bool) {
 		}
 	}
 
-	// LSP diagnostics: underline error/warning ranges (under the text,
-	// before the caret).
+	// LSP diagnostics: end-of-line "<--" marker on error/warning lines.
 	draw_lsp_diagnostics(ed, p, first_visible, last_visible)
 
 	// Caret. Inactive panes show a hollow outline of the active position
@@ -1689,6 +1723,19 @@ draw_gutter :: proc(ed: ^Editor, p: Pane_Layout) {
 		color := g_theme.gutter_text_color
 		if line == cur_line do color = g_theme.gutter_active_color
 		draw_text(cstr, x, y, color, g_theme.gutter_bg_color, g_editor_font)
+	}
+
+	// Diagnostic signs on the rail: a short severity-colored bar at the gutter's
+	// left edge for any visible line carrying a diagnostic (most severe wins).
+	// fill_rect_geom dodges the #6809 white-fill codegen bug, same as the marker.
+	if lsp_lang_supported(ed.language) && len(ed.file_path) > 0 && len(lsp_diagnostics_for(ed.file_path)) > 0 {
+		signs := make(map[int]LSP_Diagnostic, 0, context.temp_allocator)
+		collect_line_diagnostics(ed, first_visible, last_visible, &signs)
+		bar_w := f32(3)
+		for line, d in signs {
+			y := p.text_y + f32(line) * g_line_height - ed.scroll_y
+			fill_rect_geom({p.pane_x, y + 2, bar_w, g_line_height - 4}, diag_severity_color(d.severity))
+		}
 	}
 }
 
@@ -1914,10 +1961,14 @@ draw_status_bar :: proc(ed: ^Editor, l: Layout) {
 		g_theme.status_bg_color,
 	)
 
-	// LSP server indicator, just left of the right-hand block: a small
-	// state-colored square dot + the server name. The dot is drawn (not a
-	// font glyph) so it renders regardless of the UI font's coverage. Click
-	// it to restart the server. Hidden for non-LSP files.
+	// Right-anchored segments, laid out leftward from the position block:
+	// [diagnostics badge] [LSP indicator] [pos/lang/eol].
+	seg_right := l.screen_w - STATUS_PAD_X - right_w - g_char_width * 2
+
+	// LSP server indicator: a small state-colored square dot + the server
+	// name. The dot is drawn (not a font glyph) so it renders regardless of
+	// the UI font's coverage. Click it to restart the server. Hidden for
+	// non-LSP files.
 	g_lsp_status_rect = {}
 	if lsp_text, lsp_color, show := lsp_status_text(ed); show {
 		lsp_cstr := strings.clone_to_cstring(lsp_text, context.temp_allocator)
@@ -1929,14 +1980,36 @@ draw_status_bar :: proc(ed: ^Editor, l: Layout) {
 		dot_sz := g_config.font.size * 0.45
 		dot_gap := g_char_width * 0.5
 		total_w := dot_sz + dot_gap + lsp_w
-		gap: f32 = g_char_width * 2
-		lsp_x := l.screen_w - STATUS_PAD_X - right_w - gap - total_w
+		lsp_x := seg_right - total_w
 
 		// Center the dot against the text's rendered height, not font.size.
 		dot_y := bot_y + (text_h - dot_sz) * 0.5
 		fill_rect({snap_px(lsp_x), snap_px(dot_y), dot_sz, dot_sz}, lsp_color)
 		draw_text(lsp_cstr, lsp_x + dot_sz + dot_gap, bot_y, lsp_color, g_theme.status_bg_color)
 		g_lsp_status_rect = {lsp_x, bot_y, total_w, text_h}
+		seg_right = lsp_x - g_char_width * 2
+	}
+
+	// Diagnostics badge for the active file: "N err  M warn", error count in
+	// red, warning-only in amber. Always visible while the file has any
+	// error/warning (so they're seen right after a save without hunting for
+	// the underline); the cursor-on-range detail message is separate.
+	if lsp_lang_supported(ed.language) && len(ed.file_path) > 0 {
+		errs, warns := lsp_diag_counts(ed.file_path)
+		diag_text := ""
+		diag_color := g_theme.status_error_color
+		switch {
+		case errs > 0 && warns > 0: diag_text = fmt.tprintf("%d err  %d warn", errs, warns)
+		case errs > 0:              diag_text = fmt.tprintf("%d err", errs)
+		case warns > 0:             diag_text = fmt.tprintf("%d warn", warns); diag_color = g_theme.status_warning_color
+		}
+		if len(diag_text) > 0 {
+			diag_cstr := strings.clone_to_cstring(diag_text, context.temp_allocator)
+			diag_w_px: c.int
+			ttf.GetStringSize(g_font, diag_cstr, 0, &diag_w_px, nil)
+			diag_w := f32(diag_w_px) / g_density
+			draw_text(diag_cstr, seg_right - diag_w, bot_y, diag_color, g_theme.status_bg_color)
+		}
 	}
 }
 
@@ -2245,8 +2318,14 @@ editor_font_reopen :: proc() {
 // fresh handles, then closes the old ones de-duped, so the editor font
 // aliasing the UI font never double-frees.
 config_reload :: proc() {
-	old_lsp := g_config.lsp // capture before reload to detect server-affecting changes
+	// Independent snapshot (not an alias) for the server-change diff below —
+	// project_config_apply frees and rebuilds g_config.lsp, which would
+	// otherwise dangle a borrowed old_lsp.
+	old_lsp := lsp_config_clone(g_config.lsp)
+	defer lsp_config_free(&old_lsp)
 	config_load()
+	config_capture_global_lsp() // refresh the global baseline…
+	project_config_apply()      // …then re-overlay the active project's bragi.ini
 	g_theme = g_config.theme
 
 	old_ui, old_term, old_edit := g_font, g_terminal_font, g_editor_font
@@ -3072,6 +3151,7 @@ main :: proc() {
 	// Load user config (overrides DEFAULT_CONFIG fields). After this point,
 	// font / theme / tab / column-guide values come from g_config.
 	config_load()
+	config_capture_global_lsp() // baseline for per-project bragi.ini [lsp] overlays
 	g_theme = g_config.theme
 	recent_load() // Open-Recent list (prunes entries gone from disk)
 

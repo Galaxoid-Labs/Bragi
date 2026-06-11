@@ -189,10 +189,21 @@ Both have identical advance width so cell math is unchanged.
   → position converters (`lsp_byte_to_pos`/`lsp_pos_to_byte`) are plain
   byte math (utf-16 variant lands with ols). Document sync: didOpen on
   load, debounced full-text didChange (`lsp_note_edit` timestamps edits,
-  `lsp_tick` flushes after 250 ms), didSave, didClose. Diagnostics store
-  (`g_lsp_diagnostics`, path→diags) from publishDiagnostics, rendered as
-  underlines (`draw_lsp_diagnostics`) + status-bar message on the cursor
-  line. **Formatting**: `textDocument/formatting` (`lsp_format_request`),
+  `lsp_tick` flushes after 250 ms), didSave, didClose. **Diagnostics** store
+  (`g_lsp_diagnostics`, path→diags) from publishDiagnostics; each publish
+  REPLACES a path's set (empty array clears — Bragi never accumulates, so a
+  piling-up bug is server-side). `lsp_client_stop` clears its docs' diagnostics
+  so a stopped/restarted server leaves no stale marks. Rendered per *line*
+  (`collect_line_diagnostics` picks the most-severe per line, shared by both):
+  an end-of-line `<--` marker (`draw_lsp_diagnostics`) + a gutter-rail bar
+  (`draw_gutter`), both severity-colored; `lsp_status_at_cursor` shows the
+  full message (flattened to one line via `lsp_oneline`) when the cursor is on
+  an error *line* (not the exact range — error ranges are often one column);
+  plus an always-on `N err / M warn` badge in the status bar. Note: the marker
+  / bar / message land on whatever `start_line` the server reports — jai-lsp
+  points "newline in string" at the *terminating* newline, i.e. the next line
+  (a server-side range choice, not a Bragi off-by-one). **Formatting**:
+  `textDocument/formatting` (`lsp_format_request`),
   capability-gated on `documentFormattingProvider` (`c.can_format`);
   ols only advertises it when sent `initializationOptions.enable_format`
   (done for `.Odin`). `lsp_apply_text_edits` resolves all `TextEdit`
@@ -234,7 +245,16 @@ Both have identical advance width so cell math is unchanged.
   at the caret, finder-styled. Go-to-definition (`gd`, Normal mode) lives
   in `lsp.odin` (`lsp_definition_request`/`lsp_jump_to`).
 - **`dot.odin`** — `.` (repeat last edit) recorder.
-- **`config.odin`** — INI loader, theme + editor settings.
+- **`config.odin`** — INI loader, theme + editor settings. Also the
+  **per-project overlay**: `<workspace>/bragi.ini`'s `[lsp]` section overrides
+  the global config. `config_capture_global_lsp` snapshots the global `[lsp]`
+  baseline after `config_load`; `project_config_apply` (called from
+  `set_workspace`, before the LSP teardown, and from `config_reload`) frees
+  `g_config.lsp`, re-clones the baseline, then overlays the project file —
+  resolving a relative `jai_entry` against the workspace root. So the effective
+  `g_config.lsp` = global ⊕ project. `lsp_config_clone`/`lsp_config_free` are
+  exported for the reload diff (the borrowed `old_lsp` must be an independent
+  clone, since `project_config_apply` frees the live one).
 - **`vterm.odin`** — Foreign bindings for libvterm 0.3.x. Links
   `system:vterm` on macOS / Linux and `vendor/libvterm/vterm.lib` on
   Windows.
@@ -474,6 +494,17 @@ baked BG color stays right.
 `draw_text` uses `RenderText_LCD` (FreeType, `SetFontHinting(.NORMAL)`).
 Coordinates are pixel-snapped via `snap_px` to avoid blurring at
 fractional positions during smooth scroll.
+
+`fill_rect` (the `RenderFillRect` wrapper) is the default solid-fill path.
+`fill_rect_geom` draws the same rect via `RenderGeometry` instead, and exists
+to dodge **odin-lang/Odin#6809**: at `-o:speed`/`-o:size` on macOS arm64,
+`RenderFillRect` miscompiles to a solid-**white** fill at *some* call sites.
+The bug is codegen-fragile — which site is affected shifts between builds as
+unrelated code changes inlining — so it can't be "fixed," only avoided. The
+diagnostic underline once hit it; now the diagnostic rail bar (`draw_gutter`)
+uses `fill_rect_geom`. If any other element flashes white at `-o:speed`, swap
+its `fill_rect` → `fill_rect_geom` (texture + geometry paths are unaffected).
+Goes away entirely when #6809 is fixed upstream.
 
 **macOS live-resize ghosting (SOLVED)** — text used to ghost/shiver
 while dragging the right/bottom edge. Cause: the `CAMetalLayer`'s
